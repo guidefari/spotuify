@@ -1690,6 +1690,8 @@ mod tests {
             kind: MediaKind::Track,
             source: None,
             freshness: None,
+            explicit: None,
+            is_playable: None,
         }
     }
 

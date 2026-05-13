@@ -80,6 +80,8 @@ mod tests {
             kind: MediaKind::Track,
             source: Some("spotify".to_string()),
             freshness: None,
+            explicit: None,
+            is_playable: None,
         }
     }
 }

@@ -69,6 +69,11 @@ pub enum Request {
         playlist: String,
         uris: Vec<String>,
     },
+    PlaylistCreate {
+        name: String,
+        description: Option<String>,
+        uris: Vec<String>,
+    },
     LibrarySave {
         uri: Option<String>,
         current: bool,
@@ -233,12 +238,24 @@ pub enum ResponseData {
     MediaItems { items: Vec<MediaItem> },
     Logs { lines: Vec<String> },
     Mutation { receipt: CommandReceipt },
+    PlaylistCreate { receipt: PlaylistCreateReceipt },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CommandReceipt {
     pub ok: bool,
     pub action: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlaylistCreateReceipt {
+    pub ok: bool,
+    pub action: String,
+    pub playlist_id: String,
+    pub playlist_uri: String,
+    pub name: String,
+    pub added_item_count: usize,
     pub message: String,
 }
 
@@ -507,5 +524,22 @@ mod tests {
 
         assert!(raw.contains("\"cmd\":\"image\""));
         assert!(raw.contains("\"url\":\"https://example.invalid/cover.png\""));
+    }
+
+    #[test]
+    fn playlist_create_request_wire_shape_is_kebab_case_and_typed() {
+        let raw = serde_json::to_string(&IpcMessage {
+            id: 12,
+            payload: IpcPayload::Request(Request::PlaylistCreate {
+                name: "Exile and Return".to_string(),
+                description: None,
+                uris: vec!["spotify:track:1".to_string()],
+            }),
+        })
+        .unwrap();
+
+        assert!(raw.contains("\"cmd\":\"playlist-create\""));
+        assert!(raw.contains("\"name\":\"Exile and Return\""));
+        assert!(raw.contains("\"uris\":[\"spotify:track:1\"]"));
     }
 }

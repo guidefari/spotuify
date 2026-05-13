@@ -666,6 +666,8 @@ fn row_to_media_item(row: sqlx::sqlite::SqliteRow) -> Result<MediaItem> {
         kind: media_kind_from_label(&row.get::<String, _>("kind"))?,
         source: Some(row.get("source")),
         freshness: Some("cached".to_string()),
+        explicit: None,
+        is_playable: None,
     })
 }
 
@@ -692,6 +694,8 @@ fn playlist_media_item(playlist: &Playlist) -> MediaItem {
         kind: MediaKind::Playlist,
         source: Some("spotify".to_string()),
         freshness: None,
+        explicit: None,
+        is_playable: None,
     }
 }
 
@@ -969,6 +973,8 @@ mod tests {
             kind: MediaKind::Track,
             source: Some("spotify".to_string()),
             freshness: None,
+            explicit: None,
+            is_playable: None,
         }
     }
 }

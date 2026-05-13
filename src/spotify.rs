@@ -75,6 +75,10 @@ pub struct MediaItem {
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freshness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_playable: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -262,6 +266,37 @@ impl SpotifyClient {
         Ok(playlists)
     }
 
+    pub async fn current_user_id(&mut self) -> Result<String> {
+        let response = self
+            .request_json::<CurrentUserResponse>(Method::GET, "/me", None::<()>)
+            .await?
+            .ok_or_else(|| anyhow!("Spotify returned no current user response"))?;
+        Ok(response.id)
+    }
+
+    pub async fn create_playlist(
+        &mut self,
+        name: &str,
+        description: Option<&str>,
+        public: bool,
+    ) -> Result<Playlist> {
+        let user_id = self.current_user_id().await?;
+        let user_id = encode_component(&user_id);
+        let body = serde_json::json!({
+            "name": name,
+            "description": description.unwrap_or("Created by spotuify"),
+            "public": public,
+        });
+        self.request_json::<RawPlaylist>(
+            Method::POST,
+            &format!("/users/{user_id}/playlists"),
+            Some(body),
+        )
+        .await?
+        .and_then(RawPlaylist::into_playlist)
+        .ok_or_else(|| anyhow!("Spotify returned no created playlist"))
+    }
+
     pub async fn recently_played(&mut self) -> Result<Vec<MediaItem>> {
         let response = self
             .request_json::<RecentlyPlayedResponse>(
@@ -437,12 +472,28 @@ impl SpotifyClient {
     }
 
     pub async fn add_to_playlist(&mut self, playlist_id: &str, uri: &str) -> Result<()> {
-        self.empty(
-            Method::POST,
-            &format!("/playlists/{playlist_id}/tracks"),
-            Some(serde_json::json!({ "uris": [uri] })),
-        )
-        .await
+        self.add_items_to_playlist(playlist_id, &[uri.to_string()])
+            .await
+    }
+
+    pub async fn add_items_to_playlist(
+        &mut self,
+        playlist_id: &str,
+        uris: &[String],
+    ) -> Result<()> {
+        if uris.is_empty() {
+            return Ok(());
+        }
+        let playlist_id = encode_component(playlist_id);
+        for chunk in uris.chunks(100) {
+            self.empty(
+                Method::POST,
+                &format!("/playlists/{playlist_id}/tracks"),
+                Some(serde_json::json!({ "uris": chunk })),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     pub async fn save_item(&mut self, item: &MediaItem) -> Result<()> {
@@ -587,7 +638,7 @@ impl SpotifyClient {
 }
 
 fn search_path(query: &str, kinds: &[MediaKind], limit: u8) -> String {
-    let encoded = url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>();
+    let encoded = encode_component(query);
     let types = kinds
         .iter()
         .map(MediaKind::label)
@@ -595,6 +646,10 @@ fn search_path(query: &str, kinds: &[MediaKind], limit: u8) -> String {
         .join(",");
     let limit = limit.min(10);
     format!("/search?q={encoded}&type={types}&limit={limit}")
+}
+
+fn encode_component(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
 }
 
 async fn handle_empty_response(
@@ -729,6 +784,11 @@ struct QueueResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct CurrentUserResponse {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct RecentlyPlayedResponse {
     items: Vec<RecentlyPlayedItem>,
 }
@@ -795,6 +855,8 @@ struct RawTrack {
     uri: String,
     name: String,
     duration_ms: u64,
+    explicit: Option<bool>,
+    is_playable: Option<bool>,
     #[serde(default, deserialize_with = "null_to_default")]
     artists: Vec<SimpleNamed>,
     album: RawAlbum,
@@ -814,6 +876,8 @@ impl RawTrack {
             kind: MediaKind::Track,
             source: Some("spotify".to_string()),
             freshness: None,
+            explicit: self.explicit,
+            is_playable: self.is_playable,
         }
     }
 }
@@ -846,6 +910,8 @@ impl RawEpisode {
             kind: MediaKind::Episode,
             source: Some("spotify".to_string()),
             freshness: None,
+            explicit: None,
+            is_playable: None,
         }
     }
 }
@@ -879,6 +945,8 @@ impl RawAlbum {
             kind: MediaKind::Album,
             source: Some("spotify".to_string()),
             freshness: None,
+            explicit: None,
+            is_playable: None,
         }
     }
 }
@@ -909,6 +977,8 @@ impl RawArtist {
             kind: MediaKind::Artist,
             source: Some("spotify".to_string()),
             freshness: None,
+            explicit: None,
+            is_playable: None,
         }
     }
 }
@@ -951,6 +1021,8 @@ impl RawPlaylist {
             kind: MediaKind::Playlist,
             source: Some("spotify".to_string()),
             freshness: None,
+            explicit: None,
+            is_playable: None,
         })
     }
 }

@@ -1,4 +1,5 @@
 mod actions;
+mod agent_playlists;
 mod analytics;
 mod app;
 mod auth;
@@ -20,6 +21,7 @@ mod tui_actions;
 mod ui;
 
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -97,6 +99,15 @@ enum Command {
         index: usize,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Resolve playlist-plan track candidates.
+    ResolveTracks {
+        /// Playlist plan JSON file.
+        #[arg(long = "from")]
+        from: PathBuf,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "jsonl")]
         format: OutputFormat,
     },
     /// Print the current Spotify queue.
@@ -319,6 +330,31 @@ enum QueueCommand {
 
 #[derive(Subcommand)]
 enum PlaylistCommand {
+    /// Generate a playlist plan JSON scaffold from a brief.
+    Plan {
+        /// Plain-language playlist brief.
+        brief: String,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "json")]
+        format: OutputFormat,
+    },
+    /// Create a playlist from resolved candidates.
+    Create {
+        /// New playlist name.
+        name: String,
+        /// Resolved candidates JSONL file.
+        #[arg(long = "from")]
+        from: PathBuf,
+        /// Show the exact mutation without creating the playlist.
+        #[arg(long)]
+        dry_run: bool,
+        /// Commit the playlist creation without an interactive prompt.
+        #[arg(long)]
+        yes: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Print playlist tracks.
     Tracks {
         /// Playlist ID, URI, or exact name.
@@ -531,6 +567,9 @@ async fn main() -> Result<()> {
                 format,
             )
             .await
+        }
+        Some(Command::ResolveTracks { from, format }) => {
+            commands::ipc_resolve_tracks(&from, format).await
         }
         Some(Command::Queue { command, format }) => commands::ipc_queue(command, format).await,
         Some(Command::Playlists { format }) => commands::ipc_playlists(format).await,
@@ -1052,6 +1091,103 @@ mod tests {
         match cli.command {
             Some(Command::Playlists { format }) => assert_eq!(format, OutputFormat::Ids),
             _ => panic!("expected playlists command"),
+        }
+    }
+
+    #[test]
+    fn agent_playlist_workflow_commands_parse_from_phase_five_spec() {
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "playlist",
+            "plan",
+            "exile and returning home",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Playlist {
+                command: PlaylistCommand::Plan { brief, format },
+            }) => {
+                assert_eq!(brief, "exile and returning home");
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected playlist plan command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "resolve-tracks",
+            "--from",
+            "plan.json",
+            "--format",
+            "jsonl",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::ResolveTracks { from, format }) => {
+                assert_eq!(from, std::path::PathBuf::from("plan.json"));
+                assert_eq!(format, OutputFormat::Jsonl);
+            }
+            _ => panic!("expected resolve-tracks command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "playlist",
+            "create",
+            "Exile and Return",
+            "--from",
+            "candidates.jsonl",
+            "--dry-run",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Playlist {
+                command:
+                    PlaylistCommand::Create {
+                        name,
+                        from,
+                        dry_run,
+                        yes,
+                        ..
+                    },
+            }) => {
+                assert_eq!(name, "Exile and Return");
+                assert_eq!(from, std::path::PathBuf::from("candidates.jsonl"));
+                assert!(dry_run);
+                assert!(!yes);
+            }
+            _ => panic!("expected playlist create dry-run command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "playlist",
+            "create",
+            "Exile and Return",
+            "--from",
+            "candidates.jsonl",
+            "--yes",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Playlist {
+                command:
+                    PlaylistCommand::Create {
+                        name,
+                        dry_run,
+                        yes,
+                        format,
+                        ..
+                    },
+            }) => {
+                assert_eq!(name, "Exile and Return");
+                assert!(!dry_run);
+                assert!(yes);
+                assert_eq!(format, OutputFormat::Table);
+            }
+            _ => panic!("expected playlist create commit command"),
         }
     }
 

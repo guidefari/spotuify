@@ -5,8 +5,8 @@ use crate::actions::{self, CommandKind};
 use crate::analytics::{now_ms, search_performed_event};
 use crate::daemon::state::DaemonState;
 use crate::protocol::{
-    CommandReceipt, PlaybackCommand, Request, Response, ResponseData, SearchScopeData,
-    SearchSourceData,
+    CommandReceipt, PlaybackCommand, PlaylistCreateReceipt, Request, Response, ResponseData,
+    SearchScopeData, SearchSourceData,
 };
 use crate::selection;
 use crate::spotify::{MediaItem, MediaKind};
@@ -148,6 +148,37 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
                     "playlist-add",
                     Some(format!("Added items to {}", playlist.name)),
                 ),
+            })
+        }
+        Request::PlaylistCreate {
+            name,
+            description,
+            uris,
+        } => {
+            if uris.is_empty() {
+                anyhow::bail!("no resolved track URIs to add");
+            }
+            for uri in &uris {
+                if selection::media_kind_from_uri(uri)? != MediaKind::Track {
+                    anyhow::bail!("playlist creation candidates must be track URIs: {uri}");
+                }
+            }
+            let mut client = state.spotify_client().await?;
+            let playlist = client
+                .create_playlist(&name, description.as_deref(), false)
+                .await?;
+            client.add_items_to_playlist(&playlist.id, &uris).await?;
+            cache_playlists(&state, std::slice::from_ref(&playlist)).await;
+            Ok(ResponseData::PlaylistCreate {
+                receipt: PlaylistCreateReceipt {
+                    ok: true,
+                    action: "playlist-create".to_string(),
+                    playlist_uri: selection::playlist_uri(&playlist.id),
+                    playlist_id: playlist.id,
+                    name: playlist.name,
+                    added_item_count: uris.len(),
+                    message: format!("Created playlist `{name}` with {} item(s)", uris.len()),
+                },
             })
         }
         Request::LibrarySave { uri, current } => {
@@ -378,5 +409,7 @@ fn media_item_from_uri(uri: &str) -> anyhow::Result<MediaItem> {
         kind,
         source: None,
         freshness: None,
+        explicit: None,
+        is_playable: None,
     })
 }

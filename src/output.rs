@@ -4,8 +4,9 @@ use anyhow::Result;
 use clap::ValueEnum;
 use serde::Serialize;
 
+use crate::agent_playlists::{PlaylistCreatePreview, PlaylistPlan, ResolvedTrackCandidate};
 use crate::analytics::StoredAnalyticsEvent;
-use crate::protocol::{CacheStatus, CacheSyncSummary, ReindexStats};
+use crate::protocol::{CacheStatus, CacheSyncSummary, PlaylistCreateReceipt, ReindexStats};
 use crate::spotify::{Device, MediaItem, Playback, Playlist, Queue};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -265,6 +266,200 @@ pub fn print_playlists(playlists: &[Playlist], format: OutputFormat) -> Result<(
                     playlist.tracks_total, playlist.name, playlist.owner, playlist.id
                 );
             }
+            Ok(())
+        }
+    }
+}
+
+pub fn print_playlist_plan(plan: &PlaylistPlan, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(plan),
+        OutputFormat::Jsonl => print_json_line(plan),
+        OutputFormat::Csv => {
+            println!("title,description,target_length,mood,candidate_searches");
+            println!(
+                "{}",
+                csv_row(&[
+                    &plan.title,
+                    &plan.description,
+                    &plan.target_length.to_string(),
+                    &plan.mood,
+                    &plan.candidate_searches.join(";"),
+                ])
+            );
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for query in &plan.candidate_searches {
+                println!("{query}");
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("title\t{}", plan.title);
+            println!("description\t{}", plan.description);
+            println!("target_length\t{}", plan.target_length);
+            println!("mood\t{}", plan.mood);
+            println!("candidate_searches");
+            for query in &plan.candidate_searches {
+                println!("- {query}");
+            }
+            Ok(())
+        }
+    }
+}
+
+pub fn print_resolved_track_candidates(
+    candidates: &[ResolvedTrackCandidate],
+    format: OutputFormat,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(candidates),
+        OutputFormat::Jsonl => print_jsonl(candidates),
+        OutputFormat::Csv => {
+            println!("position,status,query,chosen_uri,confidence,reason,source,explicit,playable");
+            for candidate in candidates {
+                println!(
+                    "{}",
+                    csv_row(&[
+                        &candidate.position.to_string(),
+                        candidate_status_label(candidate),
+                        &candidate.query,
+                        candidate.chosen_uri.as_deref().unwrap_or(""),
+                        &candidate.confidence.to_string(),
+                        &candidate.reason,
+                        &candidate.source,
+                        candidate.explicit.map(bool_str).unwrap_or(""),
+                        candidate.playable.map(bool_str).unwrap_or(""),
+                    ])
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for candidate in candidates {
+                if matches!(
+                    candidate.status,
+                    crate::agent_playlists::CandidateStatus::Resolved
+                ) {
+                    if let Some(uri) = candidate.chosen_uri.as_deref() {
+                        println!("{uri}");
+                    }
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("POS\tSTATUS\tQUERY\tURI\tREASON");
+            for candidate in candidates {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    candidate.position,
+                    candidate_status_label(candidate),
+                    candidate.query,
+                    candidate.chosen_uri.as_deref().unwrap_or("-"),
+                    candidate.reason
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+pub fn print_playlist_preview(preview: &PlaylistCreatePreview, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(preview),
+        OutputFormat::Jsonl => print_json_line(preview),
+        OutputFormat::Csv => {
+            println!("position,uri,name,subtitle,explicit");
+            for track in &preview.tracks {
+                println!(
+                    "{}",
+                    csv_row(&[
+                        &track.position.to_string(),
+                        &track.uri,
+                        &track.name,
+                        &track.subtitle,
+                        track.explicit.map(bool_str).unwrap_or(""),
+                    ])
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for track in &preview.tracks {
+                println!("{}", track.uri);
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("Would create playlist `{}`", preview.name);
+            println!("tracks\t{}", preview.added_item_count);
+            if !preview.warnings.is_empty() {
+                println!("warnings\t{}", preview.warnings.join("; "));
+            }
+            println!("POS\tNAME\tARTIST\tURI");
+            for track in &preview.tracks {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    track.position, track.name, track.subtitle, track.uri
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+pub fn print_playlist_create_receipt(
+    receipt: &PlaylistCreateReceipt,
+    format: OutputFormat,
+) -> Result<()> {
+    write_playlist_create_receipt(&mut io::stdout(), receipt, format)
+}
+
+pub fn write_playlist_create_receipt<W: Write>(
+    writer: &mut W,
+    receipt: &PlaylistCreateReceipt,
+    format: OutputFormat,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(&mut *writer, receipt)?;
+            writeln!(writer)?;
+            Ok(())
+        }
+        OutputFormat::Jsonl => {
+            writeln!(writer, "{}", serde_json::to_string(receipt)?)?;
+            Ok(())
+        }
+        OutputFormat::Csv => {
+            writeln!(
+                writer,
+                "ok,action,playlist_id,playlist_uri,name,added_item_count,message"
+            )?;
+            writeln!(
+                writer,
+                "{}",
+                csv_row(&[
+                    bool_str(receipt.ok),
+                    &receipt.action,
+                    &receipt.playlist_id,
+                    &receipt.playlist_uri,
+                    &receipt.name,
+                    &receipt.added_item_count.to_string(),
+                    &receipt.message,
+                ])
+            )?;
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            writeln!(writer, "{}", receipt.playlist_uri)?;
+            Ok(())
+        }
+        OutputFormat::Table => {
+            writeln!(writer, "{}", receipt.message)?;
+            writeln!(writer, "playlist\t{}", receipt.playlist_uri)?;
+            writeln!(writer, "added_item_count\t{}", receipt.added_item_count)?;
             Ok(())
         }
     }
@@ -574,9 +769,21 @@ fn bool_str(value: bool) -> &'static str {
     }
 }
 
+fn candidate_status_label(candidate: &ResolvedTrackCandidate) -> &'static str {
+    match candidate.status {
+        crate::agent_playlists::CandidateStatus::Resolved => "resolved",
+        crate::agent_playlists::CandidateStatus::Duplicate => "duplicate",
+        crate::agent_playlists::CandidateStatus::Unresolved => "unresolved",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{write_basic_receipt, write_item_receipt, write_media_items, OutputFormat};
+    use super::{
+        write_basic_receipt, write_item_receipt, write_media_items, write_playlist_create_receipt,
+        OutputFormat,
+    };
+    use crate::protocol::PlaylistCreateReceipt;
     use crate::spotify::{MediaItem, MediaKind};
 
     #[test]
@@ -592,6 +799,8 @@ mod tests {
             kind: MediaKind::Track,
             source: Some("local".to_string()),
             freshness: Some("fresh".to_string()),
+            explicit: None,
+            is_playable: None,
         }];
         let mut out = Vec::new();
 
@@ -628,11 +837,34 @@ mod tests {
             kind: MediaKind::Track,
             source: None,
             freshness: None,
+            explicit: None,
+            is_playable: None,
         };
         let mut out = Vec::new();
 
         write_item_receipt(&mut out, "play", &item, OutputFormat::Ids).unwrap();
 
         assert_eq!(String::from_utf8(out).unwrap(), "spotify:track:track-1\n");
+    }
+
+    #[test]
+    fn playlist_create_receipt_json_includes_playlist_uri_and_added_count() {
+        let receipt = PlaylistCreateReceipt {
+            ok: true,
+            action: "playlist-create".to_string(),
+            playlist_id: "playlist-1".to_string(),
+            playlist_uri: "spotify:playlist:playlist-1".to_string(),
+            name: "Exile".to_string(),
+            added_item_count: 2,
+            message: "Created playlist `Exile` with 2 item(s)".to_string(),
+        };
+        let mut out = Vec::new();
+
+        write_playlist_create_receipt(&mut out, &receipt, OutputFormat::Json).unwrap();
+
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value["playlist_uri"], "spotify:playlist:playlist-1");
+        assert_eq!(value["added_item_count"], 2);
+        assert_eq!(value["action"], "playlist-create");
     }
 }
