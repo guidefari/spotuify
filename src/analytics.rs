@@ -10,110 +10,30 @@ use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqlitePool};
 
+// Phase 6/Phase 7 architectural cut: the analytics TYPES move to
+// spotuify-core where `SpotifyClient` (and future producers) can
+// reference them without dragging in this crate's sqlx-backed store.
+// Re-exported here so existing binary call sites keep compiling.
+pub use spotuify_core::{
+    AnalyticsEvent, AnalyticsEventKind, AnalyticsSink, AnalyticsSource,
+};
+
+#[async_trait::async_trait]
+impl AnalyticsSink for AnalyticsStore {
+    async fn record(&self, event: &AnalyticsEvent) {
+        if let Err(err) = self.record_event(event).await {
+            tracing::warn!(error = %err, "analytics store failed to persist event");
+        }
+    }
+}
+
 const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 const POOL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AnalyticsStore {
     writer: SqlitePool,
     reader: SqlitePool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AnalyticsEventKind {
-    ActionFinished,
-    SearchPerformed,
-    SearchResultSelected,
-    PlaybackStarted,
-    PlaybackPaused,
-    PlaybackResumed,
-    PlaybackSkipped,
-    PlaybackCompleted,
-    ListenQualified,
-    SpotifyApiFinished,
-}
-
-impl AnalyticsEventKind {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::ActionFinished => "action_finished",
-            Self::SearchPerformed => "search_performed",
-            Self::SearchResultSelected => "search_result_selected",
-            Self::PlaybackStarted => "playback_started",
-            Self::PlaybackPaused => "playback_paused",
-            Self::PlaybackResumed => "playback_resumed",
-            Self::PlaybackSkipped => "playback_skipped",
-            Self::PlaybackCompleted => "playback_completed",
-            Self::ListenQualified => "listen_qualified",
-            Self::SpotifyApiFinished => "spotify_api_finished",
-        }
-    }
-}
-
-impl FromStr for AnalyticsEventKind {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "action_finished" => Ok(Self::ActionFinished),
-            "search_performed" => Ok(Self::SearchPerformed),
-            "search_result_selected" => Ok(Self::SearchResultSelected),
-            "playback_started" => Ok(Self::PlaybackStarted),
-            "playback_paused" => Ok(Self::PlaybackPaused),
-            "playback_resumed" => Ok(Self::PlaybackResumed),
-            "playback_skipped" => Ok(Self::PlaybackSkipped),
-            "playback_completed" => Ok(Self::PlaybackCompleted),
-            "listen_qualified" => Ok(Self::ListenQualified),
-            "spotify_api_finished" => Ok(Self::SpotifyApiFinished),
-            _ => anyhow::bail!("unknown analytics event kind `{value}`"),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AnalyticsSource {
-    Cli,
-    Tui,
-    SpotifyApi,
-    Daemon,
-}
-
-impl AnalyticsSource {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Cli => "cli",
-            Self::Tui => "tui",
-            Self::SpotifyApi => "spotify_api",
-            Self::Daemon => "daemon",
-        }
-    }
-}
-
-impl FromStr for AnalyticsSource {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "cli" => Ok(Self::Cli),
-            "tui" => Ok(Self::Tui),
-            "spotify_api" => Ok(Self::SpotifyApi),
-            "daemon" => Ok(Self::Daemon),
-            _ => anyhow::bail!("unknown analytics source `{value}`"),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AnalyticsEvent {
-    pub kind: AnalyticsEventKind,
-    pub occurred_at_ms: i64,
-    pub source: AnalyticsSource,
-    pub subject_uri: Option<String>,
-    pub search_query: Option<String>,
-    pub search_query_hash: Option<String>,
-    pub payload: Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -183,6 +103,9 @@ impl AnalyticsStore {
         Ok(store)
     }
 
+    /// Trait-friendly variant used by the AnalyticsSink impl below.
+    /// The inherent method keeps the Result-returning signature for
+    /// callers that want to handle DB errors.
     pub async fn record_event(&self, event: &AnalyticsEvent) -> Result<i64> {
         let payload = serde_json::to_string(&event.payload)?;
         let result = sqlx::query(
@@ -235,10 +158,10 @@ impl AnalyticsStore {
                 let payload_json: String = row.get("payload_json");
                 Ok(StoredAnalyticsEvent {
                     id: row.get("id"),
-                    kind: row.get::<String, _>("kind").parse()?,
+                    kind: row.get::<String, _>("kind").parse().map_err(anyhow::Error::msg)?,
                     occurred_at_ms: row.get("occurred_at_ms"),
                     received_at_ms: row.get("received_at_ms"),
-                    source: row.get::<String, _>("source").parse()?,
+                    source: row.get::<String, _>("source").parse().map_err(anyhow::Error::msg)?,
                     subject_uri: row.get("subject_uri"),
                     search_query: row.get("search_query"),
                     search_query_hash: row.get("search_query_hash"),

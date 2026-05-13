@@ -8,6 +8,12 @@
 //! devices exist, what playlists hold. IPC framing, HTTP semantics, storage
 //! schema, and TUI rendering belong in other crates.
 
+pub mod analytics;
+
+pub use analytics::{
+    AnalyticsEvent, AnalyticsEventKind, AnalyticsSink, AnalyticsSource,
+};
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

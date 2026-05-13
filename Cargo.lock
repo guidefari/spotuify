@@ -3514,6 +3514,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "async-trait",
  "base64",
  "bytes",
  "clap",
@@ -3574,6 +3575,7 @@ dependencies = [
 name = "spotuify-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "serde",
  "serde_json",
 ]
