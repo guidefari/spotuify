@@ -11,7 +11,7 @@
 //! correct shape rather than relying on string pattern-matching against
 //! the JSON contents.
 
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
 /// Tags the expected payload shape so the normalizer knows which keys to
 /// backfill. Picked per-endpoint by the caller (caller knows what response
@@ -144,8 +144,3 @@ fn false_value() -> Value {
 fn followers_default() -> Value {
     json!({ "total": 0 })
 }
-
-/// Force `Map` import to be considered used in case the compiler doesn't
-/// notice it (private helper used elsewhere in this crate).
-#[allow(dead_code)]
-fn _force_map_use(_m: &Map<String, Value>) {}
