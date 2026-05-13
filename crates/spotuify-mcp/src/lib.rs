@@ -20,8 +20,10 @@
 pub mod bridge;
 pub mod confirm;
 pub mod resources;
+pub mod rpc;
 pub mod tools;
 
 pub use confirm::{ConfirmDecision, ConfirmationRequired};
 pub use resources::{resource_uris_invalidated_by, Resource, ResourceCatalogue};
+pub use rpc::{dispatch, RpcError, RpcRequest, RpcResponse};
 pub use tools::{Tool, ToolCatalogue, ToolKind, ToolManifest};
