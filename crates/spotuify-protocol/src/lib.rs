@@ -5,6 +5,10 @@
 //! only on `spotuify-core` for domain types. It must never import storage,
 //! search, HTTP, or any other concern.
 
+pub mod event_log;
+
+pub use event_log::{findings_from, EventLog, LoggedEvent, LoggedKind};
+
 use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};

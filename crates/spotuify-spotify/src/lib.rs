@@ -14,5 +14,6 @@ pub mod compat;
 pub mod config;
 pub mod error;
 pub mod rate_limit;
+pub mod refresh_planner;
 
 pub use error::{AuthErrorKind, SpotifyError};
