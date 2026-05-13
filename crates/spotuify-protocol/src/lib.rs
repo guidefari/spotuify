@@ -362,6 +362,122 @@ pub enum DaemonEvent {
         action: String,
         message: String,
     },
+
+    // Phase 6.7 — new typed events.
+    //
+    // RateLimited: emitted when the rate-limit middleware honours a 429
+    // Retry-After. Clients show a countdown chip. `scope` is the symbolic
+    // endpoint label, not a URL with user data.
+    RateLimited {
+        retry_after_secs: u64,
+        scope: String,
+    },
+
+    // AuthError: emitted on 401 after refresh fails, on 403 with required
+    // scope mismatch, and on revoked refresh tokens.
+    AuthError {
+        kind: AuthErrorKind,
+    },
+
+    // MutationAccepted: emitted as soon as a mutation request is
+    // persisted as a pending receipt -- before Spotify is called.
+    // Clients can show optimistic UI keyed on receipt_id.
+    MutationAccepted {
+        receipt_id: ReceiptId,
+        action: String,
+    },
+
+    // MutationFinalized: emitted when a pending mutation transitions to
+    // confirmed or failed. Distinct from the legacy MutationFinished
+    // (which carries action+message) -- this one carries receipt_id and
+    // typed status so the TUI can flip the spinner without parsing
+    // strings.
+    MutationFinalized {
+        receipt_id: ReceiptId,
+        status: ReceiptStatus,
+        message: String,
+    },
+
+    // SchemaCompat: emitted when the compat normalizer (Phase 6.2)
+    // backfilled keys. Tells us what Spotify changed without grepping
+    // logs.
+    SchemaCompat {
+        endpoint: String,
+        missing_keys: Vec<String>,
+    },
+}
+
+/// Auth error categories. Mirrors `spotuify_spotify::error::AuthErrorKind`
+/// so the daemon event stream stays typed without dragging the Spotify
+/// crate into the protocol. Stable; remapping is a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthErrorKind {
+    ExpiredRefresh,
+    InvalidGrant,
+    Forbidden,
+}
+
+/// Phase 6.6 mutation receipt — two-stage lifecycle.
+///
+/// Distinct from the legacy [`CommandReceipt`] (which is synchronous
+/// {ok, action, message}). A `Receipt` is persisted to SQLite at issue
+/// time so it survives daemon crash; the daemon recovers pending receipts
+/// at startup and reconciles them.
+///
+/// Lifecycle:
+///   Pending → MutationAccepted event
+///   Pending → Confirmed → MutationFinalized event
+///   Pending → Failed     → MutationFinalized event
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Receipt {
+    pub receipt_id: ReceiptId,
+    pub action: String,
+    pub status: ReceiptStatus,
+    pub message: String,
+    pub started_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ApiErrorSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptStatus {
+    Pending,
+    Confirmed,
+    Failed,
+}
+
+/// Newtype around UUID v7 so the serialization is stable and the type is
+/// distinct from arbitrary strings in API surfaces. v7 is sortable by
+/// insertion time which keeps `ops log` chronological for free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ReceiptId(pub uuid::Uuid);
+
+impl ReceiptId {
+    pub fn new_v7() -> Self {
+        Self(uuid::Uuid::now_v7())
+    }
+}
+
+impl std::fmt::Display for ReceiptId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Compact summary of a Spotify API failure for embedding in
+/// `Receipt.error`. We deliberately don't carry the full response body
+/// across IPC -- it's redundant noise and may include URIs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApiErrorSummary {
+    pub kind: IpcErrorKind,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

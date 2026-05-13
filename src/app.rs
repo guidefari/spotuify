@@ -585,6 +585,27 @@ impl App {
                 self.is_syncing = true;
                 self.toast = Some(format!("Syncing {}...", target.label()));
             }
+            // Phase 6.7 new events. Initial wiring just surfaces a toast +
+            // refreshes; richer rendering (countdown chip, banner, etc.)
+            // lands with the TUI banner widgets work.
+            DaemonEvent::RateLimited { retry_after_secs, scope } => {
+                self.toast = Some(format!(
+                    "Rate limited on {scope}; retrying in {retry_after_secs}s"
+                ));
+            }
+            DaemonEvent::AuthError { kind } => {
+                self.error = Some(format!("Authentication problem ({kind:?}); try `spotuify login`"));
+            }
+            DaemonEvent::MutationAccepted { receipt_id, action } => {
+                self.toast = Some(format!("{action} pending ({receipt_id})"));
+            }
+            DaemonEvent::MutationFinalized { status, message, .. } => {
+                self.toast = Some(format!("Mutation {status:?}: {message}"));
+                self.request_refresh();
+            }
+            DaemonEvent::SchemaCompat { endpoint, missing_keys } => {
+                tracing::warn!(endpoint, ?missing_keys, "Spotify payload missing fields; compat applied");
+            }
         }
     }
 }

@@ -3570,6 +3570,7 @@ dependencies = [
  "serde_json",
  "spotuify-core",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]

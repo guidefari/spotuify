@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Canonical test runner for spotuify.
+#
+# Why this exists:
+# - rust-analyzer holds locks on target/ via flycheck; concurrent `cargo test`
+#   from a shell blocks behind it for minutes. We use a separate target dir.
+# - Bash tools in agent sessions sometimes time out the wrapping shell while
+#   leaving `cargo test` running. Stale processes hold the new target-dir
+#   lock and stall the next run. We reap them first.
+# - `cargo test --workspace` over the full 14-crate tree is too coarse for
+#   incremental work; default to a single crate via `-p`.
+#
+# Usage:
+#   scripts/cargo-test -p spotuify-spotify --tests
+#   scripts/cargo-test --workspace        # explicit opt-in
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+stale=$(pgrep -f "cargo (test|build|check) .*${REPO_ROOT}" 2>/dev/null || true)
+if [ -n "${stale}" ]; then
+  echo "reaping stale cargo processes: ${stale}" >&2
+  echo "${stale}" | xargs kill -9 2>/dev/null || true
+fi
+
+export CARGO_TARGET_DIR="${REPO_ROOT}/target-cli"
+exec cargo test "$@"

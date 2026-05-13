@@ -165,6 +165,13 @@ Reference docs:
 - Copy mxr-proven infrastructure before inventing.
 - Keep blast radius small.
 
+### Running tests
+
+- Use `scripts/cargo-test` as the canonical test runner. It reaps stale `cargo` processes and points `CARGO_TARGET_DIR` at `target-cli/`, isolating CLI cargo from rust-analyzer's locks on `target/`.
+- Prefer `scripts/cargo-test -p <crate> --tests` over `--workspace`. The workspace is 14 crates; a full test/build commonly runs minutes and overruns agent Bash timeouts, leaving orphaned `cargo` holding the target-dir lock.
+- Never pipe `cargo test` through `tail`/`head`/`grep` inside an agent Bash invocation. The pipeline can outlive the parent shell when the Bash tool times out; the orphaned `cargo` then blocks the next run. Capture full output, or use `--quiet`, or run via `scripts/cargo-test` which handles cleanup.
+- If a run unexpectedly hangs, `pgrep -f 'cargo test'` first; zombies from prior turns are the most common cause.
+
 ## Settled design decisions
 
 See `docs/blueprint/13-decision-log.md` for full context. Highlights:
