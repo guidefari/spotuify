@@ -739,7 +739,7 @@ async fn handle_daemon(command: DaemonCommand) -> Result<()> {
 async fn spotify_client(config: Config, source: AnalyticsSource) -> Result<SpotifyClient> {
     let client = SpotifyClient::new(config)?;
     match AnalyticsStore::open_default().await {
-        Ok(store) => Ok(client.with_analytics(store, source)),
+        Ok(store) => Ok(client.with_analytics(std::sync::Arc::new(store), source)),
         Err(err) => {
             tracing::warn!(error = %err, "analytics store unavailable");
             Ok(client)

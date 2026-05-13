@@ -139,7 +139,7 @@ impl DaemonState {
         if std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some() {
             let client = SpotifyClient::fake()?;
             return match AnalyticsStore::open_default().await {
-                Ok(store) => Ok(client.with_analytics(store, AnalyticsSource::Daemon)),
+                Ok(store) => Ok(client.with_analytics(Arc::new(store), AnalyticsSource::Daemon)),
                 Err(err) => {
                     tracing::warn!(error = %err, "analytics store unavailable");
                     Ok(client)
@@ -149,7 +149,7 @@ impl DaemonState {
         let config = Config::load().context("failed to load Spotify config")?;
         let client = SpotifyClient::new(config)?.with_token_cache(self.token_cache.clone());
         match AnalyticsStore::open_default().await {
-            Ok(store) => Ok(client.with_analytics(store, AnalyticsSource::Daemon)),
+            Ok(store) => Ok(client.with_analytics(Arc::new(store), AnalyticsSource::Daemon)),
             Err(err) => {
                 tracing::warn!(error = %err, "analytics store unavailable");
                 Ok(client)

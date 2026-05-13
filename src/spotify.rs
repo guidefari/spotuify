@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use tokio::sync::Mutex;
 
 use crate::analytics::{
-    now_ms, spotify_api_finished_event, AnalyticsEvent, AnalyticsSource, AnalyticsStore,
+    now_ms, spotify_api_finished_event, AnalyticsEvent, AnalyticsSource,
 };
 use crate::auth::{self, StoredToken};
 use crate::config::Config;
@@ -27,7 +27,10 @@ const API: &str = "https://api.spotify.com/v1";
 pub struct SpotifyClient {
     config: Config,
     http: Client,
-    analytics: Option<AnalyticsStore>,
+    /// Decoupled via `spotuify_core::AnalyticsSink` so any
+    /// Send+Sync+Debug impl works -- the binary's `AnalyticsStore`
+    /// is one; tests and future crates can supply their own.
+    analytics: Option<Arc<dyn spotuify_core::AnalyticsSink>>,
     analytics_source: AnalyticsSource,
     fake: bool,
     token_cache: Arc<Mutex<Option<StoredToken>>>,
@@ -71,7 +74,11 @@ impl SpotifyClient {
         self
     }
 
-    pub fn with_analytics(mut self, analytics: AnalyticsStore, source: AnalyticsSource) -> Self {
+    pub fn with_analytics(
+        mut self,
+        analytics: Arc<dyn spotuify_core::AnalyticsSink>,
+        source: AnalyticsSource,
+    ) -> Self {
         self.analytics = Some(analytics);
         self.analytics_source = source;
         self
@@ -94,9 +101,10 @@ impl SpotifyClient {
         let Some(analytics) = &self.analytics else {
             return;
         };
-        if let Err(err) = analytics.record_event(&event).await {
-            tracing::warn!(error = %err, "failed to record analytics event");
-        }
+        // AnalyticsSink::record swallows failures inside the impl per
+        // the trait contract -- analytics is best-effort and must not
+        // block the producer.
+        analytics.record(&event).await;
     }
 
     async fn record_spotify_api_finished(
