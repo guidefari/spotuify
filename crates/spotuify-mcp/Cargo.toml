@@ -13,6 +13,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
 thiserror = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

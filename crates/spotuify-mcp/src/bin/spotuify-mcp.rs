@@ -5,20 +5,37 @@
 //! and the process keeps running so editors can recover from bad
 //! input without re-spawning.
 //!
-//! The daemon-side dispatch (forwarding translated Requests over the
-//! Unix socket to the live daemon) lands as a follow-up. For now this
-//! binary serves the catalogue + bridge translation; clients can
-//! integrate with the manifest and confirm flow before the daemon
-//! wire is hot.
+//! For `tools/call` of an executable tool, we forward the bridge's
+//! translated `Request` over the Unix domain socket to a running
+//! daemon. Daemon discovery uses `$SPOTUIFY_SOCKET` then falls back to
+//! the OS cache dir.
+//!
+//! If the daemon is unreachable, we keep returning RPC results (so
+//! the editor stays happy) but mark them with isError + a clear
+//! message pointing the user to `spotuify daemon start`.
 
 use std::io::{BufRead, Write};
 
-use spotuify_mcp::{dispatch, RpcRequest, RpcResponse};
+use serde_json::{json, Value};
+use spotuify_mcp::{
+    bridge::{translate, TranslatedCall},
+    confirm::{decide, Authorized},
+    daemon_client::{default_socket_path, round_trip},
+    dispatch, RpcRequest, RpcResponse,
+};
+use spotuify_protocol::Response;
 
 fn main() {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
+
+    // One current-thread runtime for the whole session so each
+    // tools/call doesn't pay tokio-runtime build cost.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
 
     for line in stdin.lock().lines() {
         let line = match line {
@@ -30,11 +47,12 @@ fn main() {
             }
         };
 
-        let response = match serde_json::from_str::<RpcRequest>(&line) {
-            Ok(req) => dispatch(req),
+        let request: Result<RpcRequest, _> = serde_json::from_str(&line);
+        let response = match request {
+            Ok(req) => handle(req, &rt),
             Err(err) => RpcResponse {
                 jsonrpc: "2.0",
-                id: serde_json::Value::Null,
+                id: Value::Null,
                 result: None,
                 error: Some(spotuify_mcp::RpcError::invalid_request(format!(
                     "parse: {err}"
@@ -53,5 +71,125 @@ fn main() {
             }
         }
         let _ = out.flush();
+    }
+}
+
+/// Intercept `tools/call` so we can forward an executable Request to
+/// the live daemon. Other methods (initialize, tools/list, resources/*)
+/// stay catalogue-only and go through the pure-function dispatch.
+fn handle(request: RpcRequest, rt: &tokio::runtime::Runtime) -> RpcResponse {
+    if request.method == "tools/call" {
+        let id = request.id.clone().unwrap_or(Value::Null);
+        let params = request.params.clone();
+        let name = params.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let args = params.get("arguments").cloned().unwrap_or(json!({}));
+        let confirm = args.get("confirm").and_then(Value::as_bool);
+
+        // Reuse the existing dispatch logic for catalogue lookup +
+        // confirm gating. For Execute paths, we follow up with a
+        // daemon round-trip.
+        match decide(&name, confirm) {
+            Err(err) => {
+                return RpcResponse {
+                    jsonrpc: "2.0",
+                    id,
+                    result: None,
+                    error: Some(spotuify_mcp::RpcError::invalid_request(err.to_string())),
+                };
+            }
+            Ok(Authorized::PreviewOnly) => {
+                // Fall through to the pure dispatch for the preview
+                // path; nothing to forward.
+                return dispatch(request);
+            }
+            Ok(Authorized::Execute) => match translate(&name, &args) {
+                Ok(TranslatedCall::Request(req)) => {
+                    let socket = default_socket_path();
+                    let outcome = rt.block_on(round_trip(&socket, req));
+                    return daemon_outcome_to_rpc(id, outcome);
+                }
+                Ok(TranslatedCall::LocalDeferred(_)) => {
+                    return dispatch(request);
+                }
+                Err(err) => {
+                    return RpcResponse {
+                        jsonrpc: "2.0",
+                        id,
+                        result: None,
+                        error: Some(spotuify_mcp::RpcError::invalid_params(err.to_string())),
+                    };
+                }
+            },
+        }
+    }
+
+    dispatch(request)
+}
+
+fn daemon_outcome_to_rpc(id: Value, outcome: anyhow::Result<Response>) -> RpcResponse {
+    match outcome {
+        Ok(Response::Ok { data }) => RpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: Some(json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!("Daemon ok: {:?}", data),
+                }],
+                "_meta": {
+                    "spotuify_response_kind": kind_label(&data),
+                }
+            })),
+            error: None,
+        },
+        Ok(Response::Error { message, code, .. }) => RpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: Some(json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!("Daemon error [{code}]: {message}"),
+                }],
+                "isError": true,
+            })),
+            error: None,
+        },
+        Err(err) => RpcResponse {
+            jsonrpc: "2.0",
+            id,
+            result: Some(json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!(
+                        "Daemon unreachable: {err}. Start it with `spotuify daemon start`."
+                    ),
+                }],
+                "isError": true,
+            })),
+            error: None,
+        },
+    }
+}
+
+fn kind_label(data: &spotuify_protocol::ResponseData) -> &'static str {
+    use spotuify_protocol::ResponseData as D;
+    match data {
+        D::Pong => "pong",
+        D::Shutdown => "shutdown",
+        D::DaemonStatus { .. } => "daemon-status",
+        D::DoctorReport { .. } => "doctor",
+        D::Playback { .. } => "playback",
+        D::Devices { .. } => "devices",
+        D::SearchResults { .. } => "search-results",
+        D::CacheStatus { .. } => "cache-status",
+        D::Reindex { .. } => "reindex",
+        D::Sync { .. } => "sync",
+        D::Image { .. } => "image",
+        D::Queue { .. } => "queue",
+        D::Playlists { .. } => "playlists",
+        D::MediaItems { .. } => "media-items",
+        D::Logs { .. } => "logs",
+        D::Mutation { .. } => "mutation",
+        D::PlaylistCreate { .. } => "playlist-create",
     }
 }

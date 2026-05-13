@@ -3596,6 +3596,9 @@ dependencies = [
 name = "spotuify-mcp"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "dirs",
+ "futures",
  "insta",
  "pretty_assertions",
  "schemars",
@@ -3604,6 +3607,8 @@ dependencies = [
  "spotuify-core",
  "spotuify-protocol",
  "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

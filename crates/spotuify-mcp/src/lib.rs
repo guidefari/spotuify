@@ -19,6 +19,7 @@
 
 pub mod bridge;
 pub mod confirm;
+pub mod daemon_client;
 pub mod resources;
 pub mod rpc;
 pub mod tools;
