@@ -9,5 +9,9 @@ description = "CLI commands + output renderers + selection logic. Empty scaffold
 spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
 
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
 [lints]
 workspace = true

@@ -9,7 +9,9 @@
 //! See `docs/implementation/09-phase-6-sync-hardening.md` and
 //! `docs/implementation/10-phase-7-workspace-split.md`.
 
+pub mod auth;
 pub mod compat;
+pub mod config;
 pub mod error;
 pub mod rate_limit;
 

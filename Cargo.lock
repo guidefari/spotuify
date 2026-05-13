@@ -3532,7 +3532,9 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "spotuify-cli",
  "spotuify-core",
+ "spotuify-player",
  "spotuify-protocol",
  "spotuify-search",
  "spotuify-spotify",
@@ -3560,6 +3562,9 @@ dependencies = [
 name = "spotuify-cli"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
  "spotuify-core",
  "spotuify-protocol",
 ]
@@ -3605,7 +3610,11 @@ dependencies = [
 name = "spotuify-player"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "dirs",
  "spotuify-core",
+ "spotuify-spotify",
+ "tracing",
 ]
 
 [[package]]
@@ -3637,19 +3646,27 @@ name = "spotuify-spotify"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
+ "dirs",
+ "keyring",
+ "open",
  "parking_lot",
  "pretty_assertions",
  "rand 0.8.6",
  "reqwest",
+ "rpassword",
  "serde",
  "serde_json",
+ "sha2",
  "spotuify-core",
  "spotuify-protocol",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "toml",
  "tracing",
+ "url",
  "wiremock",
 ]
 

@@ -3,9 +3,11 @@
 //! Phase 9 will land:
 //! - `PlayerBackend` trait
 //! - `EmbeddedBackend` (in-process librespot)
-//! - `SpotifydBackend` (sibling subprocess)
 //! - `ConnectOnlyBackend` (Web API transfer only)
 //!
-//! For now this crate is empty scaffolding so the workspace structure
-//! matches the blueprint. The legacy spotifyd helper still lives at the
-//! binary's `src/spotifyd.rs`.
+//! The `spotifyd` backend has moved here from the binary's src/spotifyd.rs
+//! as a leaf extraction. The Phase 9 backend trait will subsume it.
+
+pub mod backends;
+
+pub use backends::spotifyd;
