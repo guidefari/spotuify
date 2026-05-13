@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::daemon::state::DaemonState;
-use crate::protocol::{CacheSyncSummary, SyncTargetData};
+use crate::protocol::{CacheSyncSummary, DaemonEvent, SyncTargetData};
 use crate::store::now_ms;
 
 pub(crate) fn spawn_background_scheduler(state: Arc<DaemonState>) {
@@ -39,6 +39,7 @@ pub(crate) async fn sync_target(
     state: Arc<DaemonState>,
     target: SyncTargetData,
 ) -> Result<CacheSyncSummary> {
+    state.emit_event(DaemonEvent::SyncStarted { target });
     let mut summary = CacheSyncSummary {
         target,
         playback_snapshots: 0,
@@ -65,6 +66,9 @@ pub(crate) async fn sync_target(
         SyncTargetData::Library => sync_library(&state, &mut summary).await?,
     }
 
+    state.emit_event(DaemonEvent::SyncFinished {
+        summary: summary.clone(),
+    });
     Ok(summary)
 }
 

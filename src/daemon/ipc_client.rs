@@ -9,7 +9,7 @@ use tokio::time::timeout;
 use tokio_util::codec::Framed;
 
 use crate::daemon::state::DaemonState;
-use crate::protocol::{IpcCodec, IpcMessage, IpcPayload, Request, Response};
+use crate::protocol::{DaemonEvent, IpcCodec, IpcMessage, IpcPayload, Request, Response};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -78,6 +78,21 @@ impl IpcClient {
         })
         .await
         .map_err(|_| anyhow::anyhow!("IPC request timed out after {}", format_timeout(duration)))?
+    }
+
+    pub async fn next_event(&mut self) -> Result<DaemonEvent> {
+        loop {
+            match self.framed.next().await {
+                Some(Ok(message)) => match message.payload {
+                    IpcPayload::Event(event) => return Ok(event),
+                    IpcPayload::Response(_) | IpcPayload::Request(_) => {}
+                },
+                Some(Err(err)) => bail!("{}", describe_ipc_failure(&err.to_string())),
+                None => bail!(
+                    "Connection closed. Restart the daemon after upgrading: spotuify daemon restart"
+                ),
+            }
+        }
     }
 }
 
@@ -172,5 +187,37 @@ mod tests {
                 data: ResponseData::Pong
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn next_event_returns_broadcast_daemon_events() {
+        let temp = TempDir::new().unwrap();
+        let socket = temp.path().join("event-stream.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut framed = Framed::new(stream, IpcCodec::new());
+            framed
+                .send(IpcMessage {
+                    id: 0,
+                    payload: IpcPayload::Event(DaemonEvent::QueueChanged {
+                        action: "queue".to_string(),
+                        uris: vec!["spotify:track:1".to_string()],
+                    }),
+                })
+                .await
+                .unwrap();
+        });
+        let mut client = IpcClient::connect_to(&socket).await.unwrap();
+
+        let event = client.next_event().await.unwrap();
+
+        assert_eq!(
+            event,
+            DaemonEvent::QueueChanged {
+                action: "queue".to_string(),
+                uris: vec!["spotify:track:1".to_string()],
+            }
+        );
     }
 }

@@ -5,8 +5,8 @@ use crate::actions::{self, CommandKind};
 use crate::analytics::{now_ms, search_performed_event};
 use crate::daemon::state::DaemonState;
 use crate::protocol::{
-    CommandReceipt, PlaybackCommand, PlaylistCreateReceipt, Request, Response, ResponseData,
-    SearchScopeData, SearchSourceData,
+    CommandReceipt, DaemonEvent, PlaybackCommand, PlaylistCreateReceipt, Request, Response,
+    ResponseData, SearchScopeData, SearchSourceData,
 };
 use crate::selection;
 use crate::spotify::{MediaItem, MediaKind};
@@ -38,6 +38,11 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
             let action = playback_command_action(&command);
             let command = playback_command_kind(command);
             let result = actions::execute(&mut client, command).await?;
+            let message = result.message.clone().unwrap_or_else(|| action.to_string());
+            state.emit_event(DaemonEvent::PlaybackChanged {
+                action: action.to_string(),
+            });
+            emit_mutation_finished(&state, action, &message);
             Ok(ResponseData::Mutation {
                 receipt: receipt(action, result.message),
             })
@@ -55,6 +60,17 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
             let play = actions::status(&mut client).await?.is_playing;
             let result =
                 actions::execute(&mut client, CommandKind::Transfer { device, play }).await?;
+            let message = result
+                .message
+                .clone()
+                .unwrap_or_else(|| "transfer".to_string());
+            state.emit_event(DaemonEvent::DevicesChanged {
+                action: "transfer".to_string(),
+            });
+            state.emit_event(DaemonEvent::PlaybackChanged {
+                action: "transfer".to_string(),
+            });
+            emit_mutation_finished(&state, "transfer", &message);
             Ok(ResponseData::Mutation {
                 receipt: receipt("transfer", result.message),
             })
@@ -108,7 +124,17 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
         }
         Request::QueueAdd { uri } => {
             let mut client = state.spotify_client().await?;
-            let result = actions::execute(&mut client, CommandKind::QueueUri { uri }).await?;
+            let result =
+                actions::execute(&mut client, CommandKind::QueueUri { uri: uri.clone() }).await?;
+            let message = result
+                .message
+                .clone()
+                .unwrap_or_else(|| "queue".to_string());
+            state.emit_event(DaemonEvent::QueueChanged {
+                action: "queue".to_string(),
+                uris: vec![uri],
+            });
+            emit_mutation_finished(&state, "queue", &message);
             Ok(ResponseData::Mutation {
                 receipt: receipt("queue", result.message),
             })
@@ -131,8 +157,8 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
             let mut client = state.spotify_client().await?;
             let playlists = actions::playlists(&mut client).await?;
             let playlist = selection::resolve_playlist(&playlists, &playlist)?;
-            for uri in uris {
-                let item = media_item_from_uri(&uri)?;
+            for uri in &uris {
+                let item = media_item_from_uri(uri)?;
                 actions::execute(
                     &mut client,
                     CommandKind::AddToPlaylist {
@@ -143,11 +169,14 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
                 )
                 .await?;
             }
+            let message = format!("Added items to {}", playlist.name);
+            state.emit_event(DaemonEvent::PlaylistsChanged {
+                action: "playlist-add".to_string(),
+                playlist: Some(playlist.id.clone()),
+            });
+            emit_mutation_finished(&state, "playlist-add", &message);
             Ok(ResponseData::Mutation {
-                receipt: receipt(
-                    "playlist-add",
-                    Some(format!("Added items to {}", playlist.name)),
-                ),
+                receipt: receipt("playlist-add", Some(message)),
             })
         }
         Request::PlaylistCreate {
@@ -169,6 +198,15 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
                 .await?;
             client.add_items_to_playlist(&playlist.id, &uris).await?;
             cache_playlists(&state, std::slice::from_ref(&playlist)).await;
+            state.emit_event(DaemonEvent::PlaylistsChanged {
+                action: "playlist-create".to_string(),
+                playlist: Some(playlist.id.clone()),
+            });
+            emit_mutation_finished(
+                &state,
+                "playlist-create",
+                &format!("Created playlist `{name}` with {} item(s)", uris.len()),
+            );
             Ok(ResponseData::PlaylistCreate {
                 receipt: PlaylistCreateReceipt {
                     ok: true,
@@ -183,6 +221,7 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
         }
         Request::LibrarySave { uri, current } => {
             let mut client = state.spotify_client().await?;
+            let event_uris = uri.iter().cloned().collect::<Vec<_>>();
             let command = if current {
                 CommandKind::SaveCurrent
             } else {
@@ -192,6 +231,12 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
                 }
             };
             let result = actions::execute(&mut client, command).await?;
+            let message = result.message.clone().unwrap_or_else(|| "save".to_string());
+            state.emit_event(DaemonEvent::LibraryChanged {
+                action: "save".to_string(),
+                uris: event_uris,
+            });
+            emit_mutation_finished(&state, "save", &message);
             Ok(ResponseData::Mutation {
                 receipt: receipt("save", result.message),
             })
@@ -282,6 +327,10 @@ async fn spotify_search_and_cache(
         .store()
         .cache_search_results(&query, scope, SearchSourceData::Spotify, &items)
         .await?;
+    state.emit_event(DaemonEvent::SearchUpdated {
+        query: query.clone(),
+        count: items.len(),
+    });
     let entries = items
         .iter()
         .cloned()
@@ -393,6 +442,13 @@ fn receipt(action: &str, message: Option<String>) -> CommandReceipt {
         action: action.to_string(),
         message: message.unwrap_or_else(|| action.to_string()),
     }
+}
+
+fn emit_mutation_finished(state: &DaemonState, action: &str, message: &str) {
+    state.emit_event(DaemonEvent::MutationFinished {
+        action: action.to_string(),
+        message: message.to_string(),
+    });
 }
 
 fn media_item_from_uri(uri: &str) -> anyhow::Result<MediaItem> {

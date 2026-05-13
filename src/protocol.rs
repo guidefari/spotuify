@@ -296,10 +296,42 @@ pub struct CacheSyncSummary {
     pub media_items: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "event", rename_all = "kebab-case")]
 pub enum DaemonEvent {
     ShutdownRequested,
+    PlaybackChanged {
+        action: String,
+    },
+    QueueChanged {
+        action: String,
+        uris: Vec<String>,
+    },
+    DevicesChanged {
+        action: String,
+    },
+    PlaylistsChanged {
+        action: String,
+        playlist: Option<String>,
+    },
+    LibraryChanged {
+        action: String,
+        uris: Vec<String>,
+    },
+    SearchUpdated {
+        query: String,
+        count: usize,
+    },
+    SyncStarted {
+        target: SyncTargetData,
+    },
+    SyncFinished {
+        summary: CacheSyncSummary,
+    },
+    MutationFinished {
+        action: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

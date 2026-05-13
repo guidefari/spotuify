@@ -19,7 +19,8 @@ use tokio::time;
 use crate::actions::{CommandKind, CommandResult};
 use crate::daemon::ipc_client::IpcClient;
 use crate::protocol::{
-    CacheStatus, DoctorReport, PlaybackCommand, Request, Response, ResponseData, SearchScopeData,
+    CacheStatus, DaemonEvent, DoctorReport, PlaybackCommand, Request, Response, ResponseData,
+    SearchScopeData,
 };
 use crate::spotify::{Device, MediaItem, Playback, Playlist, Queue};
 use crate::tui_actions::{ActionContext, CommandPalette, TuiAction};
@@ -152,6 +153,7 @@ enum AsyncResult {
         result: std::result::Result<Vec<MediaItem>, String>,
     },
     Command(Box<std::result::Result<CommandResult, String>>),
+    DaemonEvent(DaemonEvent),
 }
 
 impl App {
@@ -556,6 +558,33 @@ impl App {
                 }
                 self.clamp_selection();
             }
+            AsyncResult::DaemonEvent(event) => self.apply_daemon_event(event),
+        }
+    }
+
+    fn apply_daemon_event(&mut self, event: DaemonEvent) {
+        match event {
+            DaemonEvent::ShutdownRequested => {
+                self.error = Some("Daemon is shutting down".to_string());
+            }
+            DaemonEvent::PlaybackChanged { action } => {
+                self.toast = Some(format!("Playback updated: {action}"));
+                self.request_refresh();
+            }
+            DaemonEvent::QueueChanged { uris, .. } => {
+                self.toast = Some(format!("Queue updated: {} item(s)", uris.len()));
+                self.request_refresh();
+            }
+            DaemonEvent::DevicesChanged { .. }
+            | DaemonEvent::PlaylistsChanged { .. }
+            | DaemonEvent::LibraryChanged { .. }
+            | DaemonEvent::SearchUpdated { .. }
+            | DaemonEvent::SyncFinished { .. }
+            | DaemonEvent::MutationFinished { .. } => self.request_refresh(),
+            DaemonEvent::SyncStarted { target } => {
+                self.is_syncing = true;
+                self.toast = Some(format!("Syncing {}...", target.label()));
+            }
         }
     }
 }
@@ -578,6 +607,7 @@ async fn run_loop(
     let mut progress = time::interval(Duration::from_millis(250));
     let mut sigint = std::pin::pin!(tokio::signal::ctrl_c());
     let (async_tx, mut async_rx) = mpsc::unbounded_channel();
+    spawn_daemon_event_listener(async_tx.clone());
     let mut refresh_in_flight = false;
 
     loop {
@@ -620,6 +650,36 @@ async fn run_loop(
         }
     }
     Ok(())
+}
+
+fn spawn_daemon_event_listener(async_tx: mpsc::UnboundedSender<AsyncResult>) {
+    tokio::spawn(async move {
+        loop {
+            let mut client = match IpcClient::connect().await {
+                Ok(client) => client,
+                Err(err) => {
+                    tracing::debug!(error = %err, "daemon event stream connect failed");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+
+            loop {
+                match client.next_event().await {
+                    Ok(event) => {
+                        if async_tx.send(AsyncResult::DaemonEvent(event)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(err) => {
+                        tracing::debug!(error = %err, "daemon event stream stopped");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        break;
+                    }
+                }
+            }
+        }
+    });
 }
 
 fn spawn_refresh(
@@ -1812,5 +1872,18 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(labels.contains(&"Transfer Device"));
         assert!(!labels.contains(&"Queue Selected"));
+    }
+
+    #[test]
+    fn daemon_queue_event_triggers_tui_refresh_without_poll_tick() {
+        let mut app = test_app();
+
+        app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::QueueChanged {
+            action: "queue".to_string(),
+            uris: vec!["spotify:track:first".to_string()],
+        }));
+
+        assert!(app.refresh_requested);
+        assert_eq!(app.toast.as_deref(), Some("Queue updated: 1 item(s)"));
     }
 }
