@@ -1,0 +1,279 @@
+//! MCP tool catalogue.
+//!
+//! Each daemon Request that's safe to expose to an LLM appears here as
+//! a [`Tool`]. The catalogue is the source of truth for the manifest
+//! served to MCP clients via `tools/list`.
+//!
+//! Tools are classified by [`ToolKind`]:
+//! - `Read`: query-only, never mutates Spotify state. Always allowed.
+//! - `Transport`: playback control (play/pause/seek/etc). User-visible
+//!   but trivially reversible. Allowed without confirmation.
+//! - `Destructive`: mutates persistent state (playlist add/remove,
+//!   library save/unsave, playlist create, device transfer). Requires
+//!   explicit `confirm: true` in the args.
+//! - `Mercury`: Phase 9 librespot mercury bus (lyrics, radio,
+//!   related-artists). Gated until embedded backend lands; surfaces a
+//!   clear error on spotifyd/connect backends.
+//! - `Analytics`: Phase 10 derivations (top, habits, rediscovery).
+//! - `Ops`: Phase 12 operation log + undo.
+
+use serde::{Deserialize, Serialize};
+
+/// One MCP tool entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tool {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub kind: ToolKind,
+    pub destructive: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolKind {
+    Read,
+    Transport,
+    Destructive,
+    Mercury,
+    Analytics,
+    Ops,
+}
+
+/// The full catalogue of tools spotuify-mcp exposes.
+///
+/// This is a static const so the manifest is identical across runs --
+/// the manifest golden test (`mcp_manifest_matches_snapshot`) locks it
+/// down so adding/removing/renaming a tool is always a code-review event.
+pub const TOOLS: &[Tool] = &[
+    // Read-only
+    Tool {
+        name: "search",
+        description: "Search Spotify (tracks/albums/artists/playlists/episodes). Hybrid local+remote by default.",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    Tool {
+        name: "now_playing",
+        description: "Return the current playback state (track, device, progress, lyrics if available).",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    Tool {
+        name: "devices_list",
+        description: "List currently visible Spotify Connect devices.",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    Tool {
+        name: "queue_show",
+        description: "Return the current playback queue.",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    Tool {
+        name: "playlists_list",
+        description: "List the user's playlists.",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    Tool {
+        name: "playlist_tracks",
+        description: "List the tracks in a specific playlist.",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    Tool {
+        name: "library_list",
+        description: "List saved (liked) tracks from the user's library.",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    // Transport -- reversible, no confirm needed
+    Tool {
+        name: "play",
+        description: "Start playback from a query (best match).",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
+        name: "play_uri",
+        description: "Start playback of an exact Spotify URI.",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
+        name: "pause",
+        description: "Pause playback.",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
+        name: "resume",
+        description: "Resume playback.",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
+        name: "next",
+        description: "Skip to the next track.",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
+        name: "previous",
+        description: "Skip to the previous track.",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
+        name: "seek",
+        description: "Seek to a position in the current track (milliseconds, or +/- delta).",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
+        name: "volume",
+        description: "Set the volume percent (0-100).",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
+        name: "shuffle",
+        description: "Toggle shuffle on/off.",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    Tool {
+        name: "repeat",
+        description: "Set repeat mode (off/track/context).",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
+    // Destructive -- require confirm: true
+    Tool {
+        name: "queue_add",
+        description: "Queue a URI for the current playback. Reversible via `undo_last`.",
+        kind: ToolKind::Destructive,
+        destructive: true,
+    },
+    Tool {
+        name: "transfer_device",
+        description: "Transfer active playback to another Spotify Connect device.",
+        kind: ToolKind::Destructive,
+        destructive: true,
+    },
+    Tool {
+        name: "playlist_create",
+        description: "Create a new playlist. Without confirm:true returns a preview.",
+        kind: ToolKind::Destructive,
+        destructive: true,
+    },
+    Tool {
+        name: "playlist_add",
+        description: "Add tracks to an existing playlist. Without confirm:true returns a preview.",
+        kind: ToolKind::Destructive,
+        destructive: true,
+    },
+    Tool {
+        name: "playlist_remove",
+        description: "Remove tracks from an existing playlist. Without confirm:true returns a preview.",
+        kind: ToolKind::Destructive,
+        destructive: true,
+    },
+    Tool {
+        name: "library_save",
+        description: "Save a track/album to the user's library.",
+        kind: ToolKind::Destructive,
+        destructive: true,
+    },
+    Tool {
+        name: "library_unsave",
+        description: "Remove a track/album from the user's library.",
+        kind: ToolKind::Destructive,
+        destructive: true,
+    },
+    // Mercury (Phase 9 gated) -- error on non-embedded backend
+    Tool {
+        name: "lyrics",
+        description: "Get synced lyrics for the current or specified track (requires embedded librespot backend).",
+        kind: ToolKind::Mercury,
+        destructive: false,
+    },
+    Tool {
+        name: "radio_start",
+        description: "Start a radio station from the current track (replacement for the deprecated /recommendations endpoint).",
+        kind: ToolKind::Mercury,
+        destructive: false,
+    },
+    Tool {
+        name: "related_artists",
+        description: "Get artists related to the specified artist (replacement for the deprecated /related-artists endpoint).",
+        kind: ToolKind::Mercury,
+        destructive: false,
+    },
+    // Analytics (Phase 10)
+    Tool {
+        name: "analytics_top",
+        description: "Top tracks/artists/albums by listening time (local data, no API call).",
+        kind: ToolKind::Analytics,
+        destructive: false,
+    },
+    Tool {
+        name: "analytics_habits",
+        description: "Listening habits by day/week/month (local data).",
+        kind: ToolKind::Analytics,
+        destructive: false,
+    },
+    // Ops (Phase 12) -- undo bypasses confirm because it IS the safety net
+    Tool {
+        name: "ops_log",
+        description: "Show the recent operation log (mutations with reversal plans).",
+        kind: ToolKind::Ops,
+        destructive: false,
+    },
+    Tool {
+        name: "undo_last",
+        description: "Reverse the most recent destructive operation. No confirm required -- this is the safety net.",
+        kind: ToolKind::Ops,
+        destructive: false,
+    },
+];
+
+/// Read-only view of the catalogue.
+pub struct ToolCatalogue;
+
+impl ToolCatalogue {
+    pub fn all() -> &'static [Tool] {
+        TOOLS
+    }
+
+    pub fn by_name(name: &str) -> Option<&'static Tool> {
+        TOOLS.iter().find(|t| t.name == name)
+    }
+
+    pub fn destructive() -> impl Iterator<Item = &'static Tool> {
+        TOOLS.iter().filter(|t| t.destructive)
+    }
+
+    pub fn by_kind(kind: ToolKind) -> impl Iterator<Item = &'static Tool> {
+        TOOLS.iter().filter(move |t| t.kind == kind)
+    }
+}
+
+/// Snapshot manifest for MCP's `tools/list` reply and for the golden test.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolManifest {
+    pub spec_version: &'static str,
+    pub server_name: &'static str,
+    pub tools: Vec<Tool>,
+}
+
+impl ToolManifest {
+    pub fn build() -> Self {
+        Self {
+            spec_version: "2024-11-05",
+            server_name: "spotuify-mcp",
+            tools: TOOLS.to_vec(),
+        }
+    }
+}

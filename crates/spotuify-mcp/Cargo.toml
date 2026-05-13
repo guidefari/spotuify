@@ -3,11 +3,20 @@ name = "spotuify-mcp"
 version.workspace = true
 edition.workspace = true
 publish = false
-description = "Phase 8 MCP server bridging daemon Request set to the Model Context Protocol over stdio / HTTP."
+description = "Phase 8 MCP server bridging the spotuify daemon's Request set to the Model Context Protocol over stdio / HTTP. The core (tool catalogue, schema, confirmation gating, bridge to Request) lives here; the rmcp wire integration is a thin shim on top."
 
 [dependencies]
 spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
 
 [lints]
 workspace = true

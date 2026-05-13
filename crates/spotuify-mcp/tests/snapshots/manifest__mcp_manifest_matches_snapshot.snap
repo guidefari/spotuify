@@ -1,0 +1,131 @@
+---
+source: crates/spotuify-mcp/tests/manifest.rs
+expression: manifest
+---
+spec_version: 2024-11-05
+server_name: spotuify-mcp
+tools:
+  - name: search
+    description: Search Spotify (tracks/albums/artists/playlists/episodes). Hybrid local+remote by default.
+    kind: read
+    destructive: false
+  - name: now_playing
+    description: "Return the current playback state (track, device, progress, lyrics if available)."
+    kind: read
+    destructive: false
+  - name: devices_list
+    description: List currently visible Spotify Connect devices.
+    kind: read
+    destructive: false
+  - name: queue_show
+    description: Return the current playback queue.
+    kind: read
+    destructive: false
+  - name: playlists_list
+    description: "List the user's playlists."
+    kind: read
+    destructive: false
+  - name: playlist_tracks
+    description: List the tracks in a specific playlist.
+    kind: read
+    destructive: false
+  - name: library_list
+    description: "List saved (liked) tracks from the user's library."
+    kind: read
+    destructive: false
+  - name: play
+    description: Start playback from a query (best match).
+    kind: transport
+    destructive: false
+  - name: play_uri
+    description: Start playback of an exact Spotify URI.
+    kind: transport
+    destructive: false
+  - name: pause
+    description: Pause playback.
+    kind: transport
+    destructive: false
+  - name: resume
+    description: Resume playback.
+    kind: transport
+    destructive: false
+  - name: next
+    description: Skip to the next track.
+    kind: transport
+    destructive: false
+  - name: previous
+    description: Skip to the previous track.
+    kind: transport
+    destructive: false
+  - name: seek
+    description: "Seek to a position in the current track (milliseconds, or +/- delta)."
+    kind: transport
+    destructive: false
+  - name: volume
+    description: Set the volume percent (0-100).
+    kind: transport
+    destructive: false
+  - name: shuffle
+    description: Toggle shuffle on/off.
+    kind: transport
+    destructive: false
+  - name: repeat
+    description: Set repeat mode (off/track/context).
+    kind: transport
+    destructive: false
+  - name: queue_add
+    description: "Queue a URI for the current playback. Reversible via `undo_last`."
+    kind: destructive
+    destructive: true
+  - name: transfer_device
+    description: Transfer active playback to another Spotify Connect device.
+    kind: destructive
+    destructive: true
+  - name: playlist_create
+    description: "Create a new playlist. Without confirm:true returns a preview."
+    kind: destructive
+    destructive: true
+  - name: playlist_add
+    description: "Add tracks to an existing playlist. Without confirm:true returns a preview."
+    kind: destructive
+    destructive: true
+  - name: playlist_remove
+    description: "Remove tracks from an existing playlist. Without confirm:true returns a preview."
+    kind: destructive
+    destructive: true
+  - name: library_save
+    description: "Save a track/album to the user's library."
+    kind: destructive
+    destructive: true
+  - name: library_unsave
+    description: "Remove a track/album from the user's library."
+    kind: destructive
+    destructive: true
+  - name: lyrics
+    description: Get synced lyrics for the current or specified track (requires embedded librespot backend).
+    kind: mercury
+    destructive: false
+  - name: radio_start
+    description: Start a radio station from the current track (replacement for the deprecated /recommendations endpoint).
+    kind: mercury
+    destructive: false
+  - name: related_artists
+    description: Get artists related to the specified artist (replacement for the deprecated /related-artists endpoint).
+    kind: mercury
+    destructive: false
+  - name: analytics_top
+    description: "Top tracks/artists/albums by listening time (local data, no API call)."
+    kind: analytics
+    destructive: false
+  - name: analytics_habits
+    description: Listening habits by day/week/month (local data).
+    kind: analytics
+    destructive: false
+  - name: ops_log
+    description: Show the recent operation log (mutations with reversal plans).
+    kind: ops
+    destructive: false
+  - name: undo_last
+    description: Reverse the most recent destructive operation. No confirm required -- this is the safety net.
+    kind: ops
+    destructive: false
