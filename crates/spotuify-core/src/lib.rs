@@ -11,7 +11,8 @@
 pub mod analytics;
 
 pub use analytics::{
-    AnalyticsEvent, AnalyticsEventKind, AnalyticsSink, AnalyticsSource,
+    now_ms, redact_spotify_path, spotify_api_finished_event, AnalyticsEvent, AnalyticsEventKind,
+    AnalyticsSink, AnalyticsSource,
 };
 
 use serde::{Deserialize, Serialize};

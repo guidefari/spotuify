@@ -10,10 +10,13 @@
 //! `docs/implementation/10-phase-7-workspace-split.md`.
 
 pub mod auth;
+pub mod client;
 pub mod compat;
 pub mod config;
 pub mod error;
 pub mod rate_limit;
 pub mod refresh_planner;
+
+pub use client::SpotifyClient;
 
 pub use error::{AuthErrorKind, SpotifyError};

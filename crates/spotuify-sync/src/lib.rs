@@ -15,27 +15,26 @@
 //! playlist sync) and ncspot `library.rs:499-514` (saved-tracks
 //! page-0 unchanged shortcut).
 
+pub mod sync_loop;
+
+pub use sync_loop::{spawn_background_scheduler, sync_target};
+
 use spotuify_protocol::DaemonEvent;
+use spotuify_spotify::SpotifyClient;
 use spotuify_store::Store;
 use tokio::sync::watch;
 
 /// Context the sync engine needs from its host process. The binary's
 /// `DaemonState` impls this; tests can supply a fake implementation.
-///
-/// Methods are intentionally minimal -- only what the existing sync
-/// loop calls today. Anything new sync needs should be added here
-/// first.
 #[async_trait::async_trait]
 pub trait SyncContext: Send + Sync {
-    /// Tokio watch receiver that fires `true` on daemon shutdown.
     fn shutdown_receiver(&self) -> watch::Receiver<bool>;
-    /// Persistent cache. Sync reads snapshot_ids and writes
-    /// freshness-tagged rows.
     fn store(&self) -> &Store;
-    /// Broadcast a daemon event. Sync emits SyncStarted/SyncFinished
-    /// (and via the upstream cycle: RateLimited, AuthError,
-    /// SchemaCompat).
     fn emit_event(&self, event: DaemonEvent);
+    /// A live Spotify client. `&self` so impls can manage their own
+    /// caching / token-refresh / fake-mode injection without sync
+    /// having to know.
+    async fn spotify_client(&self) -> anyhow::Result<SpotifyClient>;
 }
 
 /// Decide whether to refetch a playlist's full track listing.

@@ -3696,11 +3696,14 @@ dependencies = [
 name = "spotuify-sync"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "spotuify-core",
  "spotuify-protocol",
+ "spotuify-spotify",
  "spotuify-store",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

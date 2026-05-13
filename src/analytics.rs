@@ -10,12 +10,13 @@ use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqlitePool};
 
-// Phase 6/Phase 7 architectural cut: the analytics TYPES move to
-// spotuify-core where `SpotifyClient` (and future producers) can
-// reference them without dragging in this crate's sqlx-backed store.
-// Re-exported here so existing binary call sites keep compiling.
+// Phase 6/Phase 7 architectural cut: analytics types + pure event
+// builders live in spotuify-core. Re-exported here so existing
+// binary call sites (`crate::analytics::now_ms`, etc.) keep
+// compiling during the file-motion phase.
 pub use spotuify_core::{
-    AnalyticsEvent, AnalyticsEventKind, AnalyticsSink, AnalyticsSource,
+    now_ms, redact_spotify_path, spotify_api_finished_event, AnalyticsEvent, AnalyticsEventKind,
+    AnalyticsSink, AnalyticsSource,
 };
 
 #[async_trait::async_trait]
@@ -241,12 +242,9 @@ pub fn analytics_db_path() -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("could not resolve analytics data directory"))
 }
 
-pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
+// now_ms moved to spotuify_core::analytics; re-exported from this
+// module so existing `crate::analytics::now_ms` call sites keep
+// compiling during the file-motion phase.
 
 pub fn search_performed_event(
     source: AnalyticsSource,
@@ -271,31 +269,8 @@ pub fn search_performed_event(
     }
 }
 
-pub fn spotify_api_finished_event(
-    source: AnalyticsSource,
-    method: &str,
-    path: &str,
-    status: Option<u16>,
-    elapsed_ms: u128,
-    error_class: Option<&str>,
-    occurred_at_ms: i64,
-) -> AnalyticsEvent {
-    AnalyticsEvent {
-        kind: AnalyticsEventKind::SpotifyApiFinished,
-        occurred_at_ms,
-        source,
-        subject_uri: None,
-        search_query: None,
-        search_query_hash: None,
-        payload: serde_json::json!({
-            "method": method,
-            "path": redact_spotify_path(path),
-            "status": status,
-            "elapsed_ms": elapsed_ms,
-            "error_class": error_class,
-        }),
-    }
-}
+// spotify_api_finished_event moved to spotuify_core::analytics.
+// See src/spotify.rs for the call site.
 
 pub fn action_finished_event(
     source: AnalyticsSource,
@@ -322,22 +297,7 @@ pub fn action_finished_event(
     }
 }
 
-pub fn redact_spotify_path(path: &str) -> String {
-    let Some((base, query)) = path.split_once('?') else {
-        return path.to_string();
-    };
-    let query = query
-        .split('&')
-        .map(|part| match part.split_once('=') {
-            Some((key, _)) if matches!(key, "q" | "uri" | "ids" | "market") => {
-                format!("{key}=<redacted>")
-            }
-            _ => part.to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join("&");
-    format!("{base}?{query}")
-}
+// redact_spotify_path moved to spotuify_core::analytics.
 
 fn normalize_search_query(query: &str) -> String {
     query

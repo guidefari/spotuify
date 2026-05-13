@@ -174,4 +174,7 @@ impl spotuify_sync::SyncContext for DaemonState {
     fn emit_event(&self, event: spotuify_protocol::DaemonEvent) {
         DaemonState::emit_event(self, event);
     }
+    async fn spotify_client(&self) -> anyhow::Result<SpotifyClient> {
+        DaemonState::spotify_client(self).await
+    }
 }

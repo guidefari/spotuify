@@ -9,9 +9,12 @@ description = "Background sync engine for spotuify. Currently empty scaffold; th
 spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
 spotuify-store = { workspace = true }
+spotuify-spotify = { workspace = true }
 
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 
 [lints]
 workspace = true

@@ -109,7 +109,7 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
                 .collect(),
         }),
         Request::Sync { target } => Ok(ResponseData::Sync {
-            summary: crate::sync::sync_target(state.clone(), target).await?,
+            summary: crate::sync::sync_target(state.as_ref(), target).await?,
         }),
         Request::RecentlyPlayed => {
             let mut client = state.spotify_client().await?;
