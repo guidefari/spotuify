@@ -23,7 +23,8 @@ const POOL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
 /// - v1: initial schema (Phase 3)
 /// - v2: snapshot_id, snapshot_id_at_fetch, freshness_class,
 ///   sync_generation (Phase 6.4)
-pub const CACHE_VERSION: u32 = 2;
+/// - v3: receipts table for two-stage mutation lifecycle (Phase 6.6)
+pub const CACHE_VERSION: u32 = 3;
 
 #[derive(Clone)]
 pub struct Store {
@@ -587,6 +588,18 @@ impl Store {
             .await?;
         }
 
+        if !self.is_migration_applied(3).await? {
+            sqlx::raw_sql(MIGRATION_003_RECEIPTS)
+                .execute(&self.writer)
+                .await?;
+            sqlx::query(
+                "INSERT INTO schema_migrations (version, name, applied_at_ms) VALUES (3, 'receipts', ?)",
+            )
+            .bind(now_ms())
+            .execute(&self.writer)
+            .await?;
+        }
+
         self.validate_schema().await?;
         Ok(())
     }
@@ -618,6 +631,118 @@ impl Store {
                 .fetch_optional(&self.reader)
                 .await?;
         Ok(row.and_then(|(v,)| v).unwrap_or(0))
+    }
+
+    // --- Phase 6.6 receipts lifecycle ---
+
+    /// Persist a pending receipt at mutation-issue time. Called before the
+    /// daemon makes the Spotify Web API call so the receipt survives a
+    /// crash mid-mutation. The original request JSON is captured for
+    /// Phase 12 ops_log and for human-readable rollback diffs.
+    pub async fn insert_pending_receipt(
+        &self,
+        receipt: &spotuify_protocol::Receipt,
+        request_json: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO receipts \
+             (receipt_id, action, status, request_json, started_at_ms, finished_at_ms, error_json) \
+             VALUES (?, ?, ?, ?, ?, NULL, NULL)",
+        )
+        .bind(receipt.receipt_id.0.to_string())
+        .bind(&receipt.action)
+        .bind("pending")
+        .bind(request_json)
+        .bind(receipt.started_at_ms)
+        .execute(&self.writer)
+        .await?;
+        Ok(())
+    }
+
+    /// Transition a pending receipt to confirmed or failed. First-write
+    /// wins: subsequent finalizes on the same receipt are silent no-ops
+    /// so daemon restarts can't double-fire MutationFinalized events.
+    pub async fn finalize_receipt(
+        &self,
+        receipt_id: spotuify_protocol::ReceiptId,
+        status: spotuify_protocol::ReceiptStatus,
+        message: &str,
+        finished_at_ms: i64,
+        error: Option<&spotuify_protocol::ApiErrorSummary>,
+    ) -> Result<()> {
+        let status_str = match status {
+            spotuify_protocol::ReceiptStatus::Pending => "pending",
+            spotuify_protocol::ReceiptStatus::Confirmed => "confirmed",
+            spotuify_protocol::ReceiptStatus::Failed => "failed",
+        };
+        let error_json = match error {
+            Some(e) => Some(
+                serde_json::to_string(e)
+                    .map_err(|err| anyhow::anyhow!("error serialize: {err}"))?,
+            ),
+            None => None,
+        };
+        sqlx::query(
+            "UPDATE receipts SET status = ?, message = ?, finished_at_ms = ?, error_json = ? \
+             WHERE receipt_id = ? AND status = 'pending'",
+        )
+        .bind(status_str)
+        .bind(message)
+        .bind(finished_at_ms)
+        .bind(error_json.as_deref())
+        .bind(receipt_id.0.to_string())
+        .execute(&self.writer)
+        .await?;
+        // Always Ok: zero rows updated means already-finalised, which is
+        // the idempotent path.
+        Ok(())
+    }
+
+    /// Fetch a receipt by id. Errors when missing rather than returning
+    /// a default so the daemon can't accidentally treat "not found" as
+    /// "already confirmed".
+    pub async fn get_receipt(
+        &self,
+        receipt_id: spotuify_protocol::ReceiptId,
+    ) -> Result<spotuify_protocol::Receipt> {
+        let row = sqlx::query(
+            "SELECT receipt_id, action, status, message, started_at_ms, finished_at_ms, error_json \
+             FROM receipts WHERE receipt_id = ?",
+        )
+        .bind(receipt_id.0.to_string())
+        .fetch_optional(&self.reader)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("receipt {receipt_id} not found"))?;
+        row_to_receipt(&row)
+    }
+
+    /// Receipts left in the pending state. Called on daemon startup to
+    /// reconcile mutations that were in flight when the previous run
+    /// died. The daemon decides per-receipt whether to retry, give up
+    /// after a TTL, or surface to the user.
+    pub async fn list_pending_receipts(&self) -> Result<Vec<spotuify_protocol::Receipt>> {
+        let rows = sqlx::query(
+            "SELECT receipt_id, action, status, message, started_at_ms, finished_at_ms, error_json \
+             FROM receipts WHERE status = 'pending' ORDER BY started_at_ms ASC",
+        )
+        .fetch_all(&self.reader)
+        .await?;
+        rows.iter().map(row_to_receipt).collect()
+    }
+
+    /// The original request JSON captured at insert_pending_receipt time.
+    /// Used by Phase 12 ops_log + ops_show.
+    pub async fn receipt_request_json(
+        &self,
+        receipt_id: spotuify_protocol::ReceiptId,
+    ) -> Result<String> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT request_json FROM receipts WHERE receipt_id = ?")
+                .bind(receipt_id.0.to_string())
+                .fetch_optional(&self.reader)
+                .await?;
+        row.map(|(s,)| s)
+            .ok_or_else(|| anyhow::anyhow!("receipt {receipt_id} not found"))
     }
 
     /// Refuse to start when the database has been touched by a future
@@ -925,6 +1050,60 @@ ALTER TABLE recent_items       ADD COLUMN sync_generation INTEGER NOT NULL DEFAU
 ALTER TABLE library_items      ADD COLUMN freshness_class TEXT NOT NULL DEFAULT 'unknown';
 ALTER TABLE library_items      ADD COLUMN sync_generation INTEGER NOT NULL DEFAULT 0;
 "#;
+
+/// Phase 6.6: receipts table for the two-stage mutation lifecycle.
+///
+/// `receipt_id` is the textual form of a UUID v7 (lexicographic ordering
+/// matches chronological order). `request_json` keeps the originating
+/// Request so Phase 12 ops_log can render diffs and the daemon can
+/// retry on startup if a finalize race lost the response.
+///
+/// `error_json` holds a serialised `ApiErrorSummary` when status='failed'.
+const MIGRATION_003_RECEIPTS: &str = r#"
+CREATE TABLE IF NOT EXISTS receipts (
+    receipt_id     TEXT PRIMARY KEY,
+    action         TEXT NOT NULL,
+    status         TEXT NOT NULL,
+    request_json   TEXT NOT NULL,
+    message        TEXT NOT NULL DEFAULT '',
+    started_at_ms  INTEGER NOT NULL,
+    finished_at_ms INTEGER,
+    error_json     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_receipts_status_started ON receipts(status, started_at_ms);
+"#;
+
+/// Translate a `receipts` row into the protocol's [`Receipt`] type.
+fn row_to_receipt(row: &sqlx::sqlite::SqliteRow) -> Result<spotuify_protocol::Receipt> {
+    use sqlx::Row;
+    let id_str: String = row.try_get("receipt_id")?;
+    let id = uuid::Uuid::parse_str(&id_str)
+        .map_err(|err| anyhow::anyhow!("malformed receipt id `{id_str}`: {err}"))?;
+    let status_str: String = row.try_get("status")?;
+    let status = match status_str.as_str() {
+        "pending" => spotuify_protocol::ReceiptStatus::Pending,
+        "confirmed" => spotuify_protocol::ReceiptStatus::Confirmed,
+        "failed" => spotuify_protocol::ReceiptStatus::Failed,
+        other => anyhow::bail!("unknown receipt status `{other}`"),
+    };
+    let error_json: Option<String> = row.try_get("error_json")?;
+    let error = match error_json {
+        Some(raw) if !raw.is_empty() => Some(
+            serde_json::from_str::<spotuify_protocol::ApiErrorSummary>(&raw)
+                .map_err(|err| anyhow::anyhow!("malformed error_json: {err}"))?,
+        ),
+        _ => None,
+    };
+    Ok(spotuify_protocol::Receipt {
+        receipt_id: spotuify_protocol::ReceiptId(id),
+        action: row.try_get("action")?,
+        status,
+        message: row.try_get("message").unwrap_or_default(),
+        started_at_ms: row.try_get("started_at_ms")?,
+        finished_at_ms: row.try_get("finished_at_ms")?,
+        error,
+    })
+}
 
 const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
     (

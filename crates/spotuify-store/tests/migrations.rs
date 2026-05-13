@@ -34,8 +34,9 @@ async fn column_default(store: &Store, table: &str, column: &str) -> Option<Stri
 }
 
 #[tokio::test]
-async fn test_cache_version_constant_is_two() {
-    assert_eq!(CACHE_VERSION, 2);
+async fn test_cache_version_constant_is_three() {
+    // Bumped from 2 -> 3 when migration 003_receipts landed (Phase 6.6).
+    assert_eq!(CACHE_VERSION, 3);
 }
 
 #[tokio::test]

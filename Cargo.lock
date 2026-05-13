@@ -3659,10 +3659,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs",
+ "serde_json",
  "spotuify-core",
  "spotuify-protocol",
  "sqlx",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
