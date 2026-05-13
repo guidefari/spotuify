@@ -68,6 +68,7 @@ fn allowed_deps(crate_name: &str) -> Option<BTreeSet<&'static str>> {
         "spotuify-player" => &["spotuify-core", "spotuify-spotify"],
         "spotuify-sync" => &[
             "spotuify-core",
+            "spotuify-protocol",
             "spotuify-store",
             "spotuify-search",
             "spotuify-spotify",

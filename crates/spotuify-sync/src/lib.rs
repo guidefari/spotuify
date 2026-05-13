@@ -1,16 +1,42 @@
-//! Phase 6.5 — sync refetch gate helpers.
+//! Phase 6.5 sync refetch gate helpers + Phase 7 SyncContext trait
+//! scaffolding.
 //!
-//! Pure functions exported for the daemon's background sync loop to
-//! decide whether to skip expensive paginated refetches when nothing
-//! has changed since the last successful sync.
+//! Pure functions for the daemon's background sync loop to decide
+//! whether to skip expensive paginated refetches when nothing has
+//! changed since the last successful sync.
+//!
+//! The [`SyncContext`] trait abstracts over the binary's `DaemonState`
+//! so a future extraction of `src/sync.rs` into this crate depends on
+//! the trait rather than on the binary type. Once that move happens
+//! the binary just `impl SyncContext for DaemonState` and the sync
+//! loop swaps `&Arc<DaemonState>` for `&impl SyncContext`.
 //!
 //! Patterns from ncspot `library.rs:140-148` (snapshot_id-aware
 //! playlist sync) and ncspot `library.rs:499-514` (saved-tracks
 //! page-0 unchanged shortcut).
-//!
-//! The wiring (calling these from `src/sync.rs` in the binary) is a
-//! follow-up. Landing the helpers + tests now means the contract is
-//! locked and the binary wire-up is mechanical.
+
+use spotuify_protocol::DaemonEvent;
+use spotuify_store::Store;
+use tokio::sync::watch;
+
+/// Context the sync engine needs from its host process. The binary's
+/// `DaemonState` impls this; tests can supply a fake implementation.
+///
+/// Methods are intentionally minimal -- only what the existing sync
+/// loop calls today. Anything new sync needs should be added here
+/// first.
+#[async_trait::async_trait]
+pub trait SyncContext: Send + Sync {
+    /// Tokio watch receiver that fires `true` on daemon shutdown.
+    fn shutdown_receiver(&self) -> watch::Receiver<bool>;
+    /// Persistent cache. Sync reads snapshot_ids and writes
+    /// freshness-tagged rows.
+    fn store(&self) -> &Store;
+    /// Broadcast a daemon event. Sync emits SyncStarted/SyncFinished
+    /// (and via the upstream cycle: RateLimited, AuthError,
+    /// SchemaCompat).
+    fn emit_event(&self, event: DaemonEvent);
+}
 
 /// Decide whether to refetch a playlist's full track listing.
 ///

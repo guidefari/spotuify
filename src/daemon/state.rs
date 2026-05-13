@@ -157,3 +157,21 @@ impl DaemonState {
         }
     }
 }
+
+// Phase 7 architectural cut: DaemonState satisfies the SyncContext
+// trait so the sync engine could move into spotuify-sync without
+// holding a reference to this concrete type. Today src/sync.rs still
+// uses Arc<DaemonState> directly; this impl is the seam that makes
+// the move mechanical when scheduled.
+#[async_trait::async_trait]
+impl spotuify_sync::SyncContext for DaemonState {
+    fn shutdown_receiver(&self) -> watch::Receiver<bool> {
+        self.shutdown_tx.subscribe()
+    }
+    fn store(&self) -> &crate::store::Store {
+        &self.store
+    }
+    fn emit_event(&self, event: spotuify_protocol::DaemonEvent) {
+        DaemonState::emit_event(self, event);
+    }
+}
