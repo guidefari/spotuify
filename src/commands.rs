@@ -1,5 +1,5 @@
-use std::io::Read;
-use std::path::Path;
+use std::io::{IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -10,7 +10,7 @@ use crate::protocol::{
     SyncTargetData,
 };
 use crate::selection;
-use crate::spotify::Playback;
+use crate::spotify::{Playback, Playlist};
 
 pub async fn ipc_status(format: OutputFormat) -> Result<()> {
     match daemon_request(Request::PlaybackGet).await? {
@@ -64,10 +64,11 @@ pub async fn ipc_search(
 pub async fn ipc_queue(command: Option<crate::QueueCommand>, format: OutputFormat) -> Result<()> {
     match command {
         Some(crate::QueueCommand::Add {
-            uri,
+            uris,
+            ids,
             search,
             format,
-        }) => ipc_queue_add(uri, search, format).await,
+        }) => ipc_queue_add(uris, ids, search, format).await,
         None => match daemon_request(Request::QueueGet).await? {
             ResponseData::Queue { queue } => output::print_queue(&queue, format),
             _ => unexpected_response(),
@@ -198,16 +199,12 @@ pub async fn ipc_playlist(command: crate::PlaylistCommand) -> Result<()> {
         }
         crate::PlaylistCommand::Add {
             playlist,
-            uri,
+            uris,
+            ids,
+            dry_run,
+            yes,
             format,
-        } => print_mutation(
-            daemon_request(Request::PlaylistAddItems {
-                playlist,
-                uris: vec![uri],
-            })
-            .await?,
-            format,
-        ),
+        } => ipc_playlist_add(&playlist, uris, ids, dry_run, yes, format).await,
         crate::PlaylistCommand::AddCurrent { playlist, format } => {
             let item = match daemon_request(Request::PlaybackGet).await? {
                 ResponseData::Playback { playback } => {
@@ -296,15 +293,16 @@ fn print_mutation(data: ResponseData, format: OutputFormat) -> Result<()> {
 }
 
 async fn ipc_queue_add(
-    uri: Option<String>,
+    uris: Vec<String>,
+    ids: Option<PathBuf>,
     search: Option<String>,
     format: OutputFormat,
 ) -> Result<()> {
-    match (uri, search) {
-        (Some(uri), None) => {
-            print_mutation(daemon_request(Request::QueueAdd { uri }).await?, format)
-        }
-        (None, Some(query)) => {
+    match search {
+        Some(query) => {
+            if !uris.is_empty() || ids.is_some() {
+                anyhow::bail!("provide URI(s), --ids, or --search, not more than one");
+            }
             let items = match daemon_request(Request::Search {
                 query: query.clone(),
                 scope: SearchScopeData::Track,
@@ -323,9 +321,158 @@ async fn ipc_queue_add(
             .await?;
             output::print_item_receipt("queue", &item, format)
         }
-        (Some(_), Some(_)) => anyhow::bail!("provide URI or --search, not both"),
-        (None, None) => anyhow::bail!("provide a URI or --search QUERY"),
+        None => {
+            let selection = selection::resolve_uri_selection(
+                uris,
+                ids.as_deref(),
+                "provide a URI or --search QUERY",
+            )?;
+            let mut errors = Vec::new();
+            let mut succeeded = 0;
+            for uri in &selection.uris {
+                match daemon_request(Request::QueueAdd { uri: uri.clone() }).await {
+                    Ok(ResponseData::Mutation { .. }) => succeeded += 1,
+                    Ok(_) => errors.push(output::MutationOutputError {
+                        uri: uri.clone(),
+                        error: "unexpected response from daemon".to_string(),
+                    }),
+                    Err(err) => errors.push(output::MutationOutputError {
+                        uri: uri.clone(),
+                        error: err.to_string(),
+                    }),
+                }
+            }
+            let failed = errors.len();
+            let receipt = output::MutationOutput {
+                ok: failed == 0,
+                action: "queue".to_string(),
+                dry_run: Some(false),
+                playlist: None,
+                playlist_name: None,
+                requested: selection.uris.len(),
+                succeeded,
+                failed,
+                uris: selection.uris,
+                errors,
+                message: format!("Queued {succeeded} item(s)"),
+            };
+            output::print_mutation_output(&receipt, format)?;
+            if receipt.failed > 0 {
+                anyhow::bail!(
+                    "partial mutation failure: queued {}, failed {}",
+                    receipt.succeeded,
+                    receipt.failed
+                );
+            }
+            Ok(())
+        }
     }
+}
+
+async fn ipc_playlist_add(
+    playlist: &str,
+    uris: Vec<String>,
+    ids: Option<PathBuf>,
+    dry_run: bool,
+    yes: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    let selection = selection::resolve_uri_selection(
+        uris,
+        ids.as_deref(),
+        "provide playlist URI(s), --ids FILE, or pipe IDs on stdin",
+    )?;
+    selection::ensure_track_or_episode_uris(&selection.uris)?;
+    let playlist = daemon_playlist(playlist).await?;
+
+    if dry_run {
+        return output::print_mutation_output(
+            &playlist_add_receipt(&playlist, &selection.uris, true, 0, Vec::new()),
+            format,
+        );
+    }
+
+    if selection.requires_confirmation() && !yes {
+        confirm_playlist_add(&playlist, &selection.uris)?;
+    }
+
+    match daemon_request(Request::PlaylistAddItems {
+        playlist: playlist.id.clone(),
+        uris: selection.uris.clone(),
+    })
+    .await?
+    {
+        ResponseData::Mutation { .. } => output::print_mutation_output(
+            &playlist_add_receipt(
+                &playlist,
+                &selection.uris,
+                false,
+                selection.uris.len(),
+                Vec::new(),
+            ),
+            format,
+        ),
+        _ => unexpected_response(),
+    }
+}
+
+async fn daemon_playlist(value: &str) -> Result<Playlist> {
+    let playlists = match daemon_request(Request::PlaylistsList).await? {
+        ResponseData::Playlists { playlists } => playlists,
+        _ => return unexpected_response(),
+    };
+    selection::resolve_playlist(&playlists, value)
+}
+
+fn playlist_add_receipt(
+    playlist: &Playlist,
+    uris: &[String],
+    dry_run: bool,
+    succeeded: usize,
+    errors: Vec<output::MutationOutputError>,
+) -> output::MutationOutput {
+    let failed = errors.len();
+    let message = if dry_run {
+        format!("Would add {} item(s) to {}", uris.len(), playlist.name)
+    } else {
+        format!("Added {succeeded} item(s) to {}", playlist.name)
+    };
+    output::MutationOutput {
+        ok: failed == 0,
+        action: "playlist-add".to_string(),
+        dry_run: Some(dry_run),
+        playlist: Some(playlist.id.clone()),
+        playlist_name: Some(playlist.name.clone()),
+        requested: uris.len(),
+        succeeded,
+        failed,
+        uris: uris.to_vec(),
+        errors,
+        message,
+    }
+}
+
+fn confirm_playlist_add(playlist: &Playlist, uris: &[String]) -> Result<()> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        anyhow::bail!(
+            "Confirmation required for `playlist add`. Re-run with --yes or inspect with --dry-run."
+        );
+    }
+    println!("Would add {} item(s) to {}", uris.len(), playlist.name);
+    for uri in uris.iter().take(8) {
+        println!("- {uri}");
+    }
+    if uris.len() > 8 {
+        println!("... and {} more", uris.len() - 8);
+    }
+    print!("\nContinue? [y/N] ");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        return Ok(());
+    }
+    anyhow::bail!("Aborted")
 }
 
 async fn daemon_request(request: Request) -> Result<ResponseData> {

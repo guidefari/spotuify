@@ -4,12 +4,15 @@ expression: normalize_help_output(&stdout)
 ---
 Add a Spotify URI to a playlist
 
-Usage: spotuify playlist add [OPTIONS] <PLAYLIST> <URI>
+Usage: spotuify playlist add [OPTIONS] <PLAYLIST> [URIS]...
 
 Arguments:
   <PLAYLIST>  Playlist ID, URI, or exact name
-  <URI>       Track or episode URI
+  [URIS]...   Track or episode URI(s)
 
 Options:
+      --ids <FILE>       Read Spotify URI(s) from a file, or `-` for stdin
+      --dry-run          Show the exact mutation without adding to the playlist
+      --yes              Commit a multi-item playlist add without an interactive prompt
       --format <FORMAT>  Output format for the mutation receipt [default: table] [possible values: table, json, jsonl, csv, ids]
   -h, --help             Print help

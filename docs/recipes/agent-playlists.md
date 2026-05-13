@@ -63,6 +63,72 @@ Situation: preview only the selected track URIs.
 spotuify playlist create "Exile and Return" --from candidates.jsonl --dry-run --format ids
 ```
 
+Verified filter shape:
+
+```text
+unresolved	missing song	no match
+```
+
+## Pick A Track With fzf
+
+Situation: search, interactively pick one URI, then play it.
+
+```bash
+track_uri=$(spotuify search "luther vandross" --type track --format ids | fzf)
+spotuify play-uri "$track_uri"
+```
+
+Non-interactive verification of the picker shape:
+
+```bash
+spotuify search "luther vandross" --type track --format ids | fzf --filter never-too-much
+```
+
+Output:
+
+```text
+spotify:track:never-too-much
+```
+
+## Queue Or Add IDs From stdin
+
+Situation: pipe stable IDs into queue or playlist operations.
+
+```bash
+spotuify search "luther vandross" --type track --format ids \
+  | spotuify queue add --format ids
+```
+
+```bash
+spotuify search "luther vandross" --type track --format ids \
+  | spotuify playlist add "Quiet Storm" --dry-run --format json
+```
+
+After previewing, commit broad playlist adds explicitly:
+
+```bash
+spotuify search "luther vandross" --type track --format ids \
+  | spotuify playlist add "Quiet Storm" --yes --format json
+```
+
+## One-Shot Shell Controls
+
+Situation: bind playback commands in a shell alias, script, launcher, or keyboard shortcut.
+
+```bash
+spotuify next --format json
+```
+
+Output:
+
+```json
+{
+  "action": "next",
+  "message": "Skipped",
+  "ok": true
+}
+```
+
 ## Agent Prompt
 
 ```text

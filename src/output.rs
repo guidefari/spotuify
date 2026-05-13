@@ -18,6 +18,31 @@ pub enum OutputFormat {
     Ids,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct MutationOutput {
+    pub ok: bool,
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playlist: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playlist_name: Option<String>,
+    pub requested: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub uris: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<MutationOutputError>,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MutationOutputError {
+    pub uri: String,
+    pub error: String,
+}
+
 pub fn print_playback(playback: &Playback, format: OutputFormat) -> Result<()> {
     match format {
         OutputFormat::Json => print_json(playback),
@@ -508,6 +533,86 @@ pub fn print_item_receipt(action: &str, item: &MediaItem, format: OutputFormat) 
     write_item_receipt(&mut io::stdout(), action, item, format)
 }
 
+pub fn print_mutation_output(receipt: &MutationOutput, format: OutputFormat) -> Result<()> {
+    write_mutation_output(&mut io::stdout(), receipt, format)
+}
+
+pub fn write_mutation_output<W: Write>(
+    writer: &mut W,
+    receipt: &MutationOutput,
+    format: OutputFormat,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(&mut *writer, receipt)?;
+            writeln!(writer)?;
+            Ok(())
+        }
+        OutputFormat::Jsonl => {
+            writeln!(writer, "{}", serde_json::to_string(receipt)?)?;
+            Ok(())
+        }
+        OutputFormat::Csv => {
+            writeln!(
+                writer,
+                "ok,action,dry_run,playlist,requested,succeeded,failed,uri,error,message"
+            )?;
+            if receipt.uris.is_empty() && receipt.errors.is_empty() {
+                writeln!(writer, "{}", csv_mutation_row(receipt, "", ""))?;
+            } else if receipt.errors.is_empty() {
+                for uri in &receipt.uris {
+                    writeln!(writer, "{}", csv_mutation_row(receipt, uri, ""))?;
+                }
+            } else {
+                for error in &receipt.errors {
+                    writeln!(
+                        writer,
+                        "{}",
+                        csv_mutation_row(receipt, &error.uri, &error.error)
+                    )?;
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for uri in &receipt.uris {
+                writeln!(writer, "{uri}")?;
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            writeln!(writer, "{}", receipt.message)?;
+            if let Some(playlist) = &receipt.playlist_name {
+                writeln!(writer, "playlist\t{playlist}")?;
+            }
+            writeln!(writer, "requested\t{}", receipt.requested)?;
+            writeln!(writer, "succeeded\t{}", receipt.succeeded)?;
+            if receipt.failed > 0 {
+                writeln!(writer, "failed\t{}", receipt.failed)?;
+                for error in &receipt.errors {
+                    writeln!(writer, "error\t{}\t{}", error.uri, error.error)?;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn csv_mutation_row(receipt: &MutationOutput, uri: &str, error: &str) -> String {
+    csv_row(&[
+        bool_str(receipt.ok),
+        &receipt.action,
+        receipt.dry_run.map(bool_str).unwrap_or(""),
+        receipt.playlist.as_deref().unwrap_or(""),
+        &receipt.requested.to_string(),
+        &receipt.succeeded.to_string(),
+        &receipt.failed.to_string(),
+        uri,
+        error,
+        &receipt.message,
+    ])
+}
+
 pub fn write_item_receipt<W: Write>(
     writer: &mut W,
     action: &str,
@@ -780,8 +885,8 @@ fn candidate_status_label(candidate: &ResolvedTrackCandidate) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        write_basic_receipt, write_item_receipt, write_media_items, write_playlist_create_receipt,
-        OutputFormat,
+        write_basic_receipt, write_item_receipt, write_media_items, write_mutation_output,
+        write_playlist_create_receipt, MutationOutput, OutputFormat,
     };
     use crate::protocol::PlaylistCreateReceipt;
     use crate::spotify::{MediaItem, MediaKind};
@@ -921,6 +1026,32 @@ mod tests {
         assert_eq!(value["playlist_uri"], "spotify:playlist:playlist-1");
         assert_eq!(value["added_item_count"], 2);
         assert_eq!(value["action"], "playlist-create");
+    }
+
+    #[test]
+    fn dry_run_mutation_output_json_includes_counts_and_uris() {
+        let receipt = MutationOutput {
+            ok: true,
+            action: "playlist-add".to_string(),
+            dry_run: Some(true),
+            playlist: Some("quiet-storm".to_string()),
+            playlist_name: Some("Quiet Storm".to_string()),
+            requested: 2,
+            succeeded: 0,
+            failed: 0,
+            uris: vec!["spotify:track:1".to_string(), "spotify:track:2".to_string()],
+            errors: Vec::new(),
+            message: "Would add 2 item(s) to Quiet Storm".to_string(),
+        };
+        let mut out = Vec::new();
+
+        write_mutation_output(&mut out, &receipt, OutputFormat::Json).unwrap();
+
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value["action"], "playlist-add");
+        assert_eq!(value["dry_run"], true);
+        assert_eq!(value["requested"], 2);
+        assert_eq!(value["uris"][1], "spotify:track:2");
     }
 
     fn media_item(id: &str, name: &str) -> MediaItem {

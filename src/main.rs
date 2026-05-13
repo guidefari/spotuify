@@ -323,8 +323,11 @@ enum RepeatArg {
 enum QueueCommand {
     /// Add an item to the current queue.
     Add {
-        /// Spotify URI to queue.
-        uri: Option<String>,
+        /// Spotify URI(s) to queue.
+        uris: Vec<String>,
+        /// Read Spotify URI(s) from a file, or `-` for stdin.
+        #[arg(long, value_name = "FILE")]
+        ids: Option<PathBuf>,
         /// Search for a track and queue the first result.
         #[arg(long)]
         search: Option<String>,
@@ -381,8 +384,17 @@ enum PlaylistCommand {
     Add {
         /// Playlist ID, URI, or exact name.
         playlist: String,
-        /// Track or episode URI.
-        uri: String,
+        /// Track or episode URI(s).
+        uris: Vec<String>,
+        /// Read Spotify URI(s) from a file, or `-` for stdin.
+        #[arg(long, value_name = "FILE")]
+        ids: Option<PathBuf>,
+        /// Show the exact mutation without adding to the playlist.
+        #[arg(long)]
+        dry_run: bool,
+        /// Commit a multi-item playlist add without an interactive prompt.
+        #[arg(long)]
+        yes: bool,
         /// Output format for the mutation receipt.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -1420,17 +1432,82 @@ mod tests {
             Some(Command::Queue {
                 command:
                     Some(QueueCommand::Add {
-                        uri,
+                        uris,
+                        ids,
                         search,
                         format,
                     }),
                 ..
             }) => {
-                assert_eq!(uri, None);
+                assert!(uris.is_empty());
+                assert_eq!(ids, None);
                 assert_eq!(search.as_deref(), Some("luther vandross"));
                 assert_eq!(format, OutputFormat::Json);
             }
             _ => panic!("expected queue add command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "queue",
+            "add",
+            "--ids",
+            "tracks.txt",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Queue {
+                command:
+                    Some(QueueCommand::Add {
+                        uris,
+                        ids,
+                        search,
+                        format,
+                    }),
+                ..
+            }) => {
+                assert!(uris.is_empty());
+                assert_eq!(ids, Some(std::path::PathBuf::from("tracks.txt")));
+                assert_eq!(search, None);
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected queue add ids command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "spotuify",
+            "playlist",
+            "add",
+            "quiet-storm",
+            "--ids",
+            "tracks.txt",
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Playlist {
+                command:
+                    PlaylistCommand::Add {
+                        playlist,
+                        uris,
+                        ids,
+                        dry_run,
+                        yes,
+                        format,
+                    },
+            }) => {
+                assert_eq!(playlist, "quiet-storm");
+                assert!(uris.is_empty());
+                assert_eq!(ids, Some(std::path::PathBuf::from("tracks.txt")));
+                assert!(dry_run);
+                assert!(!yes);
+                assert_eq!(format, OutputFormat::Json);
+            }
+            _ => panic!("expected playlist add ids dry-run command"),
         }
 
         let cli = Cli::try_parse_from([

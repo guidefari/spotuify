@@ -1,4 +1,7 @@
-use anyhow::{bail, Result};
+use std::io::{IsTerminal, Read};
+use std::path::Path;
+
+use anyhow::{bail, Context, Result};
 
 use crate::spotify::{Device, MediaItem, MediaKind, Playlist};
 
@@ -38,6 +41,97 @@ pub fn playlist_uri(playlist_id: &str) -> String {
     } else {
         format!("spotify:playlist:{playlist_id}")
     }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct UriSelection {
+    pub uris: Vec<String>,
+    pub used_ids_file: bool,
+    pub used_stdin: bool,
+}
+
+impl UriSelection {
+    pub fn requires_confirmation(&self) -> bool {
+        self.uris.len() > 1 || self.used_ids_file || self.used_stdin
+    }
+}
+
+pub fn resolve_uri_selection(
+    positional: Vec<String>,
+    ids_path: Option<&Path>,
+    missing_message: &str,
+) -> Result<UriSelection> {
+    match (positional.is_empty(), ids_path) {
+        (false, Some(_)) => bail!("provide URI(s) or --ids, not both"),
+        (false, None) => selection_from_uris(positional, false, false),
+        (true, Some(path)) => {
+            let ids = read_ids_path(path)?;
+            if ids.is_empty() {
+                bail!("no Spotify URIs provided by --ids {}", path.display());
+            }
+            selection_from_uris(ids, true, path == Path::new("-"))
+        }
+        (true, None) => match read_piped_ids()? {
+            Some(ids) if !ids.is_empty() => selection_from_uris(ids, false, true),
+            _ => bail!("{missing_message}"),
+        },
+    }
+}
+
+pub fn ensure_track_or_episode_uris(uris: &[String]) -> Result<()> {
+    for uri in uris {
+        match media_kind_from_uri(uri)? {
+            MediaKind::Track | MediaKind::Episode => {}
+            _ => bail!("playlist add only accepts track or episode URIs: {uri}"),
+        }
+    }
+    Ok(())
+}
+
+fn selection_from_uris(
+    uris: Vec<String>,
+    used_ids_file: bool,
+    used_stdin: bool,
+) -> Result<UriSelection> {
+    for uri in &uris {
+        media_kind_from_uri(uri)?;
+    }
+    Ok(UriSelection {
+        uris,
+        used_ids_file,
+        used_stdin,
+    })
+}
+
+fn read_ids_path(path: &Path) -> Result<Vec<String>> {
+    let input = if path == Path::new("-") {
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input)?;
+        input
+    } else {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?
+    };
+    Ok(split_ids(&input))
+}
+
+fn read_piped_ids() -> Result<Option<Vec<String>>> {
+    let mut stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        return Ok(None);
+    }
+    let mut input = String::new();
+    stdin.read_to_string(&mut input)?;
+    Ok(Some(split_ids(&input)))
+}
+
+fn split_ids(input: &str) -> Vec<String> {
+    input
+        .split_whitespace()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 pub fn resolve_playlist(playlists: &[Playlist], value: &str) -> Result<Playlist> {
@@ -119,6 +213,31 @@ mod tests {
             media_item_at_index(items, "q", 2).unwrap().uri,
             "spotify:track:2"
         );
+    }
+
+    #[test]
+    fn uri_selection_accepts_multiple_positional_spotify_uris() {
+        let selection = resolve_uri_selection(
+            vec![
+                "spotify:track:1".to_string(),
+                "spotify:episode:2".to_string(),
+            ],
+            None,
+            "missing",
+        )
+        .unwrap();
+
+        assert_eq!(selection.uris.len(), 2);
+        assert!(selection.requires_confirmation());
+    }
+
+    #[test]
+    fn playlist_uri_validation_rejects_non_track_or_episode() {
+        let err = ensure_track_or_episode_uris(&["spotify:album:1".to_string()])
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("playlist add only accepts track or episode URIs"));
     }
 
     fn media(uri: &str) -> MediaItem {

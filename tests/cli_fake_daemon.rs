@@ -89,6 +89,100 @@ fn fake_daemon_cli_journey_covers_json_ids_and_mutation_receipts() {
     assert_eq!(receipt["action"].as_str(), Some("queue"));
 }
 
+#[test]
+fn fake_daemon_accepts_batch_ids_for_queue_and_playlist_preview() {
+    let temp = TempDir::new().expect("temp dir");
+    let ids_path = temp.path().join("tracks.txt");
+    std::fs::write(
+        &ids_path,
+        "spotify:track:never-too-much\nspotify:track:sweet-thing\n",
+    )
+    .expect("write ids file");
+
+    let queue = run_json(
+        temp.path(),
+        &[
+            "queue",
+            "add",
+            "--ids",
+            ids_path.to_str().expect("utf8 path"),
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(queue["ok"].as_bool(), Some(true));
+    assert_eq!(queue["action"].as_str(), Some("queue"));
+    assert_eq!(queue["requested"].as_u64(), Some(2));
+    assert_eq!(queue["succeeded"].as_u64(), Some(2));
+    assert_eq!(
+        queue["uris"][0].as_str(),
+        Some("spotify:track:never-too-much")
+    );
+
+    let preview = run_json(
+        temp.path(),
+        &[
+            "playlist",
+            "add",
+            "quiet-storm",
+            "--ids",
+            ids_path.to_str().expect("utf8 path"),
+            "--dry-run",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(preview["ok"].as_bool(), Some(true));
+    assert_eq!(preview["action"].as_str(), Some("playlist-add"));
+    assert_eq!(preview["dry_run"].as_bool(), Some(true));
+    assert_eq!(preview["requested"].as_u64(), Some(2));
+    assert_eq!(preview["succeeded"].as_u64(), Some(0));
+    assert_eq!(preview["playlist"].as_str(), Some("quiet-storm"));
+}
+
+#[test]
+fn fake_daemon_accepts_stdin_ids_for_queue() {
+    let temp = TempDir::new().expect("temp dir");
+    let output = command(temp.path())
+        .args(["queue", "add", "--format", "ids"])
+        .write_stdin("spotify:track:never-too-much\nspotify:track:sweet-thing\n")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert_eq!(
+        stdout,
+        "spotify:track:never-too-much\nspotify:track:sweet-thing\n"
+    );
+}
+
+#[test]
+fn playlist_batch_commit_requires_yes_outside_dry_run() {
+    let temp = TempDir::new().expect("temp dir");
+    let output = command(temp.path())
+        .args([
+            "playlist",
+            "add",
+            "quiet-storm",
+            "spotify:track:never-too-much",
+            "spotify:track:sweet-thing",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("Re-run with --yes or inspect with --dry-run"),
+        "unsafe batch mutation should fail closed, got {stderr:?}"
+    );
+}
+
 fn run_json(root: &Path, args: &[&str]) -> Value {
     let stdout = run_stdout(root, args);
     serde_json::from_str(stdout.trim()).unwrap_or_else(|err| {
