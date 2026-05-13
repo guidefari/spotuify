@@ -11,14 +11,15 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::codec::Framed;
 
-use crate::daemon::handler::handle_request;
-use crate::daemon::ipc_client::IpcClient;
-use crate::daemon::state::DaemonState;
-use crate::protocol::{
+use crate::handler::handle_request;
+use spotuify_protocol::ipc_client::IpcClient;
+use crate::state::DaemonState;
+use spotuify_protocol::{
     DaemonEvent, DaemonStatus, IpcCodec, IpcMessage, IpcPayload, Request, Response, ResponseData,
     IPC_PROTOCOL_VERSION,
 };
-use crate::{config::Config, spotifyd};
+use spotuify_player::spotifyd;
+use spotuify_spotify::config::Config;
 
 const REQUEST_CONCURRENCY_LIMIT: usize = 64;
 const CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -49,7 +50,7 @@ pub async fn run_daemon() -> Result<()> {
     ensure_player_process_started();
 
     let state = Arc::new(DaemonState::new().await?);
-    crate::sync::spawn_background_scheduler(state.clone());
+    spotuify_sync::spawn_background_scheduler(state.clone());
     let listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("failed to bind {}", socket_path.display()))?;
     write_daemon_pid_file()?;

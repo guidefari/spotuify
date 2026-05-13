@@ -1,15 +1,15 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::actions::{self, CommandKind};
+use spotuify_cli::actions::{self, CommandKind};
 use crate::analytics::{now_ms, search_performed_event};
-use crate::daemon::state::DaemonState;
-use crate::protocol::{
+use crate::state::DaemonState;
+use spotuify_protocol::{
     CommandReceipt, DaemonEvent, PlaybackCommand, PlaylistCreateReceipt, Request, Response,
     ResponseData, SearchScopeData, SearchSourceData,
 };
-use crate::selection;
-use crate::spotify::{MediaItem, MediaKind};
+use spotuify_cli::selection;
+use spotuify_spotify::client::{MediaItem, MediaKind};
 
 pub(crate) async fn handle_request(state: Arc<DaemonState>, request: Request) -> Response {
     match dispatch(state, request).await {
@@ -91,7 +91,7 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
             items: search_with_source(state.clone(), query, scope, source, limit).await?,
         }),
         Request::Reindex => Ok(ResponseData::Reindex {
-            stats: crate::reindex::reindex(state.store(), state.search()).await?,
+            stats: spotuify_search::reindex::reindex(state.store(), state.search()).await?,
         }),
         Request::CacheStatus => {
             let index_documents = state.search().num_docs().await.unwrap_or(0);
@@ -109,7 +109,7 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
                 .collect(),
         }),
         Request::Sync { target } => Ok(ResponseData::Sync {
-            summary: crate::sync::sync_target(state.as_ref(), target).await?,
+            summary: spotuify_sync::sync_target(state.as_ref(), target).await?,
         }),
         Request::RecentlyPlayed => {
             let mut client = state.spotify_client().await?;
@@ -356,17 +356,17 @@ async fn spotify_search_and_cache(
     let entries = items
         .iter()
         .cloned()
-        .map(|item| crate::store::IndexedMediaItem {
+        .map(|item| spotuify_store::IndexedMediaItem {
             item,
             liked: false,
             saved: false,
-            added_at_ms: Some(crate::store::now_ms()),
+            added_at_ms: Some(spotuify_store::now_ms()),
             source: "spotify".to_string(),
         })
         .collect();
     if let Err(err) = state
         .search()
-        .apply_batch(crate::search::SearchUpdateBatch {
+        .apply_batch(spotuify_search::SearchUpdateBatch {
             entries,
             removed_uris: Vec::new(),
         })
@@ -394,13 +394,13 @@ fn scope_media_kinds(scope: SearchScopeData) -> Vec<MediaKind> {
     }
 }
 
-async fn cache_playback(state: &DaemonState, playback: &crate::spotify::Playback) {
+async fn cache_playback(state: &DaemonState, playback: &spotuify_spotify::client::Playback) {
     if let Err(err) = state.store().persist_playback(playback).await {
         tracing::warn!(error = %err, "failed to cache playback snapshot");
     }
 }
 
-async fn cache_devices(state: &DaemonState, devices: &[crate::spotify::Device]) {
+async fn cache_devices(state: &DaemonState, devices: &[spotuify_spotify::client::Device]) {
     if let Err(err) = state.store().persist_devices(devices).await {
         tracing::warn!(error = %err, "failed to cache devices");
     }
@@ -412,7 +412,7 @@ async fn cache_recent_items(state: &DaemonState, items: &[MediaItem]) {
     }
 }
 
-async fn cache_playlists(state: &DaemonState, playlists: &[crate::spotify::Playlist]) {
+async fn cache_playlists(state: &DaemonState, playlists: &[spotuify_spotify::client::Playlist]) {
     if let Err(err) = state.store().persist_playlists(playlists).await {
         tracing::warn!(error = %err, "failed to cache playlists");
     }

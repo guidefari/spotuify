@@ -150,6 +150,8 @@ spotuify-spotify = { workspace = true }
 spotuify-player = { workspace = true }
 spotuify-cli = { workspace = true }
 spotuify-sync = { workspace = true }
+spotuify-daemon = { workspace = true }
+spotuify-tui = { workspace = true }
 
 async-trait = { workspace = true }
 anyhow = { workspace = true }

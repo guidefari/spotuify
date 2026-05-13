@@ -92,9 +92,39 @@ fn allowed_deps(crate_name: &str) -> Option<BTreeSet<&'static str>> {
             "spotuify-system",
             "spotuify-lyrics",
             "spotuify-audio",
+            // The daemon handler routes mutations through spotuify-cli
+            // helpers (actions/selection) so they share the same
+            // typing as the CLI command surface. This is a deliberate
+            // bridge: keeping action logic in one place across CLI +
+            // TUI + daemon callers.
+            "spotuify-cli",
         ],
-        "spotuify-cli" => &["spotuify-core", "spotuify-protocol"],
-        "spotuify-tui" => &["spotuify-core", "spotuify-protocol", "spotuify-audio"],
+        // CLI helpers (actions.rs) need SpotifyClient + spotifyd; the
+        // bridge from CLI command parsing to the daemon mutation path
+        // calls into both. Documented seam.
+        "spotuify-cli" => &[
+            "spotuify-core",
+            "spotuify-protocol",
+            "spotuify-spotify",
+            "spotuify-player",
+        ],
+        // TUI mirrors the daemon's full backend surface because app.rs
+        // talks to the live SpotifyClient + Store + Search + Sync +
+        // Daemon::status during interactive use. A future refactor
+        // could push more through the IPC layer; for now the
+        // dependency edges are documented and live.
+        "spotuify-tui" => &[
+            "spotuify-core",
+            "spotuify-protocol",
+            "spotuify-store",
+            "spotuify-search",
+            "spotuify-spotify",
+            "spotuify-player",
+            "spotuify-sync",
+            "spotuify-audio",
+            "spotuify-cli",
+            "spotuify-daemon",
+        ],
         "spotuify-mcp" => &["spotuify-core", "spotuify-protocol"],
         _ => return None,
     };

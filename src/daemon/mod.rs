@@ -1,11 +1,21 @@
-pub mod server;
-pub mod status;
+//! Re-export bridges for spotuify-daemon's modules. The implementation
+//! lives in `crates/spotuify-daemon/`. The shim modules below keep the
+//! binary's `crate::daemon::{server,state,status,handler,ipc_client}::*`
+//! import paths compiling.
 
-mod handler;
-pub(crate) mod state;
+pub mod server {
+    pub use spotuify_daemon::server::*;
+}
+pub mod status {
+    pub use spotuify_daemon::status::*;
+}
+pub mod state {
+    pub use spotuify_daemon::state::*;
+}
+pub mod handler {
+    pub use spotuify_daemon::handler::*;
+}
 
-// ipc_client moved to spotuify-protocol; re-exported here so existing
-// `crate::daemon::ipc_client::IpcClient` call sites keep compiling.
 pub mod ipc_client {
     pub use spotuify_protocol::ipc_client::*;
 }

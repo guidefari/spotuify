@@ -3535,12 +3535,14 @@ dependencies = [
  "sha2",
  "spotuify-cli",
  "spotuify-core",
+ "spotuify-daemon",
  "spotuify-player",
  "spotuify-protocol",
  "spotuify-search",
  "spotuify-spotify",
  "spotuify-store",
  "spotuify-sync",
+ "spotuify-tui",
  "sqlx",
  "tantivy",
  "tempfile",
@@ -3590,8 +3592,29 @@ dependencies = [
 name = "spotuify-daemon"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dirs",
+ "futures",
+ "serde",
+ "serde_json",
+ "sha2",
+ "spotuify-cli",
  "spotuify-core",
+ "spotuify-player",
  "spotuify-protocol",
+ "spotuify-search",
+ "spotuify-spotify",
+ "spotuify-store",
+ "spotuify-sync",
+ "sqlx",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -3729,8 +3752,30 @@ dependencies = [
 name = "spotuify-tui"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "crossterm",
+ "dirs",
+ "futures",
+ "image",
+ "ratatui",
+ "ratatui-image",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "spotuify-cli",
  "spotuify-core",
+ "spotuify-daemon",
+ "spotuify-player",
  "spotuify-protocol",
+ "spotuify-search",
+ "spotuify-spotify",
+ "spotuify-store",
+ "spotuify-sync",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

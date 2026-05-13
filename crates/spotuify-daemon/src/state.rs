@@ -7,12 +7,12 @@ use tokio::sync::{broadcast, watch, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::analytics::{AnalyticsSource, AnalyticsStore};
-use crate::auth::StoredToken;
-use crate::config::Config;
-use crate::protocol::{DaemonEvent, DaemonStatus, IpcMessage, IpcPayload, IPC_PROTOCOL_VERSION};
-use crate::search::{SearchIndex, SearchServiceHandle};
-use crate::spotify::SpotifyClient;
-use crate::store::Store;
+use spotuify_spotify::auth::StoredToken;
+use spotuify_spotify::config::Config;
+use spotuify_protocol::{DaemonEvent, DaemonStatus, IpcMessage, IpcPayload, IPC_PROTOCOL_VERSION};
+use spotuify_search::{SearchIndex, SearchServiceHandle};
+use spotuify_spotify::client::SpotifyClient;
+use spotuify_store::Store;
 
 pub(crate) struct DaemonState {
     started_at: Instant,
@@ -131,7 +131,7 @@ impl DaemonState {
             uptime_secs: Some(self.started_at.elapsed().as_secs()),
             protocol_version: IPC_PROTOCOL_VERSION,
             daemon_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            daemon_build_id: Some(crate::daemon::server::current_build_id()),
+            daemon_build_id: Some(crate::server::current_build_id()),
         }
     }
 
@@ -168,7 +168,7 @@ impl spotuify_sync::SyncContext for DaemonState {
     fn shutdown_receiver(&self) -> watch::Receiver<bool> {
         self.shutdown_tx.subscribe()
     }
-    fn store(&self) -> &crate::store::Store {
+    fn store(&self) -> &spotuify_store::Store {
         &self.store
     }
     fn emit_event(&self, event: spotuify_protocol::DaemonEvent) {

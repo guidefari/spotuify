@@ -8,6 +8,28 @@ description = "Daemon socket server + handler. Empty scaffold; legacy daemon liv
 [dependencies]
 spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
+spotuify-store = { workspace = true }
+spotuify-search = { workspace = true }
+spotuify-spotify = { workspace = true }
+spotuify-player = { workspace = true }
+spotuify-sync = { workspace = true }
+spotuify-cli = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
 
 [lints]
 workspace = true
