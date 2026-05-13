@@ -13,6 +13,18 @@ use spotuify_protocol::{CacheStatus, SearchScopeData, SearchSourceData};
 const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 const POOL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Cache schema version recognised by this binary.
+///
+/// Bumped on every incompatible migration. A database with
+/// `MAX(schema_migrations.version) > CACHE_VERSION` is rejected at
+/// startup with a clear error pointing to `spotuify cache reset --confirm`.
+///
+/// History:
+/// - v1: initial schema (Phase 3)
+/// - v2: snapshot_id, snapshot_id_at_fetch, freshness_class,
+///   sync_generation (Phase 6.4)
+pub const CACHE_VERSION: u32 = 2;
+
 #[derive(Clone)]
 pub struct Store {
     writer: SqlitePool,
@@ -563,7 +575,70 @@ impl Store {
             .await?;
         }
 
+        if !self.is_migration_applied(2).await? {
+            sqlx::raw_sql(MIGRATION_002_SNAPSHOT_ID_FRESHNESS)
+                .execute(&self.writer)
+                .await?;
+            sqlx::query(
+                "INSERT INTO schema_migrations (version, name, applied_at_ms) VALUES (2, 'snapshot_id_freshness', ?)",
+            )
+            .bind(now_ms())
+            .execute(&self.writer)
+            .await?;
+        }
+
         self.validate_schema().await?;
+        Ok(())
+    }
+
+    /// Force-run migrations again. Used by tests to assert idempotency.
+    #[doc(hidden)]
+    pub async fn run_migrations_idempotent_for_test(&self) -> Result<()> {
+        self.run_migrations().await
+    }
+
+    /// Read-side connection pool. Used by tests + downstream introspection.
+    pub fn reader(&self) -> &SqlitePool {
+        &self.reader
+    }
+
+    /// Write-side connection pool — gated behind `for_test` so production
+    /// code never bypasses the store API. Tests use it to inject scenarios
+    /// (corrupt rows, future migration entries, etc.).
+    #[doc(hidden)]
+    pub fn writer_for_test(&self) -> &SqlitePool {
+        &self.writer
+    }
+
+    /// Greatest applied migration version in this database. Used by
+    /// `check_cache_version`; also surfaced to `spotuify doctor`.
+    pub async fn applied_cache_version(&self) -> Result<i64> {
+        let row: Option<(Option<i64>,)> =
+            sqlx::query_as("SELECT MAX(version) FROM schema_migrations")
+                .fetch_optional(&self.reader)
+                .await?;
+        Ok(row.and_then(|(v,)| v).unwrap_or(0))
+    }
+
+    /// Refuse to start when the database has been touched by a future
+    /// binary. Returning `Ok(())` means we can proceed safely.
+    ///
+    /// Two policies:
+    /// - applied == CACHE_VERSION → ok (current).
+    /// - applied < CACHE_VERSION → migrations would have run already, so
+    ///   reaching this method means run_migrations didn't complete; that's
+    ///   an internal bug → ok here (caller bumps the version).
+    /// - applied > CACHE_VERSION → fatal. User must downgrade the db or
+    ///   run `spotuify cache reset --confirm`.
+    pub async fn check_cache_version(&self) -> anyhow::Result<()> {
+        let applied = self.applied_cache_version().await?;
+        if applied > CACHE_VERSION as i64 {
+            anyhow::bail!(
+                "spotuify cache schema is at version {applied} but this binary only \
+                 understands up to v{CACHE_VERSION}. Downgrade the binary or run \
+                 `spotuify cache reset --confirm` to start fresh."
+            );
+        }
         Ok(())
     }
 
@@ -824,6 +899,31 @@ CREATE TABLE IF NOT EXISTS sync_cursors (
     last_success_at_ms INTEGER,
     last_error         TEXT
 );
+"#;
+
+/// Phase 6.4 schema migration: snapshot_id, snapshot_id_at_fetch,
+/// freshness_class, sync_generation.
+///
+/// `freshness_class` accepts values in {fresh, stale_but_usable,
+/// refreshing, failed_refresh, unknown}. Application-enforced; no CHECK
+/// constraint because SQLite would prevent migrating older rows.
+///
+/// `sync_generation` is bumped on each full sync so we can detect
+/// cache-version skew across daemon restarts.
+const MIGRATION_002_SNAPSHOT_ID_FRESHNESS: &str = r#"
+ALTER TABLE playlists      ADD COLUMN snapshot_id          TEXT;
+ALTER TABLE playlist_items ADD COLUMN snapshot_id_at_fetch TEXT;
+
+ALTER TABLE media_items        ADD COLUMN freshness_class TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE media_items        ADD COLUMN sync_generation INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE devices            ADD COLUMN freshness_class TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE devices            ADD COLUMN sync_generation INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE playback_snapshots ADD COLUMN freshness_class TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE playback_snapshots ADD COLUMN sync_generation INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE recent_items       ADD COLUMN freshness_class TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE recent_items       ADD COLUMN sync_generation INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE library_items      ADD COLUMN freshness_class TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE library_items      ADD COLUMN sync_generation INTEGER NOT NULL DEFAULT 0;
 "#;
 
 const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
