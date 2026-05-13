@@ -17,6 +17,18 @@ The plan is phased so each phase leaves the app more useful than before. Do not 
 | 06 | [Phase 5 - Agent Playlists](06-phase-5-agent-playlists.md) | Research/preview/commit playlist workflows |
 | 07 | [Testing and Conformance](07-testing-conformance.md) | CLI/TUI/protocol test strategy |
 | 08 | [mxr Reuse Map](08-mxr-reuse-map.md) | Concrete source areas to copy/adapt from mxr |
+| 09 | [Phase 6 - Sync Hardening](09-phase-6-sync-hardening.md) | Rate limits, snapshot_id/ETag, freshness, two-stage receipts |
+| 10 | [Phase 7 - Workspace Split](10-phase-7-workspace-split.md) | Extract single crate into target workspace layout |
+| 11 | [Phase 8 - MCP Server](11-phase-8-mcp-server.md) | Expose daemon as Model Context Protocol server |
+| 12 | [Phase 9 - Librespot Embed](12-phase-9-librespot-embed.md) | Decision gate: embed librespot vs supervise spotifyd |
+| 13 | [Phase 10 - Analytics Derivations](13-phase-10-analytics-derivations.md) | Derived listening facts, top-N, habits, exports |
+| 14 | [Phase 11 - Cross-Platform](14-phase-11-cross-platform.md) | Linux/Windows support, installers, releases |
+| 15 | [Phase 12 - Operation Log and Undo](15-phase-12-operation-log-undo.md) | Recorded mutations with reversal plans |
+| 16 | [Phase 13 - Spec Compliance and QoL](16-phase-13-spec-compliance.md) | Reload, reconnect, `-o` override, panic handling, decision-log backfill |
+| 17 | [Phase 14 - System Integration](17-phase-14-system-integration.md) | MPRIS, media keys, notifications, Discord RPC, shell hooks |
+| 18 | [Phase 15 - Cover Art](18-phase-15-cover-art.md) | Inline cover art in TUI (kitty/iTerm/sixel/halfblocks) |
+| 19 | [Phase 16 - Lyrics](19-phase-16-lyrics.md) | Spotify-mercury + LRCLIB synced lyrics with offset tuning |
+| 20 | [Phase 17 - Audio Visualization](20-phase-17-audio-visualization.md) | Sink-tap or loopback FFT spectrum in Player tab |
 
 ## Implementation rules
 

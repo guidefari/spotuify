@@ -11,6 +11,7 @@ The codebase is still the source of truth for what exists today. The blueprint d
 | [blueprint](blueprint/README.md) | Product principles, system architecture, CLI/TUI parity, daemon/cache/search/player design |
 | [implementation](implementation/README.md) | Current-state audit, phased delivery plan, tests, migration notes |
 | [recipes](recipes/agent-playlists.md) | Agent and shell workflows for previewable playlist creation |
+| [research](research/README.md) | Competitor deep-studies (ncspot, spotify-player, spotatui) and synthesis |
 
 ## Reading order
 
