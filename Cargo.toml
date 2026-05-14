@@ -17,6 +17,10 @@ default-members = ["."]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
+repository = "https://github.com/planetaryescape/spotuify"
+homepage = "https://github.com/planetaryescape/spotuify"
+documentation = "https://github.com/planetaryescape/spotuify"
+license = "MIT"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

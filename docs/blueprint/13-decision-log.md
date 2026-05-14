@@ -158,6 +158,36 @@ Trade-offs accepted:
 
 Implementation lands in Phase 9; not part of the current Phase 6/7/8 batch.
 
+Implementation status (Phase 9.0–9.5 complete, 2026-05-13):
+
+- `PlayerBackend` trait + 5 new typed `DaemonEvent`s (`PlayerReady`,
+  `PlayerDegraded`, `PremiumRequired`, `SessionDisconnected`,
+  `PlayerFailed`) in `crates/spotuify-player` and
+  `crates/spotuify-protocol`.
+- Backends shipped: `ConnectOnlyBackend` (Web API only, Free-tier
+  capable, wiremock-tested), `SpotifydBackend` (preserves today's
+  default), `MockPlayerBackend` (behind `test-support` feature),
+  `EmbeddedBackend` skeleton with librespot 0.8 cache wiring (Player
+  + Spirc integration scaffolded, awaiting live Spotify Premium
+  verification before flipping the default).
+- Foundations for Phase 9.3 — `RecoveringSink` (catch_unwind with
+  rolling panic budget), `Clock` trait + position-as-SystemTime
+  derivation (NTP-step safe), worker `tokio::select!` loop
+  (interval ticks only when playing) — all unit-tested.
+- Foundations for Phase 9.4 — `MercuryFetcher` trait + TTL cache,
+  `TokenBridge` (5s timeout, graceful refresh fallback) — both
+  unit-tested.
+- Audio backend matrix: `alsa-backend`, `pipewire-backend`,
+  `rodio-backend`, `portaudio-backend` Cargo features; `compile_error!`
+  guard when `embedded-playback` is enabled without one selected.
+  Linux pulse env vars set on `EmbeddedBackend::new`.
+- vergen pin deviation: the planning doc called for
+  `vergen=9.0.6 + vergen-lib=9.1.0 + vergen-gitcl=1.0.8`. In practice
+  vergen 9.0.6 is the right pin because vergen-gitcl 1.0.x is
+  internally on vergen-lib 0.1.x; mixing in 9.1.x of vergen-lib
+  produces two coexisting versions and breaks `librespot-core`'s
+  build script. Comment lives in the workspace `Cargo.toml`.
+
 ## D011: MCP server as a first-class spotuify surface (Phase 8)
 
 Chosen: ship `spotuify-mcp` as a workspace crate and a separate binary, exposing the daemon's Request set as Model Context Protocol tools and resources over stdio (default) or HTTP.

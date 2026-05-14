@@ -1,13 +1,13 @@
 # spotuify
 
-`spotuify` is a keyboard-native Spotify TUI for macOS and Spotify Connect devices. It uses Spotify's Web API for playback control, macOS Keychain for OAuth tokens, `spotifyd` for local playback when available, and `ratatui-image` for album and podcast artwork in capable terminals.
+`spotuify` is a keyboard-native Spotify TUI, CLI, and MCP server. It uses Spotify's Web API for playback control, your operating system's credential store for OAuth tokens (macOS Keychain, Linux Secret Service, Windows Credential Manager), an embedded `librespot` or supervised `spotifyd` for local playback, and `ratatui-image` for album and podcast artwork in capable terminals.
 
 The goal is simple: run `spotuify`. If credentials or OAuth are missing, setup starts automatically. Paste your Spotify app credentials, authorize in the browser, and land in a synced terminal UI without hand-editing config files.
 
 ## Features
 
 - Guided first-run onboarding with Spotify Dashboard instructions.
-- OAuth PKCE login with tokens stored in macOS Keychain under service `spotuify`.
+- OAuth PKCE login with tokens stored in the platform's native credential vault under service `spotuify`.
 - Owned config file at `~/.config/spotuify/spotuify.toml`.
 - Config commands for `path`, `init`, `get`, and `set`.
 - Automatic `spotifyd` startup when installed and enabled.
@@ -18,38 +18,76 @@ The goal is simple: run `spotuify`. If credentials or OAuth are missing, setup s
 - Device list and Spotify Connect transfer.
 - Cover art rendering through Kitty, iTerm2, Sixel, or half-block fallback.
 - Fully keyboard navigable with vim-style movement, pane switching, help overlay, paging, and back navigation.
+- **Phase 10 analytics**: local `listen_facts` table + `spotuify analytics top` / `habits` / `rediscovery` for Wrapped-style insights, plus shell-hook bridge to ListenBrainz / Last.fm scrobblers.
+- **Phase 12 operation log + undo**: every mutating command is recorded; `spotuify ops undo` reverts the last reversible action, MCP exposes `undo_last` as a safety net for agent runs.
 
 ## Requirements
 
-- macOS.
-- Rust toolchain with `cargo`.
-- Spotify Premium for playback control and `spotifyd` playback.
-- A Spotify account.
-- A terminal with good image support for best visuals. Kitty works well. Other terminals fall back through `ratatui-image` support.
-- Optional: `spotifyd` for local headless playback.
-
-Install `spotifyd` with Homebrew if you want automatic local playback:
-
-```sh
-brew install spotifyd
-```
-
-`spotuify` still works with any visible Spotify Connect device if `spotifyd` is not installed.
+- A Spotify account (Premium is required for playback control and `spotifyd` / embedded librespot streaming).
+- A terminal with good image support for best visuals. Kitty works well; other terminals fall back through `ratatui-image` support.
+- Optional: `spotifyd` for local headless playback when not using embedded librespot.
 
 ## Install
 
-With Homebrew, after the tap is published:
+Spotuify ships pre-built binaries for macOS (Apple Silicon + Intel), Linux gnu / musl, and Windows on each [GitHub Release](https://github.com/planetaryescape/spotuify/releases). Pick the right path for your platform:
+
+### macOS (Apple Silicon or Intel)
 
 ```sh
-brew install bhekanik/tap/spotuify
+brew install planetaryescape/tap/spotuify
+spotuify daemon install-service   # registers a launchd LaunchAgent
+spotuify                          # first run kicks off onboarding
 ```
 
 Or tap once, then use the short formula name:
 
 ```sh
-brew tap bhekanik/tap
+brew tap planetaryescape/tap
 brew install spotuify
 ```
+
+Binaries are unsigned today. If Gatekeeper blocks the first launch:
+
+```sh
+xattr -d com.apple.quarantine /opt/homebrew/bin/spotuify
+```
+
+### Linux (Debian / Ubuntu)
+
+```sh
+sudo dpkg -i spotuify_*_amd64.deb     # from a GH Releases asset
+spotuify daemon install-service       # registers a systemd --user unit
+spotuify
+```
+
+Spotuify uses Secret Service (GNOME Keyring / KWallet) for credential storage. On a headless server with no DBus session, pass `--allow-file-credentials` at login to fall back to an age-encrypted credentials file under `~/.local/share/spotuify/`.
+
+### Linux (Arch / Fedora / other)
+
+```sh
+cargo install --git https://github.com/planetaryescape/spotuify --locked
+spotuify daemon install-service
+```
+
+### Windows
+
+```sh
+scoop install planetaryescape/spotuify   # (Scoop bucket — pending)
+# or grab the .zip from GitHub Releases and add it to %PATH%
+spotuify daemon install-service          # registers a Task Scheduler logon trigger
+```
+
+Daemon-mode media-key handling on Windows is currently limited: SMTC requires a foreground window handle, so background-only operation cannot register media keys. Workaround: keep the TUI process alive.
+
+### Nix
+
+```sh
+nix run github:planetaryescape/spotuify
+# or in a flake:
+inputs.spotuify.url = "github:planetaryescape/spotuify";
+```
+
+### From source (any platform)
 
 Plain first-time `brew install spotuify` requires acceptance into `homebrew/core`. The release workflow below publishes to a tap, which is the standard path for immediate installs.
 
@@ -68,6 +106,26 @@ spotuify --help
 ```
 
 If `~/.cargo/bin` is not on your `PATH`, either add it or run `./target/release/spotuify` directly from the repo.
+
+For platform-specific embedded librespot builds, pick the right audio backend feature flag:
+
+```sh
+# Linux (alsa, routes through pipewire-alsa shim on modern distros):
+cargo install --git https://github.com/planetaryescape/spotuify --locked \
+              --features 'embedded-playback,alsa-backend'
+
+# Linux musl (pure-Rust rodio backend):
+cargo install --git https://github.com/planetaryescape/spotuify --locked \
+              --no-default-features --features 'embedded-playback,rodio-backend'
+
+# macOS (PortAudio bridge to CoreAudio):
+cargo install --git https://github.com/planetaryescape/spotuify --locked \
+              --features 'embedded-playback,portaudio-backend'
+
+# Windows (rodio writes to WASAPI):
+cargo install --git https://github.com/planetaryescape/spotuify --locked \
+              --features 'embedded-playback,rodio-backend'
+```
 
 ## Releases
 
@@ -93,7 +151,7 @@ Variable: HOMEBREW_TAP_REPOSITORY
 `HOMEBREW_TAP_REPOSITORY` should be the tap repo in `owner/repo` form, for example:
 
 ```text
-bhekanik/homebrew-tap
+planetaryescape/homebrew-tap
 ```
 
 If `HOMEBREW_TAP_REPOSITORY` is omitted, the workflow defaults to:
