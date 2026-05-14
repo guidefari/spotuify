@@ -13,6 +13,7 @@ spotuify-search = { workspace = true }
 spotuify-spotify = { workspace = true }
 spotuify-player = { workspace = true }
 spotuify-sync = { workspace = true }
+spotuify-system = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

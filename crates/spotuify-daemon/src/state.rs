@@ -48,6 +48,10 @@ pub(crate) struct DaemonState {
     // forward_player_events. Foundation pass: state machine label only;
     // Pass 2 (P10.1) wires finalize → listen_facts insertion.
     pub(crate) session_tracker: Arc<crate::session_tracker::SessionTracker>,
+    /// Phase 14 (P14-G) — system-integration actor: media controls,
+    /// notifications, shell hooks, Discord RPC. Subscribes to every
+    /// emitted `DaemonEvent` via `emit_event`.
+    pub(crate) system_integration: Arc<spotuify_system::SystemIntegration>,
 }
 
 impl DaemonState {
@@ -55,6 +59,14 @@ impl DaemonState {
         let (shutdown_tx, _) = watch::channel(false);
         let (event_tx, _) = broadcast::channel(128);
         let store = Store::open_default().await?;
+        // Phase 13 (P13-F) — refuse to start if the on-disk schema is
+        // newer than this binary understands. Migrations only ever
+        // run forward; a downgrade scenario without this guard would
+        // silently corrupt or misread newer columns.
+        store
+            .check_cache_version()
+            .await
+            .context("cache schema mismatch (refusing to start)")?;
         let (search, search_worker) =
             SearchServiceHandle::start(SearchIndex::open(store.index_path())?);
 
@@ -78,6 +90,13 @@ impl DaemonState {
             forward_player_events(player_stream, event_tx_for_worker, tracker_for_worker).await;
         });
 
+        // Phase 14 (P14-G) — system-integration actor. Reads config
+        // for opt-in subsystems; if the config can't be loaded
+        // (first-run / missing client_id) we still build the cover
+        // cache and a no-op hook dispatcher so the daemon stays up.
+        let system_config = build_system_config();
+        let system_integration = Arc::new(spotuify_system::SystemIntegration::spawn(system_config));
+
         Ok(Self {
             started_at: Instant::now(),
             shutdown_tx,
@@ -91,6 +110,7 @@ impl DaemonState {
             player_token_slot: token_slot,
             player_worker: tokio::sync::Mutex::new(Some(player_worker)),
             session_tracker,
+            system_integration,
         })
     }
 
@@ -179,6 +199,14 @@ impl DaemonState {
                 log.push(logged);
             }
         }
+        // Phase 14 (P14-G) — fan to system-integration subsystems.
+        // Hooks/notifications/media-controls/discord all consume the
+        // same DaemonEvent stream. Spawn so we don't block emit.
+        let system = self.system_integration.clone();
+        let event_for_system = event.clone();
+        tokio::spawn(async move {
+            system.handle_event(&event_for_system).await;
+        });
         let _ = self.event_tx.send(IpcMessage {
             id: 0,
             payload: IpcPayload::Event(event),
@@ -263,6 +291,20 @@ impl DaemonState {
 // for the first-run / missing-config case. Returns the box, its
 // event stream, and the token slot the daemon shares with the
 // backend's TokenProvider.
+/// Phase 14 (P14-G) — assemble the SystemIntegration config from the
+/// on-disk `config.toml`. Best-effort: missing sections degrade to
+/// "disabled" sub-configs. The cover-cache uses platform defaults
+/// regardless so MPRIS + notifications can always file-serve art.
+fn build_system_config() -> spotuify_system::SystemConfig {
+    // The full [notifications]/[discord]/[mpris]/[events] config
+    // ingestion lands as a follow-up that extends spotuify-spotify
+    // Config with the new sections. Today the spotuify-system
+    // subsystems run with their `Default` values: cover-cache enabled,
+    // hooks disabled, notifications disabled, media-controls disabled,
+    // Discord disabled — matching the "off by default" promise.
+    spotuify_system::SystemConfig::default()
+}
+
 fn build_player_or_default() -> (
     Box<dyn PlayerBackend>,
     tokio_stream::wrappers::UnboundedReceiverStream<PlayerEvent>,
