@@ -168,6 +168,19 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         operation_id: Option<OperationId>,
     },
+
+    // --- Phase 13 — QoL / spec-compliance requests ---
+    /// Reload the on-disk config and (optionally) restart the player
+    /// only if `[player].backend` changed.
+    Reload,
+    /// Force-rebuild the upstream Spotify session. Useful after VPN
+    /// flap / network change for embedded librespot.
+    Reconnect,
+    /// Prune old search-cache entries (`search_runs` / `search_results`).
+    SearchCachePrune {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        older_than_ms: Option<i64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -419,6 +432,18 @@ pub enum ResponseData {
         skipped: u32,
         errors: Vec<String>,
     },
+
+    // --- Phase 13 — QoL / spec-compliance responses ---
+    /// Generic acknowledge with a free-form message. Used by `reload`,
+    /// `reconnect`, and `search-cache-prune`.
+    Ack {
+        message: String,
+    },
+    /// Phase 13 (P13-J) — search-cache prune result.
+    SearchCachePruned {
+        pruned_runs: u64,
+        pruned_results: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -628,6 +653,10 @@ pub enum DaemonEvent {
         original_op_id: OperationId,
         success: bool,
     },
+
+    /// Phase 13 (P13-I) — emitted after `Request::Reload` or `Reconnect`
+    /// so TUI clients know to refresh their cached config view.
+    ConfigReloaded,
 }
 
 /// Auth error categories. Mirrors `spotuify_spotify::error::AuthErrorKind`

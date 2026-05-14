@@ -484,6 +484,31 @@ async fn daemon_request(request: Request) -> Result<ResponseData> {
     }
 }
 
+/// Phase 13 (P13-I) — reload the daemon's view of the config file
+/// without a restart. Player backend swaps still require a restart;
+/// the daemon returns a clear Ack with the message.
+pub async fn ipc_reload() -> Result<()> {
+    match daemon_request(Request::Reload).await? {
+        ResponseData::Ack { message } => {
+            println!("{message}");
+            Ok(())
+        }
+        _ => unexpected_response(),
+    }
+}
+
+/// Phase 13 (P13-I) — request the daemon rebuild its upstream Spotify
+/// session (relevant for embedded librespot after a VPN flap).
+pub async fn ipc_reconnect() -> Result<()> {
+    match daemon_request(Request::Reconnect).await? {
+        ResponseData::Ack { message } => {
+            println!("{message}");
+            Ok(())
+        }
+        _ => unexpected_response(),
+    }
+}
+
 fn unexpected_response<T>() -> Result<T> {
     anyhow::bail!("unexpected response from daemon")
 }

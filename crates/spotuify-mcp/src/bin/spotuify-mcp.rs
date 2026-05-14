@@ -206,5 +206,8 @@ fn kind_label(data: &spotuify_protocol::ResponseData) -> &'static str {
         D::Operations { .. } => "operations",
         D::OperationDetail { .. } => "operation-detail",
         D::OperationUndoResult { .. } => "operation-undo-result",
+        // Phase 13 — generic Ack + search-cache prune.
+        D::Ack { .. } => "ack",
+        D::SearchCachePruned { .. } => "search-cache-pruned",
     }
 }

@@ -552,6 +552,16 @@ impl Store {
         Ok((remaining_ms > 0).then_some(remaining_ms))
     }
 
+    /// Phase 13 (P13-J) — drop search-cache rows older than the cutoff.
+    /// CASCADE in `search_results` handles the join table.
+    pub async fn prune_search_runs_older_than(&self, cutoff_ms: i64) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM search_runs WHERE fetched_at_ms < ?")
+            .bind(cutoff_ms)
+            .execute(&self.writer)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn cache_status(&self, index_documents: u64) -> Result<CacheStatus> {
         Ok(CacheStatus {
             database_path: self.db_path.display().to_string(),

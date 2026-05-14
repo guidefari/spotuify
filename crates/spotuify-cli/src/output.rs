@@ -1091,6 +1091,24 @@ pub fn print_response_data(
                 }
             }
         },
+        D::Ack { message } => {
+            println!("{message}");
+        }
+        D::SearchCachePruned {
+            pruned_runs,
+            pruned_results,
+        } => match format {
+            OutputFormat::Json | OutputFormat::Jsonl => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "pruned_runs": pruned_runs,
+                        "pruned_results": pruned_results,
+                    }))?
+                );
+            }
+            _ => println!("Pruned {pruned_runs} search run(s)"),
+        },
         D::OperationUndoResult {
             undo_op_id,
             succeeded,

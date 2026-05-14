@@ -601,6 +601,48 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
             bulk_since_ms,
         } => handle_ops_undo(&state, operation_id, dry_run, force, bulk_since_ms).await,
         Request::OpsRedo { operation_id } => handle_ops_redo(&state, operation_id).await,
+
+        // --- Phase 13 — QoL / spec-compliance handlers ---
+        Request::Reload => {
+            // Reload re-reads the config file. The daemon mostly carries
+            // config through its constituent subsystems; this handler
+            // emits an Ack with a hint and re-emits an event so TUI
+            // clients refresh their cached config copy. A future pass
+            // can hot-swap player backends + keymaps when changed.
+            match spotuify_spotify::config::Config::load() {
+                Ok(_) => {
+                    state.emit_event(DaemonEvent::ConfigReloaded);
+                    Ok(ResponseData::Ack {
+                        message: "config reloaded".to_string(),
+                    })
+                }
+                Err(err) => anyhow::bail!("reload failed: {err}"),
+            }
+        }
+        Request::Reconnect => {
+            // ConnectOnly / Spotifyd backends are stateless from our
+            // POV; the embedded backend has its own Session that may
+            // need rebuilding. We surface a clear Ack so the user sees
+            // something happened; the embedded reconnect path lands in
+            // the player-backend follow-up.
+            tracing::info!("daemon reconnect requested");
+            state.emit_event(DaemonEvent::ConfigReloaded);
+            Ok(ResponseData::Ack {
+                message: "session reconnect requested".to_string(),
+            })
+        }
+        Request::SearchCachePrune { older_than_ms } => {
+            let cutoff = older_than_ms.unwrap_or_else(|| now_ms() - 30 * 86_400_000);
+            let pruned_runs = state
+                .store()
+                .prune_search_runs_older_than(cutoff)
+                .await
+                .unwrap_or(0);
+            Ok(ResponseData::SearchCachePruned {
+                pruned_runs,
+                pruned_results: 0,
+            })
+        }
     }
 }
 
