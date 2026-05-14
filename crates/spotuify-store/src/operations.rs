@@ -1,0 +1,393 @@
+//! Phase 12 — operations log CRUD.
+//!
+//! Every mutating Spotify request becomes an `operations` row. The
+//! daemon writes a pending row before calling Spotify (so a crash mid-
+//! mutation leaves a forensic trail), finalises the row on completion,
+//! and later reads + mutates rows for `ops log` / `ops undo` / `ops redo`.
+//!
+//! Two invariants are enforced at the SQL layer:
+//! 1. `finalize_operation` only updates rows currently in `pending`.
+//!    Idempotency: daemon restarts can re-emit Phase 6 lifecycle events
+//!    without double-flipping status.
+//! 2. `mark_operation_undone` only updates rows in `succeeded`. Trying
+//!    to undo an already-undone op is a silent no-op at the SQL layer;
+//!    the caller surfaces the "already undone" message.
+
+use anyhow::Result;
+use sqlx::Row;
+
+use spotuify_protocol::{
+    Operation, OperationId, OperationKind, OperationSource, OperationStatus, PreState, ReceiptId,
+    ReversalPlan,
+};
+
+use crate::Store;
+
+impl Store {
+    /// Persist a new operation row at issue time. The caller is
+    /// expected to have minted `op.operation_id` and set
+    /// `op.status = Pending`; the row is rejected at the SQL layer if
+    /// the id collides.
+    pub async fn insert_pending_operation(&self, op: &Operation) -> Result<()> {
+        let subject_uris_json = serde_json::to_string(&op.subject_uris)?;
+        let reversal_plan_json = match &op.reversal_plan {
+            Some(plan) => Some(serde_json::to_string(plan)?),
+            None => None,
+        };
+        let pre_state_json = match &op.pre_state {
+            Some(pre) => Some(serde_json::to_string(pre)?),
+            None => None,
+        };
+        sqlx::query(
+            "INSERT INTO operations (
+                operation_id, kind, occurred_at_ms, finished_at_ms,
+                source, requester, subject_uris_json, reversible,
+                reversal_plan_json, pre_state_json, status, receipt_id,
+                subject_op_id, undone_by_op_id, redone_by_op_id, error_message
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(op.operation_id.0.to_string())
+        .bind(op.kind.label())
+        .bind(op.occurred_at_ms)
+        .bind(op.finished_at_ms)
+        .bind(op.source.label())
+        .bind(op.requester.as_deref())
+        .bind(subject_uris_json)
+        .bind(op.reversible as i64)
+        .bind(reversal_plan_json)
+        .bind(pre_state_json)
+        .bind(op.status.label())
+        .bind(op.receipt_id.map(|r| r.0.to_string()))
+        .bind(op.subject_op_id.map(|s| s.0.to_string()))
+        .bind(op.undone_by_op_id.map(|u| u.0.to_string()))
+        .bind(op.redone_by_op_id.map(|r| r.0.to_string()))
+        .bind(op.error_message.as_deref())
+        .execute((&self.writer))
+        .await?;
+        Ok(())
+    }
+
+    /// Transition a pending operation to a terminal status. First-write
+    /// wins via the `status = 'pending'` guard: subsequent calls are
+    /// silent no-ops so daemon restarts can't double-fire lifecycle
+    /// events.
+    pub async fn finalize_operation(
+        &self,
+        operation_id: OperationId,
+        status: OperationStatus,
+        finished_at_ms: i64,
+        error: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE operations
+             SET status = ?, finished_at_ms = ?, error_message = ?
+             WHERE operation_id = ? AND status = 'pending'",
+        )
+        .bind(status.label())
+        .bind(finished_at_ms)
+        .bind(error)
+        .bind(operation_id.0.to_string())
+        .execute((&self.writer))
+        .await?;
+        Ok(())
+    }
+
+    /// Mark a succeeded operation as undone, recording the new undo op
+    /// that performed the reversal. Silent no-op for rows not currently
+    /// in `succeeded` — the caller surfaces "already undone" /
+    /// "transport ops aren't undoable" through the request layer.
+    pub async fn mark_operation_undone(
+        &self,
+        original_id: OperationId,
+        undo_op_id: OperationId,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE operations
+             SET status = 'undone', undone_by_op_id = ?
+             WHERE operation_id = ? AND status = 'succeeded'",
+        )
+        .bind(undo_op_id.0.to_string())
+        .bind(original_id.0.to_string())
+        .execute((&self.writer))
+        .await?;
+        Ok(())
+    }
+
+    /// Mark an undone operation as redone (a redo cycle re-executed the
+    /// original forward action).
+    pub async fn mark_operation_redone(
+        &self,
+        original_id: OperationId,
+        redo_op_id: OperationId,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE operations
+             SET status = 'redone', redone_by_op_id = ?
+             WHERE operation_id = ? AND status = 'undone'",
+        )
+        .bind(redo_op_id.0.to_string())
+        .bind(original_id.0.to_string())
+        .execute((&self.writer))
+        .await?;
+        Ok(())
+    }
+
+    /// Fetch one operation row by id. Errors when missing rather than
+    /// returning a synthetic default — the daemon must not treat "not
+    /// found" as "already succeeded".
+    pub async fn get_operation(&self, operation_id: OperationId) -> Result<Operation> {
+        let row = sqlx::query("SELECT * FROM operations WHERE operation_id = ?")
+            .bind(operation_id.0.to_string())
+            .fetch_optional((&self.reader))
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("operation {operation_id} not found"))?;
+        row_to_operation(&row)
+    }
+
+    /// List operations, newest first. `since_ms` filters by
+    /// `occurred_at_ms >= since`; `source` filters by source label.
+    pub async fn list_operations(
+        &self,
+        limit: u32,
+        since_ms: Option<i64>,
+        source: Option<OperationSource>,
+    ) -> Result<Vec<Operation>> {
+        let rows = match (since_ms, source) {
+            (Some(since), Some(src)) => {
+                sqlx::query(
+                    "SELECT * FROM operations
+                     WHERE occurred_at_ms >= ? AND source = ?
+                     ORDER BY occurred_at_ms DESC
+                     LIMIT ?",
+                )
+                .bind(since)
+                .bind(src.label())
+                .bind(limit as i64)
+                .fetch_all((&self.reader))
+                .await?
+            }
+            (Some(since), None) => {
+                sqlx::query(
+                    "SELECT * FROM operations
+                     WHERE occurred_at_ms >= ?
+                     ORDER BY occurred_at_ms DESC
+                     LIMIT ?",
+                )
+                .bind(since)
+                .bind(limit as i64)
+                .fetch_all((&self.reader))
+                .await?
+            }
+            (None, Some(src)) => {
+                sqlx::query(
+                    "SELECT * FROM operations
+                     WHERE source = ?
+                     ORDER BY occurred_at_ms DESC
+                     LIMIT ?",
+                )
+                .bind(src.label())
+                .bind(limit as i64)
+                .fetch_all((&self.reader))
+                .await?
+            }
+            (None, None) => {
+                sqlx::query(
+                    "SELECT * FROM operations
+                     ORDER BY occurred_at_ms DESC
+                     LIMIT ?",
+                )
+                .bind(limit as i64)
+                .fetch_all((&self.reader))
+                .await?
+            }
+        };
+        rows.iter().map(row_to_operation).collect()
+    }
+
+    /// Find the most recent reversible + succeeded operation. Powers
+    /// `spotuify ops undo` (with no id argument) and MCP `undo_last`.
+    pub async fn find_last_reversible_operation(&self) -> Result<Option<Operation>> {
+        let row = sqlx::query(
+            "SELECT * FROM operations
+             WHERE reversible = 1 AND status = 'succeeded'
+             ORDER BY occurred_at_ms DESC
+             LIMIT 1",
+        )
+        .fetch_optional((&self.reader))
+        .await?;
+        match row {
+            Some(r) => Ok(Some(row_to_operation(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Find reversible succeeded ops newer than `since_ms`. Drives
+    /// `ops undo --since 1h`.
+    pub async fn find_reversible_operations_since(
+        &self,
+        since_ms: i64,
+        source: Option<OperationSource>,
+    ) -> Result<Vec<Operation>> {
+        let rows = match source {
+            Some(src) => {
+                sqlx::query(
+                    "SELECT * FROM operations
+                     WHERE reversible = 1 AND status = 'succeeded'
+                       AND occurred_at_ms >= ? AND source = ?
+                     ORDER BY occurred_at_ms DESC",
+                )
+                .bind(since_ms)
+                .bind(src.label())
+                .fetch_all((&self.reader))
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT * FROM operations
+                     WHERE reversible = 1 AND status = 'succeeded'
+                       AND occurred_at_ms >= ?
+                     ORDER BY occurred_at_ms DESC",
+                )
+                .bind(since_ms)
+                .fetch_all((&self.reader))
+                .await?
+            }
+        };
+        rows.iter().map(row_to_operation).collect()
+    }
+
+    /// Delete operations older than `cutoff_ms`. Returns rows affected.
+    /// Called by the daemon's daily retention job (default 90d).
+    pub async fn prune_operations_older_than(&self, cutoff_ms: i64) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM operations WHERE occurred_at_ms < ?")
+            .bind(cutoff_ms)
+            .execute((&self.writer))
+            .await?;
+        Ok(result.rows_affected())
+    }
+}
+
+fn row_to_operation(row: &sqlx::sqlite::SqliteRow) -> Result<Operation> {
+    let id_str: String = row.try_get("operation_id")?;
+    let operation_id = uuid::Uuid::parse_str(&id_str)
+        .map(OperationId)
+        .map_err(|err| anyhow::anyhow!("malformed operation_id `{id_str}`: {err}"))?;
+
+    let kind_label: String = row.try_get("kind")?;
+    let kind = parse_kind(&kind_label)?;
+    let source_label: String = row.try_get("source")?;
+    let source = OperationSource::from_label(&source_label)
+        .ok_or_else(|| anyhow::anyhow!("unknown operation source `{source_label}`"))?;
+    let status_label: String = row.try_get("status")?;
+    let status = parse_status(&status_label)?;
+
+    let subject_uris_json: String = row.try_get("subject_uris_json")?;
+    let subject_uris: Vec<String> = serde_json::from_str(&subject_uris_json)
+        .map_err(|err| anyhow::anyhow!("malformed subject_uris_json: {err}"))?;
+
+    let reversal_plan_json: Option<String> = row.try_get("reversal_plan_json")?;
+    let reversal_plan: Option<ReversalPlan> = match reversal_plan_json {
+        Some(raw) if !raw.is_empty() => Some(
+            serde_json::from_str(&raw)
+                .map_err(|err| anyhow::anyhow!("malformed reversal_plan_json: {err}"))?,
+        ),
+        _ => None,
+    };
+    let pre_state_json: Option<String> = row.try_get("pre_state_json")?;
+    let pre_state: Option<PreState> = match pre_state_json {
+        Some(raw) if !raw.is_empty() => Some(
+            serde_json::from_str(&raw)
+                .map_err(|err| anyhow::anyhow!("malformed pre_state_json: {err}"))?,
+        ),
+        _ => None,
+    };
+
+    let reversible: i64 = row.try_get("reversible")?;
+    let receipt_id_str: Option<String> = row.try_get("receipt_id")?;
+    let receipt_id = match receipt_id_str {
+        Some(raw) => Some(
+            uuid::Uuid::parse_str(&raw)
+                .map(ReceiptId)
+                .map_err(|err| anyhow::anyhow!("malformed receipt_id `{raw}`: {err}"))?,
+        ),
+        None => None,
+    };
+    let subject_op_id = parse_optional_op_id(row, "subject_op_id")?;
+    let undone_by_op_id = parse_optional_op_id(row, "undone_by_op_id")?;
+    let redone_by_op_id = parse_optional_op_id(row, "redone_by_op_id")?;
+
+    Ok(Operation {
+        operation_id,
+        kind,
+        occurred_at_ms: row.try_get("occurred_at_ms")?,
+        finished_at_ms: row.try_get("finished_at_ms")?,
+        source,
+        requester: row.try_get("requester")?,
+        subject_uris,
+        reversible: reversible != 0,
+        reversal_plan,
+        pre_state,
+        status,
+        receipt_id,
+        subject_op_id,
+        undone_by_op_id,
+        redone_by_op_id,
+        error_message: row.try_get("error_message")?,
+    })
+}
+
+fn parse_optional_op_id(
+    row: &sqlx::sqlite::SqliteRow,
+    column: &str,
+) -> Result<Option<OperationId>> {
+    let raw: Option<String> = row.try_get(column)?;
+    match raw {
+        Some(raw) => {
+            Ok(Some(uuid::Uuid::parse_str(&raw).map(OperationId).map_err(
+                |err| anyhow::anyhow!("malformed {column} `{raw}`: {err}"),
+            )?))
+        }
+        None => Ok(None),
+    }
+}
+
+fn parse_kind(label: &str) -> Result<OperationKind> {
+    use OperationKind::*;
+    Ok(match label {
+        "queue_add" => QueueAdd,
+        "playlist_add" => PlaylistAdd,
+        "playlist_remove" => PlaylistRemove,
+        "playlist_create" => PlaylistCreate,
+        "playlist_reorder" => PlaylistReorder,
+        "library_save" => LibrarySave,
+        "library_unsave" => LibraryUnsave,
+        "transfer" => Transfer,
+        "like" => Like,
+        "unlike" => Unlike,
+        "play" => Play,
+        "pause" => Pause,
+        "resume" => Resume,
+        "toggle" => Toggle,
+        "next" => Next,
+        "previous" => Previous,
+        "seek" => Seek,
+        "volume" => Volume,
+        "shuffle" => Shuffle,
+        "repeat" => Repeat,
+        "undo" => Undo,
+        "redo" => Redo,
+        other => anyhow::bail!("unknown operation kind `{other}`"),
+    })
+}
+
+fn parse_status(label: &str) -> Result<OperationStatus> {
+    use OperationStatus::*;
+    Ok(match label {
+        "pending" => Pending,
+        "succeeded" => Succeeded,
+        "failed" => Failed,
+        "undone" => Undone,
+        "redone" => Redone,
+        other => anyhow::bail!("unknown operation status `{other}`"),
+    })
+}
