@@ -1,5 +1,22 @@
 # Phase 5 - Agent Playlists
 
+> **Note on agent semantics (added Phase 13, 2026-05-14)** —
+> `build_playlist_plan` ships as a heuristic scaffold for the
+> `spotuify playlist plan` CLI surface; it is *not* a real LLM planner.
+> Genuine LLM-driven playlist research happens in the upstream
+> agent / MCP-client model:
+>
+> - Phase 8 ships the spotuify MCP server, exposing tools an LLM can
+>   call directly: `search`, `playlist_add`, `playlist_create`,
+>   `library_save`, etc., gated by destructive-confirm.
+> - Phase 12 ships `undo_last` so a misfired LLM tool call is
+>   recoverable.
+>
+> The local `build_playlist_plan` heuristic is kept for Unix-shell
+> composition (`spotuify playlist plan | jq` recipes) and for tests
+> that need a deterministic plan generator. Treat it as a stub: do not
+> extend it to compete with the MCP client model.
+
 ## Goal
 
 Let agents research a theme, resolve tracks, preview a playlist, and create it safely through spotuify CLI.
