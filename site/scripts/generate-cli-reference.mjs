@@ -5,9 +5,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(__dirname, '..', '..');
-const SNAPSHOT_DIR = join(REPO_ROOT, 'tests', 'snapshots');
-const OUT_DIR = join(REPO_ROOT, 'site', 'src', 'content', 'docs', 'reference', 'cli');
+const SITE_ROOT = resolve(__dirname, '..');
+const REPO_ROOT = resolve(SITE_ROOT, '..');
+const SNAPSHOT_DIR = process.env.SPOTUIFY_CLI_SNAPSHOT_DIR
+  ? resolve(process.env.SPOTUIFY_CLI_SNAPSHOT_DIR)
+  : join(REPO_ROOT, 'tests', 'snapshots');
+const OUT_DIR = join(SITE_ROOT, 'src', 'content', 'docs', 'reference', 'cli');
 const PREFIX = 'cli_help__cli_help_';
 const GENERATED = '<!-- generated: spotuify-cli-reference -->';
 
@@ -482,7 +485,21 @@ function cleanGeneratedOutput() {
   }
 }
 
+function useCommittedGeneratedPages() {
+  const missing = EXPECTED_PAGES.filter((page) => !existsSync(join(OUT_DIR, `${page}.md`)));
+  if (missing.length) {
+    console.error(`[cli-reference] snapshot source missing and generated pages missing: ${missing.join(', ')}`);
+    process.exit(1);
+  }
+  console.log(`[cli-reference] snapshot source missing; using ${EXPECTED_PAGES.length} committed pages`);
+}
+
 function main() {
+  if (!existsSync(SNAPSHOT_DIR)) {
+    useCommittedGeneratedPages();
+    return;
+  }
+
   cleanGeneratedOutput();
   const pages = new Map();
 

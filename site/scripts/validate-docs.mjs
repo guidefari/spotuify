@@ -5,8 +5,8 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const repoRoot = resolve(__dirname, '..', '..');
-const docsRoot = join(repoRoot, 'site', 'src', 'content', 'docs');
+const siteRoot = resolve(__dirname, '..');
+const docsRoot = join(siteRoot, 'src', 'content', 'docs');
 const cliRoot = join(docsRoot, 'reference', 'cli');
 
 const requiredCliPages = [
