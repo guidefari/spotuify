@@ -36,13 +36,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// Successful protocol exchanges -- including daemon-side error
 /// envelopes -- come back as Ok(Response::Error { .. }).
 pub async fn round_trip(socket_path: &Path, request: Request) -> Result<Response> {
-    let stream = tokio::time::timeout(
-        Duration::from_secs(2),
-        UnixStream::connect(socket_path),
-    )
-    .await
-    .map_err(|_| anyhow!("timed out connecting to daemon socket {socket_path:?}"))?
-    .with_context(|| format!("connect to daemon socket {socket_path:?}"))?;
+    let stream = tokio::time::timeout(Duration::from_secs(2), UnixStream::connect(socket_path))
+        .await
+        .map_err(|_| anyhow!("timed out connecting to daemon socket {socket_path:?}"))?
+        .with_context(|| format!("connect to daemon socket {socket_path:?}"))?;
 
     let mut framed = Framed::new(stream, IpcCodec::new());
 
@@ -62,7 +59,10 @@ pub async fn round_trip(socket_path: &Path, request: Request) -> Result<Response
     match resp {
         Some(Ok(msg)) => match msg.payload {
             IpcPayload::Response(r) => Ok(r),
-            other => Err(anyhow!("daemon sent unexpected payload {:?}", payload_kind(&other))),
+            other => Err(anyhow!(
+                "daemon sent unexpected payload {:?}",
+                payload_kind(&other)
+            )),
         },
         Some(Err(err)) => Err(anyhow!("daemon stream decode error: {err}")),
         None => Err(anyhow!("daemon closed the connection without responding")),
@@ -80,9 +80,15 @@ fn payload_kind(p: &IpcPayload) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Process-wide env is shared across parallel cargo tests; serialise
+    // the env-mutating socket-path tests through a single mutex.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn default_socket_path_honours_env_override() {
+        let _g = ENV_LOCK.lock().unwrap();
         std::env::set_var("SPOTUIFY_SOCKET", "/tmp/spotuify-test.sock");
         let p = default_socket_path();
         assert_eq!(p, PathBuf::from("/tmp/spotuify-test.sock"));
@@ -91,6 +97,7 @@ mod tests {
 
     #[test]
     fn default_socket_path_falls_back_to_cache_dir() {
+        let _g = ENV_LOCK.lock().unwrap();
         std::env::remove_var("SPOTUIFY_SOCKET");
         let p = default_socket_path();
         assert!(
