@@ -9,12 +9,17 @@
 //! schema, and TUI rendering belong in other crates.
 
 pub mod analytics;
+pub mod ids;
 
 pub use analytics::{
-    action_finished_event, now_ms, redact_spotify_path, search_performed_event,
-    spotify_api_finished_event, AnalyticsEvent, AnalyticsEventKind, AnalyticsSink, AnalyticsSource,
-    StoredAnalyticsEvent,
+    action_finished_event, listen_qualified_event, now_ms, playback_completed_event,
+    playback_paused_event, playback_resumed_event, playback_skipped_event, playback_started_event,
+    qualify_listen, redact_spotify_path, search_performed_event, spotify_api_finished_event,
+    AnalyticsEvent, AnalyticsEventKind, AnalyticsSink, AnalyticsSource, BackendLabel, HabitBucket,
+    HabitWindow, ListenFact, PlaybackSource, Qualification, SkipReason, StoredAnalyticsEvent,
+    QUALIFICATION_RULE_VERSION,
 };
+pub use ids::{AlbumId, ArtistId, PlaylistId, TrackId};
 
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +37,109 @@ pub struct Playback {
 pub struct Queue {
     pub currently_playing: Option<MediaItem>,
     pub items: Vec<MediaItem>,
+}
+
+/// Which player implementation the daemon should use to register a
+/// Spotify Connect device and stream audio. Domain enum so configuration
+/// (in `spotuify-spotify`) and the trait (in `spotuify-player`) can both
+/// reference it without a dependency cycle.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BackendKind {
+    /// In-process librespot Player + Spirc. Single binary, gapless,
+    /// mercury bus available. Will become the default once Phase 9.5
+    /// lands stable audio backends across all targets.
+    Embedded,
+    /// Supervised spotifyd sibling process. Today's default — preserves
+    /// existing user behaviour during the Phase 9 rollout.
+    #[default]
+    Spotifyd,
+    /// No local device; remote-control existing Connect devices via the
+    /// Web API. Useful for headless servers and Free accounts that can
+    /// still browse and steer playback on another device.
+    Connect,
+}
+
+impl BackendKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Embedded => "embedded",
+            Self::Spotifyd => "spotifyd",
+            Self::Connect => "connect",
+        }
+    }
+
+    /// Parse the user-facing string form used in config.toml and the
+    /// `--backend` CLI flag. Returns the typo verbatim in the error so
+    /// users can see what they typed.
+    pub fn parse(value: &str) -> Result<Self, BackendKindParseError> {
+        match value {
+            "embedded" => Ok(Self::Embedded),
+            "spotifyd" => Ok(Self::Spotifyd),
+            "connect" => Ok(Self::Connect),
+            other => Err(BackendKindParseError {
+                value: other.to_string(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendKindParseError {
+    pub value: String,
+}
+
+impl std::fmt::Display for BackendKindParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown player backend `{}`; expected one of: embedded, spotifyd, connect",
+            self.value
+        )
+    }
+}
+
+impl std::error::Error for BackendKindParseError {}
+
+#[cfg(test)]
+mod backend_kind_tests {
+    use super::BackendKind;
+
+    #[test]
+    fn label_is_lowercase_kebab() {
+        assert_eq!(BackendKind::Embedded.label(), "embedded");
+        assert_eq!(BackendKind::Spotifyd.label(), "spotifyd");
+        assert_eq!(BackendKind::Connect.label(), "connect");
+    }
+
+    #[test]
+    fn parse_round_trips_through_label() {
+        for kind in [
+            BackendKind::Embedded,
+            BackendKind::Spotifyd,
+            BackendKind::Connect,
+        ] {
+            let parsed = BackendKind::parse(kind.label()).unwrap();
+            assert_eq!(parsed, kind);
+        }
+    }
+
+    #[test]
+    fn parse_typo_echoes_value_in_error() {
+        // Adversarial: error must echo `embeded` so users can fix the
+        // exact line they typed. A generic "invalid" would fail this.
+        let err = BackendKind::parse("embeded").unwrap_err();
+        assert!(err.value.contains("embeded"));
+        assert!(err.to_string().contains("embeded"));
+    }
+
+    #[test]
+    fn default_is_spotifyd_during_phase_9_rollout() {
+        // Adversarial: default flip from spotifyd → embedded happens in
+        // sub-phase 9.5. Asserting the default lock here ensures no
+        // surprise behaviour change for existing users.
+        assert_eq!(BackendKind::default(), BackendKind::Spotifyd);
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -170,7 +278,10 @@ mod tests {
             supports_volume: true,
         };
         let json = serde_json::to_value(&device).unwrap();
-        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("smartphone"));
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("smartphone")
+        );
         assert!(json.get("kind").is_none());
     }
 }
