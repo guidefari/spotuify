@@ -8,8 +8,10 @@
 pub mod analytics;
 pub mod event_log;
 pub mod ipc_client;
+pub mod ipc_stream;
 pub mod operations;
 pub mod output;
+pub mod paths;
 
 pub use analytics::{
     ExportTarget, RebuildReport, RediscoveryCandidate, SearchHistoryEntry, SearchMode, SinceWindow,
