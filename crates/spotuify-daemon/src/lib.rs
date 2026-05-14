@@ -10,6 +10,7 @@
 pub mod analytics;
 pub mod diagnostics;
 pub mod handler;
+pub mod hook_executor;
 pub mod logging;
 pub mod player_factory;
 pub mod server;
