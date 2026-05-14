@@ -24,7 +24,11 @@ const POOL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
 /// - v2: snapshot_id, snapshot_id_at_fetch, freshness_class,
 ///   sync_generation (Phase 6.4)
 /// - v3: receipts table for two-stage mutation lifecycle (Phase 6.6)
-pub const CACHE_VERSION: u32 = 3;
+/// - v4: analytics derivations — listen_facts, track/artist/album/habit
+///   metrics, qualification_rules, playback_progress (Phase 10)
+/// - v5: operations log — jj-style mutation log with reversal plans
+///   and pre-state capture for undo/redo (Phase 12)
+pub const CACHE_VERSION: u32 = 5;
 
 #[derive(Clone)]
 pub struct Store {
@@ -579,41 +583,36 @@ impl Store {
         .execute(&self.writer)
         .await?;
 
-        if !self.is_migration_applied(1).await? {
-            sqlx::raw_sql(INITIAL_SCHEMA).execute(&self.writer).await?;
-            sqlx::query(
-                "INSERT INTO schema_migrations (version, name, applied_at_ms) VALUES (1, 'initial_cache', ?)",
-            )
-            .bind(now_ms())
-            .execute(&self.writer)
-            .await?;
-        }
-
-        if !self.is_migration_applied(2).await? {
-            sqlx::raw_sql(MIGRATION_002_SNAPSHOT_ID_FRESHNESS)
-                .execute(&self.writer)
-                .await?;
-            sqlx::query(
-                "INSERT INTO schema_migrations (version, name, applied_at_ms) VALUES (2, 'snapshot_id_freshness', ?)",
-            )
-            .bind(now_ms())
-            .execute(&self.writer)
-            .await?;
-        }
-
-        if !self.is_migration_applied(3).await? {
-            sqlx::raw_sql(MIGRATION_003_RECEIPTS)
-                .execute(&self.writer)
-                .await?;
-            sqlx::query(
-                "INSERT INTO schema_migrations (version, name, applied_at_ms) VALUES (3, 'receipts', ?)",
-            )
-            .bind(now_ms())
-            .execute(&self.writer)
-            .await?;
+        for migration in MIGRATIONS {
+            self.apply_migration(migration).await?;
         }
 
         self.validate_schema().await?;
+        Ok(())
+    }
+
+    /// Apply a single migration if not already at this version. Each
+    /// migration body is responsible for being idempotent in its SQL
+    /// (we use `CREATE TABLE/INDEX IF NOT EXISTS`), so a crash between
+    /// running the body and stamping the version row replays cleanly on
+    /// the next start.
+    async fn apply_migration(&self, migration: &Migration) -> Result<()> {
+        if self.is_migration_applied(migration.version).await? {
+            return Ok(());
+        }
+        match migration.kind {
+            MigrationKind::Sql(sql) => {
+                sqlx::raw_sql(sql).execute(&self.writer).await?;
+            }
+        }
+        sqlx::query(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms) VALUES (?, ?, ?)",
+        )
+        .bind(migration.version as i64)
+        .bind(migration.name)
+        .bind(now_ms())
+        .execute(&self.writer)
+        .await?;
         Ok(())
     }
 
@@ -780,10 +779,10 @@ impl Store {
         Ok(())
     }
 
-    async fn is_migration_applied(&self, version: i64) -> Result<bool> {
+    async fn is_migration_applied(&self, version: u32) -> Result<bool> {
         let row: Option<(i64,)> =
             sqlx::query_as("SELECT version FROM schema_migrations WHERE version = ?")
-                .bind(version)
+                .bind(version as i64)
                 .fetch_optional(&self.writer)
                 .await?;
         Ok(row.is_some())
@@ -1086,6 +1085,201 @@ CREATE TABLE IF NOT EXISTS receipts (
 CREATE INDEX IF NOT EXISTS idx_receipts_status_started ON receipts(status, started_at_ms);
 "#;
 
+/// Phase 10: analytics derivations. Adds `listen_facts` (one row per
+/// finalised listening session), per-entity rollups
+/// (`track_metrics`/`artist_metrics`/`album_metrics`), `habit_metrics`
+/// (day/week/month buckets), `qualification_rules` (versioned threshold
+/// table so future tweaks don't retroactively change history), and
+/// `playback_progress` (raw sample-rate-anchored progress samples
+/// pruned at 90d).
+///
+/// Listen qualification rule v1: audible_ms >= max(30s, min(50% of
+/// duration, 4min)) AND duration_ms > 30s. The rule version is stamped
+/// on every `listen_facts` row so changing the math later doesn't
+/// invalidate existing data.
+const MIGRATION_004_ANALYTICS_DERIVATIONS: &str = r#"
+CREATE TABLE IF NOT EXISTS listen_facts (
+    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id                  TEXT NOT NULL,
+    track_uri                   TEXT NOT NULL,
+    artist_uri                  TEXT,
+    album_uri                   TEXT,
+    started_at_ms               INTEGER NOT NULL,
+    ended_at_ms                 INTEGER NOT NULL,
+    duration_ms                 INTEGER NOT NULL,
+    elapsed_ms                  INTEGER NOT NULL,
+    audible_ms                  INTEGER NOT NULL,
+    completion_ratio            REAL NOT NULL,
+    qualified                   INTEGER NOT NULL,
+    qualification_rule_version  INTEGER NOT NULL,
+    skip_reason                 TEXT,
+    source                      TEXT,
+    backend                     TEXT,
+    private_session             INTEGER NOT NULL DEFAULT 0,
+    created_at_ms               INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_listen_facts_started
+    ON listen_facts(started_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_listen_facts_track_qual
+    ON listen_facts(track_uri, qualified);
+CREATE INDEX IF NOT EXISTS idx_listen_facts_artist_qual
+    ON listen_facts(artist_uri, qualified);
+CREATE INDEX IF NOT EXISTS idx_listen_facts_session
+    ON listen_facts(session_id);
+
+CREATE TABLE IF NOT EXISTS track_metrics (
+    track_uri             TEXT PRIMARY KEY,
+    qualified_count       INTEGER NOT NULL DEFAULT 0,
+    skip_count            INTEGER NOT NULL DEFAULT 0,
+    total_audible_ms      INTEGER NOT NULL DEFAULT 0,
+    last_listened_at_ms   INTEGER,
+    first_listened_at_ms  INTEGER,
+    updated_at_ms         INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS artist_metrics (
+    artist_uri            TEXT PRIMARY KEY,
+    qualified_count       INTEGER NOT NULL DEFAULT 0,
+    skip_count            INTEGER NOT NULL DEFAULT 0,
+    total_audible_ms      INTEGER NOT NULL DEFAULT 0,
+    last_listened_at_ms   INTEGER,
+    first_listened_at_ms  INTEGER,
+    updated_at_ms         INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS album_metrics (
+    album_uri             TEXT PRIMARY KEY,
+    qualified_count       INTEGER NOT NULL DEFAULT 0,
+    skip_count            INTEGER NOT NULL DEFAULT 0,
+    total_audible_ms      INTEGER NOT NULL DEFAULT 0,
+    last_listened_at_ms   INTEGER,
+    first_listened_at_ms  INTEGER,
+    updated_at_ms         INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS habit_metrics (
+    bucket              TEXT NOT NULL,
+    bucket_start_ms     INTEGER NOT NULL,
+    listening_minutes   REAL NOT NULL,
+    unique_tracks       INTEGER NOT NULL,
+    unique_artists      INTEGER NOT NULL,
+    sessions            INTEGER NOT NULL,
+    top_hour_of_day     INTEGER,
+    exploration_ratio   REAL NOT NULL,
+    repeat_ratio        REAL NOT NULL,
+    computed_at_ms      INTEGER NOT NULL,
+    PRIMARY KEY (bucket, bucket_start_ms)
+);
+
+CREATE TABLE IF NOT EXISTS qualification_rules (
+    version       INTEGER PRIMARY KEY,
+    description   TEXT NOT NULL,
+    applied_at_ms INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO qualification_rules (version, description, applied_at_ms)
+VALUES (1,
+        'audible_ms >= max(30s, min(50% of duration, 4min)) and duration_ms > 30s',
+        CAST(strftime('%s','now') AS INTEGER) * 1000);
+
+CREATE TABLE IF NOT EXISTS playback_progress (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id       TEXT NOT NULL,
+    track_uri        TEXT NOT NULL,
+    sampled_at_ms    INTEGER NOT NULL,
+    position_ms      INTEGER NOT NULL,
+    audible_samples  INTEGER NOT NULL,
+    sample_rate      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_playback_progress_session_time
+    ON playback_progress(session_id, sampled_at_ms);
+CREATE INDEX IF NOT EXISTS idx_playback_progress_sampled
+    ON playback_progress(sampled_at_ms);
+"#;
+
+/// Phase 12: operations log. Every mutating daemon request is recorded
+/// here with its reversal plan and pre-state, so `spotuify ops undo`
+/// (and MCP `undo_last`) can revert it safely. `operation_id` is a
+/// UUID v7 (time-orderable string PK). `receipt_id` is the Phase 6.6
+/// receipt FK; `subject_op_id` links an undo/redo row back to the
+/// operation it acts on.
+///
+/// `reversible = 1` only for kinds with a meaningful inverse
+/// (playlist_add, library_save, transfer, like, …). Transport kinds
+/// (play/pause/seek/volume/shuffle/repeat) record `reversible = 0`
+/// purely for the audit log.
+const MIGRATION_005_OPERATIONS: &str = r#"
+CREATE TABLE IF NOT EXISTS operations (
+    operation_id        TEXT PRIMARY KEY,
+    kind                TEXT NOT NULL,
+    occurred_at_ms      INTEGER NOT NULL,
+    finished_at_ms      INTEGER,
+    source              TEXT NOT NULL,
+    requester           TEXT,
+    subject_uris_json   TEXT NOT NULL DEFAULT '[]',
+    reversible          INTEGER NOT NULL DEFAULT 0,
+    reversal_plan_json  TEXT,
+    pre_state_json      TEXT,
+    status              TEXT NOT NULL,
+    receipt_id          TEXT REFERENCES receipts(receipt_id),
+    subject_op_id       TEXT REFERENCES operations(operation_id),
+    undone_by_op_id     TEXT REFERENCES operations(operation_id),
+    redone_by_op_id     TEXT REFERENCES operations(operation_id),
+    error_message       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_operations_status_started
+    ON operations(status, occurred_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_operations_source_started
+    ON operations(source, occurred_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_operations_subject_op
+    ON operations(subject_op_id);
+"#;
+
+/// Migration table-of-contents. Append-only: never edit a published
+/// migration's body or version. To change semantics, add a follow-up
+/// migration that mutates the new schema.
+///
+/// `Sql` migrations must use `CREATE TABLE IF NOT EXISTS` / `INSERT OR
+/// IGNORE` style idempotent statements: the schema_migrations stamp is
+/// the last write, so a crash before stamping replays the body cleanly.
+struct Migration {
+    version: u32,
+    name: &'static str,
+    kind: MigrationKind,
+}
+
+#[allow(dead_code)]
+enum MigrationKind {
+    Sql(&'static str),
+}
+
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial_cache",
+        kind: MigrationKind::Sql(INITIAL_SCHEMA),
+    },
+    Migration {
+        version: 2,
+        name: "snapshot_id_freshness",
+        kind: MigrationKind::Sql(MIGRATION_002_SNAPSHOT_ID_FRESHNESS),
+    },
+    Migration {
+        version: 3,
+        name: "receipts",
+        kind: MigrationKind::Sql(MIGRATION_003_RECEIPTS),
+    },
+    Migration {
+        version: 4,
+        name: "analytics_derivations",
+        kind: MigrationKind::Sql(MIGRATION_004_ANALYTICS_DERIVATIONS),
+    },
+    Migration {
+        version: 5,
+        name: "operations",
+        kind: MigrationKind::Sql(MIGRATION_005_OPERATIONS),
+    },
+];
+
 /// Translate a `receipts` row into the protocol's [`Receipt`] type.
 fn row_to_receipt(row: &sqlx::sqlite::SqliteRow) -> Result<spotuify_protocol::Receipt> {
     use sqlx::Row;
@@ -1147,6 +1341,41 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
     (
         "sync_cursors",
         &["domain", "last_success_at_ms", "last_error"],
+    ),
+    // v4 — analytics derivations
+    (
+        "listen_facts",
+        &[
+            "session_id",
+            "track_uri",
+            "started_at_ms",
+            "audible_ms",
+            "qualified",
+            "qualification_rule_version",
+        ],
+    ),
+    ("track_metrics", &["track_uri", "qualified_count"]),
+    ("artist_metrics", &["artist_uri", "qualified_count"]),
+    ("album_metrics", &["album_uri", "qualified_count"]),
+    (
+        "habit_metrics",
+        &["bucket", "bucket_start_ms", "listening_minutes"],
+    ),
+    ("qualification_rules", &["version", "description"]),
+    (
+        "playback_progress",
+        &[
+            "session_id",
+            "track_uri",
+            "sampled_at_ms",
+            "audible_samples",
+            "sample_rate",
+        ],
+    ),
+    // v5 — operations log
+    (
+        "operations",
+        &["operation_id", "kind", "occurred_at_ms", "source", "status"],
     ),
 ];
 
