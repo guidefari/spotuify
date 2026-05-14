@@ -145,6 +145,12 @@ open = "5"
 # JSON Schema (Phase 8 MCP)
 schemars = "0.8"
 
+# Phase 14 system integration.
+souvlaki = "0.8"
+notify-rust = "4"
+discord-rich-presence = "0.2"
+winit = "0.30"
+
 # Testing
 assert_cmd = "2"
 insta = { version = "1", features = ["yaml"] }

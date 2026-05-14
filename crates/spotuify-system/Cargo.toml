@@ -3,11 +3,47 @@ name = "spotuify-system"
 version.workspace = true
 edition.workspace = true
 publish = false
-description = "Phase 14 system integration: MPRIS, media keys, notifications, Discord RPC, shell hooks. Currently empty scaffold."
+description = "Phase 14 system integration: MPRIS / Now Playing / SMTC media controls (souvlaki), desktop notifications (notify-rust), shell-hook event dispatch, Discord Rich Presence, and the cover-art file cache shared with the TUI."
 
 [dependencies]
 spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
+
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+image = { workspace = true }
+dirs = { workspace = true }
+parking_lot = { workspace = true }
+
+# Phase 14 system-integration crates (workspace versions wired below).
+souvlaki = { version = "0.8", optional = true }
+notify-rust = { version = "4", optional = true }
+discord-rich-presence = { version = "0.2", optional = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+# souvlaki needs a real window handle on macOS / Windows; we keep a
+# hidden message-only winit window alive in a dedicated thread.
+winit = { version = "0.30", optional = true }
+
+[features]
+# Default is "everything off"; CI / packagers turn the features on
+# per platform. See blueprint 14 for the matrix.
+default = ["media-controls", "notifications", "hooks"]
+media-controls = ["dep:souvlaki", "dep:winit"]
+notifications = ["dep:notify-rust"]
+hooks = []
+discord-rpc = ["dep:discord-rich-presence"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+wiremock = { workspace = true }
+pretty_assertions = { workspace = true }
 
 [lints]
 workspace = true
