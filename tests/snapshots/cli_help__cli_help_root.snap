@@ -1,11 +1,10 @@
 ---
 source: tests/cli_help.rs
-assertion_line: 13
 expression: normalize_help_output(&stdout)
 ---
 A keyboard-native Spotify TUI
 
-Usage: spotuify [COMMAND]
+Usage: spotuify [OPTIONS] [COMMAND]
 
 Commands:
   onboard         Guided first-run setup: config, OAuth, and initial Spotify sync
@@ -39,11 +38,18 @@ Commands:
   config          Read or write ~/.config/spotuify/spotuify.toml
   analytics       Inspect local analytics data
   ops             Inspect / undo / redo recorded operations (Phase 12)
+  generate        Phase 13 (P13-J) — emit shell completions or a man page
+  reload          Phase 13 (P13-I) — ask the running daemon to reload `config.toml`
+  reconnect       Phase 13 (P13-I) — force the daemon to rebuild its upstream Spotify session (after a VPN flap, network change, etc)
+  bug-report      Phase 13 (P13-D) — bundle a redacted diagnostic tarball for bug reports. Never auto-uploads; the user inspects + shares it
   reindex         Rebuild the local search index from SQLite cache
   cache           Inspect local cache state
   sync            Refresh local cache from Spotify
   help            Print this message or the help of the given subcommand(s)
 
 Options:
-  -h, --help     Print help
-  -V, --version  Print version
+      --log-format <LOG_FORMAT>  Phase 13 (P13-A) — pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT` [possible values: text, json]
+      --no-daemon-start          Phase 13 (P13-H) — if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
+  -o, --set <key.path=value>     Phase 13 (P13-H) — one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
+  -h, --help                     Print help
+  -V, --version                  Print version
