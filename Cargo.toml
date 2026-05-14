@@ -211,6 +211,8 @@ tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 url = { workspace = true }
 spotuify-keychain = { workspace = true }
+clap_complete = { workspace = true }
+clap_mangen = { workspace = true }
 
 # Phase 11 (F9): Windows-only ffi for SetConsoleOutputCP(CP_UTF8).
 [target.'cfg(windows)'.dependencies]

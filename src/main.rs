@@ -40,6 +40,22 @@ use spotuify_cli::cli_args::{LibraryCommand, PlaylistCommand, QueueCommand};
 #[derive(Parser)]
 #[command(name = "spotuify", version, about = "A keyboard-native Spotify TUI")]
 struct Cli {
+    /// Phase 13 (P13-A) — pick the daemon log format for this run.
+    /// Also honoured via `SPOTUIFY_LOG_FORMAT`.
+    #[arg(long, global = true, value_parser = ["text", "json"])]
+    log_format: Option<String>,
+
+    /// Phase 13 (P13-H) — if set, the CLI never auto-starts the daemon.
+    /// Errors with a clear hint when the daemon socket is missing.
+    #[arg(long, global = true)]
+    no_daemon_start: bool,
+
+    /// Phase 13 (P13-H) — one-shot TOML override (e.g. `-o player.bitrate=160`).
+    /// Repeatable. Applies for this invocation only; the config file
+    /// on disk is unchanged.
+    #[arg(short = 'o', long = "set", global = true, value_name = "key.path=value")]
+    set: Vec<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -262,6 +278,26 @@ enum Command {
         #[command(subcommand)]
         command: OpsCommand,
     },
+    /// Phase 13 (P13-J) — emit shell completions or a man page.
+    Generate {
+        #[command(subcommand)]
+        command: GenerateCommand,
+    },
+    /// Phase 13 (P13-I) — ask the running daemon to reload `config.toml`.
+    Reload,
+    /// Phase 13 (P13-I) — force the daemon to rebuild its upstream
+    /// Spotify session (after a VPN flap, network change, etc).
+    Reconnect,
+    /// Phase 13 (P13-D) — bundle a redacted diagnostic tarball for
+    /// bug reports. Never auto-uploads; the user inspects + shares it.
+    BugReport {
+        /// Last N log lines to include (default 200).
+        #[arg(long, default_value_t = 200)]
+        log_lines: usize,
+        /// Output path. Defaults to ./spotuify-bug-report-<ts>.tar.gz.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Rebuild the local search index from SQLite cache.
     Reindex {
         /// Output format.
@@ -425,6 +461,13 @@ enum LogsCommand {
         /// Number of lines to print.
         #[arg(default_value_t = 80)]
         lines: usize,
+        /// Phase 13 (P13-C) — keep printing as new lines arrive
+        /// (poll the log file every 500ms; Ctrl-C to exit).
+        #[arg(long)]
+        follow: bool,
+        /// Output format: text (default), json/jsonl (pass-through).
+        #[arg(long, default_value = "text", value_parser = ["text", "json", "jsonl"])]
+        format: String,
     },
 }
 
@@ -554,6 +597,17 @@ enum OpsCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum GenerateCommand {
+    /// Emit shell completions for the given shell to stdout.
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Emit a roff man page (section 1) to stdout.
+    ManPage,
+}
+
 #[tokio::main]
 async fn main() {
     // Phase 11 (F9): force the Windows console code page to UTF-8 before
@@ -575,9 +629,34 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
-    let _log_guard = logging::init().context("failed to initialize logging")?;
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), "spotuify starting");
+    // Phase 13 (P13-A) — `--log-format json` overrides the env-default.
+    // Parse the CLI once *before* we initialise tracing so the format
+    // flag lands; the second parse below is a no-op cost-wise (clap
+    // arg parsing is cheap) and keeps the rest of the code unchanged.
     let cli = Cli::parse();
+    let log_format = match cli.log_format.as_deref() {
+        Some("json") => logging::LogFormat::Json,
+        Some("text") => logging::LogFormat::Text,
+        _ => logging::LogFormat::from_env_or_default(),
+    };
+    if cli.no_daemon_start {
+        // Threaded through to daemon-client via env var so existing
+        // helper code that checks the daemon socket can pick it up
+        // without a signature change.
+        std::env::set_var("SPOTUIFY_NO_DAEMON_START", "1");
+    }
+    if !cli.set.is_empty() {
+        // Phase 13 (P13-H) — accumulate `-o key.path=value` overrides
+        // into an env-var the config loader picks up. The shell shape
+        // is `key.path=value\nkey2.path=value\n…`.
+        let payload = cli.set.join("\n");
+        std::env::set_var("SPOTUIFY_CONFIG_OVERRIDES", payload);
+    }
+    let _log_guard =
+        logging::init_with_format(log_format).context("failed to initialize logging")?;
+    logging::install_panic_hook();
+    logging::surface_prior_panic_if_any();
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "spotuify starting");
 
     match cli.command {
         Some(Command::Onboard) => onboard().await,
@@ -585,6 +664,10 @@ async fn run() -> Result<()> {
         Some(Command::Config { command }) => handle_config(command),
         Some(Command::Analytics { command }) => handle_analytics(command).await,
         Some(Command::Ops { command }) => handle_ops(command).await,
+        Some(Command::Generate { command }) => handle_generate(command),
+        Some(Command::Reload) => commands::ipc_reload().await,
+        Some(Command::Reconnect) => commands::ipc_reconnect().await,
+        Some(Command::BugReport { log_lines, output }) => bug_report(log_lines, output).await,
         Some(Command::Login { redirect_uri }) => {
             let mut config = Config::load().context("failed to load Spotify config")?;
             if let Some(redirect_uri) = redirect_uri {
@@ -1096,16 +1179,86 @@ fn wait_for_enter(message: &str) -> Result<()> {
 fn handle_logs(command: LogsCommand) -> Result<()> {
     match command {
         LogsCommand::Path => println!("{}", logging::log_path()?.display()),
-        LogsCommand::Tail { lines } => {
+        LogsCommand::Tail {
+            lines,
+            follow,
+            format,
+        } => {
+            let json_mode = format == "json" || format == "jsonl";
             let logs = logging::read_tail(lines)?;
-            if logs.is_empty() {
-                println!("no logs yet: {}", logging::log_path()?.display());
+            if logs.is_empty() && !follow {
+                if json_mode {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "warning": "no log file",
+                            "path": logging::log_path()?.display().to_string()
+                        })
+                    );
+                } else {
+                    println!("no logs yet: {}", logging::log_path()?.display());
+                }
             } else {
-                println!("{logs}");
+                for line in logs.lines() {
+                    emit_log_line(line, json_mode);
+                }
+            }
+            if follow {
+                // Phase 13 (P13-C) — file-polling tail loop borrowed
+                // from mxr (crates/daemon/src/commands/logs.rs:48-142).
+                // Polls the log file every 500ms; exits on Ctrl-C.
+                follow_log_file(json_mode)?;
             }
         }
     }
     Ok(())
+}
+
+fn emit_log_line(line: &str, json_mode: bool) {
+    if json_mode {
+        // Pass-through: file lines are already JSON when daemon ran in
+        // JSON mode. If a line isn't valid JSON, wrap it for the
+        // consumer.
+        if serde_json::from_str::<serde_json::Value>(line).is_ok() {
+            println!("{line}");
+        } else {
+            println!(
+                "{}",
+                serde_json::json!({ "raw": line }).to_string()
+            );
+        }
+    } else {
+        println!("{line}");
+    }
+}
+
+fn follow_log_file(json_mode: bool) -> Result<()> {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+    let path = logging::log_path()?;
+    let mut pos = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if !json_mode {
+        println!("--- Following {} (Ctrl-C to stop) ---", path.display());
+    }
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let current_len = match std::fs::metadata(&path) {
+            Ok(m) => m.len(),
+            Err(_) => continue,
+        };
+        if current_len > pos {
+            let mut file = std::fs::File::open(&path)?;
+            file.seek(SeekFrom::Start(pos))?;
+            let reader = BufReader::new(file);
+            for line in reader.lines() {
+                let line = line?;
+                emit_log_line(&line, json_mode);
+            }
+            pos = current_len;
+        } else if current_len < pos {
+            // Log rotation truncated the file; rewind.
+            pos = 0;
+        }
+    }
 }
 
 fn handle_config(command: ConfigCommand) -> Result<()> {
@@ -1261,6 +1414,218 @@ async fn handle_ops(command: OpsCommand) -> Result<()> {
             send_and_render(request, format).await
         }
     }
+}
+
+/// Phase 13 (P13-J) — clap-built-in completions + man-page generation.
+fn handle_generate(command: GenerateCommand) -> Result<()> {
+    use clap::CommandFactory;
+    match command {
+        GenerateCommand::Completions { shell } => {
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "spotuify", &mut std::io::stdout());
+        }
+        GenerateCommand::ManPage => {
+            let cmd = Cli::command();
+            let man = clap_mangen::Man::new(cmd);
+            man.render(&mut std::io::stdout())
+                .context("failed to render man page")?;
+        }
+    }
+    Ok(())
+}
+
+/// Phase 13 (P13-D) — assemble a redacted diagnostic tarball.
+/// Includes: doctor JSON, redacted config, last N log lines, last 50
+/// operations, version+platform. Never auto-uploads.
+async fn bug_report(log_lines: usize, output: Option<PathBuf>) -> Result<()> {
+    use std::io::Write;
+    let target = output.unwrap_or_else(|| {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        PathBuf::from(format!("./spotuify-bug-report-{ts}.tar.gz"))
+    });
+
+    let mut sections: Vec<(String, String)> = Vec::new();
+
+    // 1. version + platform
+    sections.push((
+        "version.txt".to_string(),
+        format!(
+            "spotuify {} ({} {})\n",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        ),
+    ));
+
+    // 2. doctor report (via daemon if reachable, else best-effort local probe).
+    let doctor_json = match daemon::server::ensure_daemon_running().await {
+        Ok(()) => {
+            let mut client = spotuify_protocol::IpcClient::connect().await?;
+            match client
+                .request(spotuify_protocol::Request::GetDoctorReport)
+                .await?
+            {
+                spotuify_protocol::Response::Ok {
+                    data: spotuify_protocol::ResponseData::DoctorReport { report },
+                } => serde_json::to_string_pretty(&report)?,
+                _ => "daemon returned unexpected doctor response".to_string(),
+            }
+        }
+        Err(err) => format!("doctor unavailable: {err}"),
+    };
+    sections.push(("doctor.json".to_string(), doctor_json));
+
+    // 3. last 50 ops (best-effort).
+    if let Ok(mut client) = spotuify_protocol::IpcClient::connect().await {
+        if let Ok(spotuify_protocol::Response::Ok {
+            data: spotuify_protocol::ResponseData::Operations { ops },
+        }) = client
+            .request(spotuify_protocol::Request::OpsLog {
+                limit: 50,
+                since_ms: None,
+                source: None,
+            })
+            .await
+        {
+            sections.push((
+                "operations.jsonl".to_string(),
+                ops.iter()
+                    .map(|op| serde_json::to_string(op).unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ));
+        }
+    }
+
+    // 4. last-N log lines.
+    if let Ok(tail) = logging::read_tail(log_lines) {
+        sections.push(("spotuify.log".to_string(), tail));
+    }
+
+    // 5. redacted config.
+    if let Ok(path) = std::env::var("SPOTUIFY_CONFIG")
+        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config/spotuify.toml")))
+    {
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            sections.push((
+                "config.redacted.toml".to_string(),
+                redact_config(&raw),
+            ));
+        }
+    }
+
+    // Plain tarball (no gzip compression) keeps the dep surface tiny;
+    // the .tar.gz suffix is aspirational but plain-tar is acceptable
+    // for a diagnostic bundle. If a future dep makes gzip cheap we
+    // can revisit. For now, write a plain `.tar` file.
+    let tar_path = target.with_extension("tar");
+    let file = std::fs::File::create(&tar_path)
+        .with_context(|| format!("failed to create {}", tar_path.display()))?;
+    let mut buf = std::io::BufWriter::new(file);
+    for (name, body) in &sections {
+        write_tar_entry(&mut buf, name, body.as_bytes())?;
+    }
+    write_tar_terminator(&mut buf)?;
+    buf.flush()?;
+
+    println!(
+        "Wrote bug report ({} sections) to {}",
+        sections.len(),
+        tar_path.display()
+    );
+    println!("Manual review recommended: inspect the tarball before sharing.");
+    Ok(())
+}
+
+/// Redact obvious-looking secrets from a TOML config string. Keeps
+/// behaviour observable to bug-report reviewers without leaking
+/// credentials. Matches client_secret / token / refresh_token /
+/// password / api_key plus email-looking strings.
+fn redact_config(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        let lower = line.to_ascii_lowercase();
+        let secret_field = ["client_secret", "token", "refresh_token", "password", "api_key"]
+            .iter()
+            .any(|needle| lower.contains(needle));
+        if secret_field && line.contains('=') {
+            if let Some((key, _)) = line.split_once('=') {
+                out.push_str(key.trim_end());
+                out.push_str(" = \"<redacted>\"\n");
+                continue;
+            }
+        }
+        // Naive email scrub.
+        let cleaned = line
+            .split_whitespace()
+            .map(|token| {
+                if token.contains('@') && token.contains('.') {
+                    "<redacted-email>".to_string()
+                } else {
+                    token.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        out.push_str(&cleaned);
+        out.push('\n');
+    }
+    out
+}
+
+/// Minimal POSIX tar (ustar) entry writer — keeps the dep surface
+/// small. Each `body` is treated as a regular file at the given
+/// `name`. Padding to 512-byte block boundary is enforced.
+fn write_tar_entry(buf: &mut impl std::io::Write, name: &str, body: &[u8]) -> Result<()> {
+    let mut header = [0u8; 512];
+    // Filename
+    let name_bytes = name.as_bytes();
+    let len = name_bytes.len().min(100);
+    header[..len].copy_from_slice(&name_bytes[..len]);
+    // Mode: 0644 (rust-style "100644")
+    header[100..107].copy_from_slice(b"0000644");
+    // owner uid / gid: 0
+    header[108..115].copy_from_slice(b"0000000");
+    header[116..123].copy_from_slice(b"0000000");
+    // size in octal, 12 bytes incl. trailing null
+    let size_oct = format!("{:011o}", body.len());
+    header[124..124 + 11].copy_from_slice(size_oct.as_bytes());
+    // mtime in octal, 12 bytes
+    let mtime = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mtime_oct = format!("{:011o}", mtime);
+    header[136..136 + 11].copy_from_slice(mtime_oct.as_bytes());
+    // Pre-checksum field: 8 spaces, per ustar.
+    header[148..156].copy_from_slice(b"        ");
+    // typeflag '0' = normal file
+    header[156] = b'0';
+    // ustar magic + version.
+    header[257..262].copy_from_slice(b"ustar");
+    header[263..265].copy_from_slice(b"00");
+    // Compute checksum.
+    let chksum: u32 = header.iter().map(|b| *b as u32).sum();
+    let chk_oct = format!("{:06o}\0 ", chksum);
+    header[148..148 + 8].copy_from_slice(chk_oct.as_bytes());
+
+    buf.write_all(&header)?;
+    buf.write_all(body)?;
+    // Pad body to 512-byte boundary.
+    let pad = (512 - (body.len() % 512)) % 512;
+    if pad > 0 {
+        buf.write_all(&vec![0u8; pad])?;
+    }
+    Ok(())
+}
+
+fn write_tar_terminator(buf: &mut impl std::io::Write) -> Result<()> {
+    // Two 512-byte zero blocks signal end-of-archive.
+    buf.write_all(&[0u8; 1024])?;
+    Ok(())
 }
 
 /// Shared dispatch: connect to the daemon, send a Request, render the

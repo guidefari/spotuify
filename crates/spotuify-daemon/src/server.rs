@@ -284,6 +284,16 @@ pub async fn ensure_daemon_running() -> Result<()> {
         if status.daemon_build_id.as_deref() == Some(current_build_id.as_str()) {
             return Ok(());
         }
+        // Phase 13 (P13-H) — even if the daemon is stale, refuse to
+        // restart it when the caller has opted out of auto-start. The
+        // user can run `spotuify daemon restart` explicitly.
+        if no_daemon_start() {
+            anyhow::bail!(
+                "running daemon is stale (build {:?} vs {current_build_id}) and \
+                 --no-daemon-start is set; run `spotuify daemon restart` first",
+                status.daemon_build_id,
+            );
+        }
         tracing::info!(
             running_build_id = ?status.daemon_build_id,
             current_build_id,
@@ -292,8 +302,23 @@ pub async fn ensure_daemon_running() -> Result<()> {
         restart_daemon().await?;
         return Ok(());
     }
+    if no_daemon_start() {
+        anyhow::bail!(
+            "daemon not running and --no-daemon-start is set; \
+             run `spotuify daemon start` first"
+        );
+    }
     start_daemon(false).await?;
     Ok(())
+}
+
+/// Phase 13 (P13-H) — honour the `--no-daemon-start` global CLI flag
+/// threaded via env var so any IPC helper can opt into the gate without
+/// a signature change.
+pub fn no_daemon_start() -> bool {
+    std::env::var("SPOTUIFY_NO_DAEMON_START")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 pub async fn stop_daemon() -> Result<()> {

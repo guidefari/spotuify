@@ -332,6 +332,12 @@ impl Config {
     pub fn load() -> Result<Self> {
         let config_path = config_path()?;
         ensure_config_exists(&config_path)?;
+        // Phase 13 (P13-G) — every load is a chance to drop the
+        // .gitignore. Idempotent (only writes when absent), so it's
+        // safe to call on every invocation.
+        if let Some(parent) = config_path.parent() {
+            write_gitignore_if_absent(parent);
+        }
 
         let file = read_config_file(&config_path)?;
         PlayerConfig::validate(&file)
@@ -532,7 +538,83 @@ fn ensure_config_exists(path: &Path) -> Result<()> {
 fn read_config_file(path: &Path) -> Result<FileConfig> {
     let contents =
         fs::read_to_string(path).with_context(|| format!("could not read {}", path.display()))?;
-    toml::from_str(&contents).with_context(|| format!("could not parse {}", path.display()))
+    // Phase 13 (P13-H) — merge `SPOTUIFY_CONFIG_OVERRIDES` (set by the
+    // CLI's `-o key.path=value` flag) into the parsed TOML before
+    // deserialisation. Round-trips through `toml::Value` so the override
+    // applies to whichever section/field the user named without
+    // touching the file on disk.
+    let mut value: toml::Value = toml::from_str(&contents)
+        .with_context(|| format!("could not parse {}", path.display()))?;
+    apply_dotpath_overrides(&mut value);
+    let merged = toml::to_string(&value)
+        .with_context(|| format!("re-emit failed for {}", path.display()))?;
+    toml::from_str(&merged)
+        .with_context(|| format!("could not parse merged config {}", path.display()))
+}
+
+/// Phase 13 (P13-H) — apply CLI dot-path overrides from
+/// `SPOTUIFY_CONFIG_OVERRIDES`. The env-var format is one
+/// `key.path=value` per line. Values are parsed as TOML literals so
+/// `bitrate=160` becomes an integer, `name="foo"` becomes a string,
+/// `autostart=true` becomes a bool, etc.
+pub(crate) fn apply_dotpath_overrides(root: &mut toml::Value) {
+    let raw = match std::env::var("SPOTUIFY_CONFIG_OVERRIDES") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => return,
+    };
+    for line in raw.lines() {
+        if let Err(err) = apply_single_override(root, line) {
+            tracing::warn!(input = %line, error = %err, "skipping invalid `-o` override");
+        }
+    }
+}
+
+fn apply_single_override(root: &mut toml::Value, raw: &str) -> Result<()> {
+    let (path, value_str) = raw
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("expected key.path=value; got `{raw}`"))?;
+    if path.trim().is_empty() {
+        anyhow::bail!("empty key in `{raw}`");
+    }
+    // Parse the right-hand side as TOML so `=` plays well with both
+    // bare literals (160, true, "name") and quoted strings.
+    let parsed: toml::Value = toml::from_str(&format!("__rhs__ = {value_str}"))
+        .with_context(|| format!("value `{value_str}` is not valid TOML"))?;
+    let rhs = parsed
+        .get("__rhs__")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("internal: failed to extract rhs"))?;
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut cursor = root;
+    for (i, key) in parts.iter().enumerate() {
+        if i == parts.len() - 1 {
+            // Last segment: insert.
+            let table = cursor.as_table_mut().ok_or_else(|| {
+                anyhow::anyhow!("cannot set `{path}`: parent is not a table")
+            })?;
+            table.insert(key.to_string(), rhs);
+            return Ok(());
+        }
+        // Intermediate segment: navigate/create.
+        let entry_is_table = cursor
+            .as_table()
+            .map(|t| t.get(*key).map(|v| v.is_table()).unwrap_or(false))
+            .unwrap_or(false);
+        if !entry_is_table {
+            // Create or overwrite-as-table.
+            let table = cursor.as_table_mut().ok_or_else(|| {
+                anyhow::anyhow!("cannot navigate into `{path}`: parent is not a table")
+            })?;
+            table.insert(
+                key.to_string(),
+                toml::Value::Table(toml::value::Table::new()),
+            );
+        }
+        cursor = cursor
+            .get_mut(*key)
+            .ok_or_else(|| anyhow::anyhow!("internal navigation failure at `{key}`"))?;
+    }
+    Ok(())
 }
 
 fn write_config_file(path: &Path, file: &FileConfig) -> Result<()> {
@@ -548,8 +630,32 @@ fn write_template(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
+        // Phase 13 (P13-G) — hedge against dotfile-sync token leaks
+        // (chezmoi/dotbot etc) by dropping a .gitignore on first init.
+        write_gitignore_if_absent(parent);
     }
     fs::write(path, CONFIG_TEMPLATE).with_context(|| format!("failed to create {}", path.display()))
+}
+
+/// Phase 13 (P13-G) — write a `.gitignore` in the config dir if absent.
+/// Pattern lifted from spotatui (`core/config.rs:99-115`). Safe to call
+/// on every daemon start; only writes when missing.
+pub fn write_gitignore_if_absent(config_dir: &Path) {
+    let path = config_dir.join(".gitignore");
+    if path.exists() {
+        return;
+    }
+    const GITIGNORE: &str = "# Auto-generated by spotuify on first run.\n\
+                             # Hedges against dotfile-sync tools accidentally\n\
+                             # uploading secrets to a public repo.\n\
+                             *.json\n\
+                             credentials.*\n\
+                             *.encrypted\n\
+                             *.log\n\
+                             cache/\n";
+    if let Err(err) = fs::write(&path, GITIGNORE) {
+        tracing::warn!(path = %path.display(), error = %err, "failed to write auto-.gitignore");
+    }
 }
 
 fn spotifyd_config_mut(file: &mut FileConfig) -> &mut SpotifydConfig {
@@ -633,7 +739,7 @@ pulse_props = true
 
 #[cfg(test)]
 mod tests {
-    use super::{expand_home, parse_bool};
+    use super::{apply_single_override, expand_home, parse_bool};
 
     #[test]
     fn keeps_absolute_paths() {
@@ -648,6 +754,44 @@ mod tests {
         assert!(parse_bool("on").unwrap());
         assert!(!parse_bool("false").unwrap());
         assert!(parse_bool("later").is_err());
+    }
+
+    #[test]
+    fn dotpath_override_overwrites_existing_player_bitrate() {
+        let mut value: toml::Value = toml::from_str("[player]\nbitrate = 320\n").unwrap();
+        apply_single_override(&mut value, "player.bitrate=96").unwrap();
+        assert_eq!(value["player"]["bitrate"].as_integer().unwrap(), 96);
+    }
+
+    #[test]
+    fn dotpath_override_creates_missing_section() {
+        let mut value: toml::Value = toml::from_str("").unwrap();
+        apply_single_override(&mut value, "notifications.enabled=true").unwrap();
+        assert!(value["notifications"]["enabled"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn dotpath_override_supports_quoted_strings() {
+        let mut value: toml::Value = toml::from_str("").unwrap();
+        apply_single_override(&mut value, "spotifyd.device_name=\"my-laptop\"").unwrap();
+        assert_eq!(
+            value["spotifyd"]["device_name"].as_str().unwrap(),
+            "my-laptop"
+        );
+    }
+
+    #[test]
+    fn dotpath_override_rejects_malformed_input() {
+        // Missing `=` → bail. The CLI logs a warning and skips the
+        // override rather than failing the whole config load.
+        let mut value: toml::Value = toml::from_str("").unwrap();
+        assert!(apply_single_override(&mut value, "no-equals-sign").is_err());
+    }
+
+    #[test]
+    fn dotpath_override_rejects_empty_key() {
+        let mut value: toml::Value = toml::from_str("").unwrap();
+        assert!(apply_single_override(&mut value, "=42").is_err());
     }
 }
 
