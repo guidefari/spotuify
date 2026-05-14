@@ -21,6 +21,10 @@ pub(crate) async fn handle_request(state: Arc<DaemonState>, request: Request) ->
 }
 
 async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<ResponseData> {
+    // Phase 12 — capture the canonical serialized Request once so each
+    // mutation arm can persist it as `request_json` on its receipt row.
+    // `ops redo` deserialises this back into a Request for replay.
+    let request_json = serde_json::to_string(&request).unwrap_or_else(|_| "{}".to_string());
     match request {
         Request::Ping => Ok(ResponseData::Pong),
         Request::GetDaemonStatus => Ok(ResponseData::DaemonStatus {
@@ -43,18 +47,37 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
             Ok(ResponseData::Playback { playback })
         }
         Request::PlaybackCommand { command } => {
-            let mut client = state.spotify_client().await?;
             let action = playback_command_action(&command);
-            let command = playback_command_kind(command);
-            let result = actions::execute(&mut client, command).await?;
-            let message = result.message.clone().unwrap_or_else(|| action.to_string());
-            state.emit_event(DaemonEvent::PlaybackChanged {
-                action: action.to_string(),
-            });
-            emit_mutation_finished(&state, action, &message);
-            Ok(ResponseData::Mutation {
-                receipt: receipt(action, result.message),
-            })
+            let op_kind = playback_command_operation_kind(&command);
+            let request_summary = request_json.clone();
+            let state_for = state.clone();
+            record_operation(
+                &state,
+                op_kind,
+                OperationSource::DaemonInternal,
+                vec![],
+                action,
+                &request_summary,
+                Some(spotuify_protocol::PreState::Transport),
+                Some(spotuify_protocol::ReversalPlan::NotReversible {
+                    reason: "transport".to_string(),
+                }),
+                move |_op_id| async move {
+                    let mut client = state_for.spotify_client().await?;
+                    let command = playback_command_kind(command);
+                    let result = actions::execute(&mut client, command).await?;
+                    let message =
+                        result.message.clone().unwrap_or_else(|| action.to_string());
+                    state_for.emit_event(DaemonEvent::PlaybackChanged {
+                        action: action.to_string(),
+                    });
+                    emit_mutation_finished(&state_for, action, &message);
+                    Ok(ResponseData::Mutation {
+                        receipt: receipt(action, result.message),
+                    })
+                },
+            )
+            .await
         }
         Request::DevicesList => {
             let mut client = state.spotify_client().await?;
@@ -63,26 +86,72 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
             Ok(ResponseData::Devices { devices })
         }
         Request::DeviceTransfer { device } => {
-            let mut client = state.spotify_client().await?;
-            let devices = actions::devices(&mut client).await?;
-            let device = selection::resolve_device(&devices, &device)?;
-            let play = actions::status(&mut client).await?.is_playing;
-            let result =
-                actions::execute(&mut client, CommandKind::Transfer { device, play }).await?;
-            let message = result
-                .message
-                .clone()
-                .unwrap_or_else(|| "transfer".to_string());
-            state.emit_event(DaemonEvent::DevicesChanged {
-                action: "transfer".to_string(),
-            });
-            state.emit_event(DaemonEvent::PlaybackChanged {
-                action: "transfer".to_string(),
-            });
-            emit_mutation_finished(&state, "transfer", &message);
-            Ok(ResponseData::Mutation {
-                receipt: receipt("transfer", result.message),
-            })
+            let request_summary = request_json.clone();
+            let state_for = state.clone();
+            record_operation(
+                &state,
+                OperationKind::Transfer,
+                OperationSource::DaemonInternal,
+                vec![],
+                "transfer",
+                &request_summary,
+                None,
+                None,
+                move |op_id| async move {
+                    let mut client = state_for.spotify_client().await?;
+                    let devices = actions::devices(&mut client).await?;
+                    let target_device = selection::resolve_device(&devices, &device)?;
+                    let playback = actions::status(&mut client).await?;
+                    let play = playback.is_playing;
+                    let prior_device_id = playback.device.as_ref().and_then(|d| d.id.clone());
+                    // Persist the prior device id so undo can transfer
+                    // back. If prior is unknown (no active device), the
+                    // reversal plan is a "stop playback" no-op surfaced
+                    // through TransferToPriorDevice with the daemon's
+                    // best-effort target.
+                    let pre_state = spotuify_protocol::PreState::Transfer {
+                        prior_device_id: prior_device_id.clone(),
+                    };
+                    let plan = match prior_device_id.clone() {
+                        Some(id) => {
+                            spotuify_protocol::ReversalPlan::TransferToPriorDevice {
+                                device_id: id,
+                            }
+                        }
+                        None => spotuify_protocol::ReversalPlan::NotReversible {
+                            reason: "no prior active device to restore".to_string(),
+                        },
+                    };
+                    if let Err(err) = state_for
+                        .store()
+                        .update_operation_plan(op_id, Some(&pre_state), Some(&plan))
+                        .await
+                    {
+                        tracing::warn!(error = %err, "failed to persist transfer pre-state");
+                    }
+                    let result = actions::execute(
+                        &mut client,
+                        CommandKind::Transfer {
+                            device: target_device,
+                            play,
+                        },
+                    )
+                    .await?;
+                    let message =
+                        result.message.clone().unwrap_or_else(|| "transfer".to_string());
+                    state_for.emit_event(DaemonEvent::DevicesChanged {
+                        action: "transfer".to_string(),
+                    });
+                    state_for.emit_event(DaemonEvent::PlaybackChanged {
+                        action: "transfer".to_string(),
+                    });
+                    emit_mutation_finished(&state_for, "transfer", &message);
+                    Ok(ResponseData::Mutation {
+                        receipt: receipt("transfer", result.message),
+                    })
+                },
+            )
+            .await
         }
         Request::Search {
             query,
@@ -134,7 +203,9 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
         Request::QueueAdd { uri } => {
             let uri_for_event = uri.clone();
             let state_for_event = state.clone();
-            let request_summary = format!("{{\"cmd\":\"queue-add\",\"uri\":{:?}}}", uri);
+            let request_summary = request_json.clone();
+            let pre_state = Some(spotuify_protocol::PreState::QueueAdd { uri: uri.clone() });
+            let plan = Some(spotuify_protocol::ReversalPlan::QueueRemove { uri: uri.clone() });
             record_operation(
                 &state,
                 OperationKind::QueueAdd,
@@ -142,7 +213,9 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
                 vec![uri.clone()],
                 "queue",
                 &request_summary,
-                async move {
+                pre_state,
+                plan,
+                move |_op_id| async move {
                     let mut client = state_for_event.spotify_client().await?;
                     let result =
                         actions::execute(&mut client, CommandKind::QueueUri { uri: uri.clone() })
@@ -179,11 +252,7 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
         }
         Request::PlaylistAddItems { playlist, uris } => {
             let state_for = state.clone();
-            let request_summary = format!(
-                "{{\"cmd\":\"playlist-add\",\"playlist\":{:?},\"uri_count\":{}}}",
-                playlist,
-                uris.len()
-            );
+            let request_summary = request_json.clone();
             let subject_uris = uris.clone();
             record_operation(
                 &state,
@@ -192,26 +261,51 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
                 subject_uris,
                 "playlist-add",
                 &request_summary,
-                async move {
+                // Initial values are placeholders; the body captures the
+                // resolved playlist's snapshot_id from the same
+                // `actions::playlists()` call it already makes for
+                // resolution and writes the real plan via
+                // `update_operation_plan`.
+                None,
+                None,
+                move |op_id| async move {
                     let mut client = state_for.spotify_client().await?;
                     let playlists = actions::playlists(&mut client).await?;
-                    let playlist = selection::resolve_playlist(&playlists, &playlist)?;
+                    let resolved = selection::resolve_playlist(&playlists, &playlist)?;
+                    let snapshot_id = resolved.snapshot_id.clone();
+                    let pre_state = spotuify_protocol::PreState::PlaylistAdd {
+                        playlist_id: resolved.id.clone(),
+                        snapshot_id: snapshot_id.clone(),
+                        added_uris: uris.clone(),
+                    };
+                    let plan = spotuify_protocol::ReversalPlan::PlaylistRemoveTracks {
+                        playlist_id: resolved.id.clone(),
+                        uris: uris.clone(),
+                        snapshot_id,
+                    };
+                    if let Err(err) = state_for
+                        .store()
+                        .update_operation_plan(op_id, Some(&pre_state), Some(&plan))
+                        .await
+                    {
+                        tracing::warn!(error = %err, "failed to persist playlist_add pre-state");
+                    }
                     for uri in &uris {
                         let item = media_item_from_uri(uri)?;
                         actions::execute(
                             &mut client,
                             CommandKind::AddToPlaylist {
                                 item,
-                                playlist_id: playlist.id.clone(),
-                                playlist_name: playlist.name.clone(),
+                                playlist_id: resolved.id.clone(),
+                                playlist_name: resolved.name.clone(),
                             },
                         )
                         .await?;
                     }
-                    let message = format!("Added items to {}", playlist.name);
+                    let message = format!("Added items to {}", resolved.name);
                     state_for.emit_event(DaemonEvent::PlaylistsChanged {
                         action: "playlist-add".to_string(),
-                        playlist: Some(playlist.id.clone()),
+                        playlist: Some(resolved.id.clone()),
                     });
                     emit_mutation_finished(&state_for, "playlist-add", &message);
                     Ok(ResponseData::Mutation {
@@ -234,54 +328,145 @@ async fn dispatch(state: Arc<DaemonState>, request: Request) -> anyhow::Result<R
                     anyhow::bail!("playlist creation candidates must be track URIs: {uri}");
                 }
             }
-            let mut client = state.spotify_client().await?;
-            let playlist = client
-                .create_playlist(&name, description.as_deref(), false)
-                .await?;
-            client.add_items_to_playlist(&playlist.id, &uris).await?;
-            cache_playlists(&state, std::slice::from_ref(&playlist)).await;
-            state.emit_event(DaemonEvent::PlaylistsChanged {
-                action: "playlist-create".to_string(),
-                playlist: Some(playlist.id.clone()),
-            });
-            emit_mutation_finished(
+            let request_summary = request_json.clone();
+            let state_for = state.clone();
+            let name_for = name.clone();
+            let description_for = description.clone();
+            let uris_for = uris.clone();
+            record_operation(
                 &state,
+                OperationKind::PlaylistCreate,
+                OperationSource::DaemonInternal,
+                vec![],
                 "playlist-create",
-                &format!("Created playlist `{name}` with {} item(s)", uris.len()),
-            );
-            Ok(ResponseData::PlaylistCreate {
-                receipt: PlaylistCreateReceipt {
-                    ok: true,
-                    action: "playlist-create".to_string(),
-                    playlist_uri: selection::playlist_uri(&playlist.id),
-                    playlist_id: playlist.id,
-                    name: playlist.name,
-                    added_item_count: uris.len(),
-                    message: format!("Created playlist `{name}` with {} item(s)", uris.len()),
+                &request_summary,
+                None,
+                None,
+                move |op_id| async move {
+                    let mut client = state_for.spotify_client().await?;
+                    let playlist = client
+                        .create_playlist(&name_for, description_for.as_deref(), false)
+                        .await?;
+                    let playlist_uri = selection::playlist_uri(&playlist.id);
+                    let pre_state = spotuify_protocol::PreState::PlaylistCreate {
+                        playlist_id: playlist.id.clone(),
+                    };
+                    let plan = spotuify_protocol::ReversalPlan::PlaylistDelete {
+                        playlist_id: playlist.id.clone(),
+                    };
+                    if let Err(err) = state_for
+                        .store()
+                        .update_operation_plan(op_id, Some(&pre_state), Some(&plan))
+                        .await
+                    {
+                        tracing::warn!(error = %err, "failed to persist playlist_create pre-state");
+                    }
+                    if let Err(err) = state_for
+                        .store()
+                        .update_operation_subject_uris(op_id, &[playlist_uri.clone()])
+                        .await
+                    {
+                        tracing::warn!(error = %err, "failed to persist playlist_create subject uri");
+                    }
+                    client
+                        .add_items_to_playlist(&playlist.id, &uris_for)
+                        .await?;
+                    cache_playlists(&state_for, std::slice::from_ref(&playlist)).await;
+                    state_for.emit_event(DaemonEvent::PlaylistsChanged {
+                        action: "playlist-create".to_string(),
+                        playlist: Some(playlist.id.clone()),
+                    });
+                    let message =
+                        format!("Created playlist `{name_for}` with {} item(s)", uris_for.len());
+                    emit_mutation_finished(&state_for, "playlist-create", &message);
+                    Ok(ResponseData::PlaylistCreate {
+                        receipt: PlaylistCreateReceipt {
+                            ok: true,
+                            action: "playlist-create".to_string(),
+                            playlist_uri,
+                            playlist_id: playlist.id,
+                            name: playlist.name,
+                            added_item_count: uris_for.len(),
+                            message,
+                        },
+                    })
                 },
-            })
+            )
+            .await
         }
         Request::LibrarySave { uri, current } => {
-            let mut client = state.spotify_client().await?;
-            let event_uris = uri.iter().cloned().collect::<Vec<_>>();
-            let command = if current {
-                CommandKind::SaveCurrent
-            } else {
-                let uri = uri.ok_or_else(|| anyhow::anyhow!("provide uri or current=true"))?;
-                CommandKind::SaveItem {
-                    item: media_item_from_uri(&uri)?,
-                }
-            };
-            let result = actions::execute(&mut client, command).await?;
-            let message = result.message.clone().unwrap_or_else(|| "save".to_string());
-            state.emit_event(DaemonEvent::LibraryChanged {
-                action: "save".to_string(),
-                uris: event_uris,
-            });
-            emit_mutation_finished(&state, "save", &message);
-            Ok(ResponseData::Mutation {
-                receipt: receipt("save", result.message),
-            })
+            let request_summary = request_json.clone();
+            let state_for = state.clone();
+            let uri_for = uri.clone();
+            record_operation(
+                &state,
+                OperationKind::LibrarySave,
+                OperationSource::DaemonInternal,
+                uri.iter().cloned().collect(),
+                "save",
+                &request_summary,
+                None,
+                None,
+                move |op_id| async move {
+                    let mut client = state_for.spotify_client().await?;
+                    let event_uris = uri_for.iter().cloned().collect::<Vec<_>>();
+                    // Resolve the URI early so we can register a real
+                    // reversal plan. SaveCurrent reads now-playing first
+                    // to derive the URI.
+                    let resolved_uri = match uri_for.clone() {
+                        Some(u) => Some(u),
+                        None if current => actions::status(&mut client)
+                            .await
+                            .ok()
+                            .and_then(|p| p.item.map(|item| item.uri)),
+                        None => None,
+                    };
+                    if let Some(ref real_uri) = resolved_uri {
+                        let pre_state = spotuify_protocol::PreState::LibrarySave {
+                            uri: real_uri.clone(),
+                            prior_was_saved: false,
+                        };
+                        let plan = spotuify_protocol::ReversalPlan::LibraryUnsave {
+                            uri: real_uri.clone(),
+                        };
+                        if let Err(err) = state_for
+                            .store()
+                            .update_operation_plan(op_id, Some(&pre_state), Some(&plan))
+                            .await
+                        {
+                            tracing::warn!(error = %err, "failed to persist library_save pre-state");
+                        }
+                        if let Err(err) = state_for
+                            .store()
+                            .update_operation_subject_uris(op_id, &[real_uri.clone()])
+                            .await
+                        {
+                            tracing::warn!(error = %err, "failed to persist library_save subject uri");
+                        }
+                    }
+                    let command = if current {
+                        CommandKind::SaveCurrent
+                    } else {
+                        let u = uri_for
+                            .clone()
+                            .ok_or_else(|| anyhow::anyhow!("provide uri or current=true"))?;
+                        CommandKind::SaveItem {
+                            item: media_item_from_uri(&u)?,
+                        }
+                    };
+                    let result = actions::execute(&mut client, command).await?;
+                    let message = result.message.clone().unwrap_or_else(|| "save".to_string());
+                    state_for.emit_event(DaemonEvent::LibraryChanged {
+                        action: "save".to_string(),
+                        uris: event_uris,
+                    });
+                    emit_mutation_finished(&state_for, "save", &message);
+                    Ok(ResponseData::Mutation {
+                        receipt: receipt("save", result.message),
+                    })
+                },
+            )
+            .await
         }
         Request::Shutdown => {
             state.request_shutdown();
@@ -581,29 +766,79 @@ async fn apply_reversal(
             tracing::warn!(target = %uri, "queue remove not supported by Spotify Web API; skipping");
             Ok(())
         }
+        P::PlaylistRemoveTracks {
+            playlist_id,
+            uris,
+            snapshot_id,
+        } => {
+            let mut client = state.spotify_client().await?;
+            client
+                .remove_playlist_items(playlist_id, uris, snapshot_id.as_deref())
+                .await
+                .map(|_new_snap| ())
+        }
+        P::PlaylistAddAtPositions {
+            playlist_id,
+            items,
+            snapshot_id,
+        } => {
+            let mut client = state.spotify_client().await?;
+            client
+                .add_items_to_playlist_at_positions(playlist_id, items, snapshot_id.as_deref())
+                .await
+                .map(|_| ())
+        }
+        P::PlaylistDelete { playlist_id } => {
+            let mut client = state.spotify_client().await?;
+            client.unfollow_playlist(playlist_id).await
+        }
+        P::PlaylistReorder {
+            playlist_id,
+            range_start,
+            insert_before,
+            range_length,
+            snapshot_id,
+        } => {
+            let mut client = state.spotify_client().await?;
+            client
+                .reorder_playlist_items(
+                    playlist_id,
+                    *range_start,
+                    *insert_before,
+                    *range_length,
+                    snapshot_id.as_deref(),
+                )
+                .await
+                .map(|_| ())
+        }
+        P::LibraryUnsave { uri } => {
+            let mut client = state.spotify_client().await?;
+            client.library_unsave_by_uri(uri).await
+        }
+        P::LibrarySave { uri, .. } => {
+            // `prior_added_at_ms` is recorded for forensics only —
+            // Spotify's save endpoint always sets `added_at` to now.
+            // Documented limitation; surfaced in `ops show --diff`.
+            let mut client = state.spotify_client().await?;
+            client.library_save_by_uri(uri).await
+        }
+        P::Like { uri } => {
+            // Like ≡ library_save for tracks; the protocol keeps Like
+            // distinct from LibrarySave for clarity in the op log even
+            // though Spotify's endpoint is the same.
+            let mut client = state.spotify_client().await?;
+            client.library_save_by_uri(uri).await
+        }
+        P::Unlike { uri } => {
+            let mut client = state.spotify_client().await?;
+            client.library_unsave_by_uri(uri).await
+        }
         P::NotReversible { reason } => {
             anyhow::bail!("operation is not reversible: {reason}")
         }
         P::Redo { .. } => anyhow::bail!(
             "redo of an undo replays the original forward op; \
              use `ops redo` instead of `ops undo`"
-        ),
-        // Inverse Spotify Web API calls for these variants are tracked
-        // for the playlist/library/like surface expansion that lands
-        // alongside the SpotifyClient mutator methods (P12 follow-up):
-        // remove_items_from_playlist, unfollow_playlist, unsave_item,
-        // unlike. The reversal plan and pre-state are captured so the
-        // follow-up implementation can ship without a migration.
-        P::PlaylistRemoveTracks { .. }
-        | P::PlaylistAddAtPositions { .. }
-        | P::PlaylistDelete { .. }
-        | P::PlaylistReorder { .. }
-        | P::LibraryUnsave { .. }
-        | P::LibrarySave { .. }
-        | P::Like { .. }
-        | P::Unlike { .. } => anyhow::bail!(
-            "reversal for this op kind requires the inverse Spotify Web API \
-             helper; run with --dry-run to inspect the planned change"
         ),
     }
 }
@@ -616,7 +851,6 @@ async fn handle_ops_redo(
     let op = match operation_id {
         Some(id) => state.store().get_operation(id).await?,
         None => {
-            // Walk recent ops and pick the first one with status=undone.
             let ops = state.store().list_operations(50, None, None).await?;
             ops.into_iter()
                 .find(|o| o.status == OperationStatus::Undone)
@@ -630,35 +864,53 @@ async fn handle_ops_redo(
             op.status,
         );
     }
-    // Mark redone + emit. Re-executing the forward action is left as
-    // a P12 follow-up because each kind needs its own client method;
-    // for now redo updates the op log so users can see the redo
-    // intent + manually rerun the forward op via the originating CLI.
-    let redo_op = spotuify_protocol::Operation {
-        operation_id: OperationId::new_v7(),
-        kind: OperationKind::Redo,
-        occurred_at_ms: now_ms(),
-        finished_at_ms: Some(now_ms()),
-        source: OperationSource::DaemonInternal,
-        requester: None,
-        subject_uris: op.subject_uris.clone(),
-        reversible: false,
-        reversal_plan: None,
-        pre_state: None,
-        status: OperationStatus::Succeeded,
-        receipt_id: None,
-        subject_op_id: Some(op.operation_id),
-        undone_by_op_id: None,
-        redone_by_op_id: None,
-        error_message: None,
-    };
-    state.store().insert_pending_operation(&redo_op).await?;
-    state
+
+    // Real redo: re-execute the original Request by fetching its
+    // serialized form from the linked receipt row. The fresh dispatch
+    // creates its own operation row through `record_operation`, so
+    // mark the original as redone-by that fresh row.
+    let receipt_id = op
+        .receipt_id
+        .ok_or_else(|| anyhow::anyhow!("op {} has no receipt; cannot redo", op.operation_id))?;
+    let raw = state.store().receipt_request_json(receipt_id).await?;
+    let original_request: Request = serde_json::from_str(&raw)
+        .map_err(|err| anyhow::anyhow!("failed to decode original request: {err}"))?;
+    // Record the timestamp before dispatch so we can locate the freshly
+    // minted operation row afterwards.
+    let dispatch_started_at = now_ms();
+    // Recursive dispatch. Any failure surfaces back to the caller.
+    let response = Box::pin(dispatch(state.clone(), original_request)).await?;
+
+    // Locate the newly-minted op row created by the re-dispatched
+    // mutation. dispatch is in-process and serial, so the most-recent
+    // op with `occurred_at_ms >= dispatch_started_at` is ours.
+    let recent_ops = state
         .store()
-        .mark_operation_redone(op.operation_id, redo_op.operation_id)
-        .await?;
+        .list_operations(5, Some(dispatch_started_at), None)
+        .await
+        .unwrap_or_default();
+    let redo_op_id = recent_ops
+        .into_iter()
+        .find(|o| {
+            o.operation_id != op.operation_id
+                && o.kind != OperationKind::Redo
+                && o.kind != OperationKind::Undo
+        })
+        .map(|o| o.operation_id)
+        .unwrap_or_else(OperationId::new_v7);
+
+    let _ = state
+        .store()
+        .mark_operation_redone(op.operation_id, redo_op_id)
+        .await;
+    state.emit_event(DaemonEvent::OperationUndone {
+        undo_op_id: redo_op_id,
+        original_op_id: op.operation_id,
+        success: true,
+    });
+    let _ = response;
     Ok(ResponseData::OperationUndoResult {
-        undo_op_id: redo_op.operation_id,
+        undo_op_id: redo_op_id,
         succeeded: 1,
         skipped: 0,
         errors: vec![],
@@ -853,6 +1105,21 @@ fn playback_command_action(command: &PlaybackCommand) -> &'static str {
     }
 }
 
+fn playback_command_operation_kind(command: &PlaybackCommand) -> OperationKind {
+    match command {
+        PlaybackCommand::Pause => OperationKind::Pause,
+        PlaybackCommand::Resume => OperationKind::Resume,
+        PlaybackCommand::Toggle => OperationKind::Toggle,
+        PlaybackCommand::Next => OperationKind::Next,
+        PlaybackCommand::Previous => OperationKind::Previous,
+        PlaybackCommand::PlayUri { .. } => OperationKind::Play,
+        PlaybackCommand::Seek { .. } => OperationKind::Seek,
+        PlaybackCommand::Volume { .. } => OperationKind::Volume,
+        PlaybackCommand::Shuffle { .. } => OperationKind::Shuffle,
+        PlaybackCommand::Repeat { .. } => OperationKind::Repeat,
+    }
+}
+
 fn receipt(action: &str, message: Option<String>) -> CommandReceipt {
     CommandReceipt {
         ok: true,
@@ -868,28 +1135,39 @@ fn emit_mutation_finished(state: &DaemonState, action: &str, message: &str) {
     });
 }
 
-/// Phase 12 (F12 scaffold) — record an operation row around every
-/// mutation. Wraps `record_mutation` (Phase 6.6 receipt lifecycle) and
-/// also writes an `operations` row + emits `OperationRecorded`.
+/// Phase 12 — record an operation row around every mutation. Wraps
+/// `record_mutation` (Phase 6.6 receipt lifecycle) and also writes an
+/// `operations` row + emits `OperationRecorded`.
 ///
-/// Pre-state and reversal plan capture are deferred to Pass 2 (P12.1):
-/// the foundation pass logs every mutation with `pre_state = None` and
-/// either `reversal_plan = None` (when `kind.is_reversible()`) or
-/// `ReversalPlan::NotReversible` (transport). Feature pass replaces
-/// these `None`s with real pre-call observations.
-async fn record_operation<T>(
+/// `body` receives the freshly-minted `OperationId` so it can call
+/// `state.store().update_operation_plan(op_id, …)` mid-flight once it
+/// has captured the pre-mutation `snapshot_id` / prior device / etc.
+/// Transport commands typically pass `(NotReversible, Transport)` up
+/// front; reversible mutations (playlist_add, transfer, library_save)
+/// fill in real pre-state inside the body.
+async fn record_operation<F, Fut, T>(
     state: &std::sync::Arc<DaemonState>,
     kind: OperationKind,
     source: OperationSource,
     subject_uris: Vec<String>,
     action: &str,
     request_summary: &str,
-    body: impl std::future::Future<Output = anyhow::Result<T>>,
-) -> anyhow::Result<T> {
+    initial_pre_state: Option<spotuify_protocol::PreState>,
+    initial_reversal_plan: Option<spotuify_protocol::ReversalPlan>,
+    body: F,
+) -> anyhow::Result<T>
+where
+    F: FnOnce(OperationId) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
     let operation_id = OperationId::new_v7();
     let occurred_at_ms = now_ms();
     let receipt_id = ReceiptId::new_v7();
-    let reversible = kind.is_reversible();
+    let reversible = kind.is_reversible()
+        && !matches!(
+            &initial_reversal_plan,
+            Some(spotuify_protocol::ReversalPlan::NotReversible { .. })
+        );
     let row = Operation {
         operation_id,
         kind,
@@ -899,10 +1177,8 @@ async fn record_operation<T>(
         requester: None,
         subject_uris: subject_uris.clone(),
         reversible,
-        // Pass 2 (P12.1) fills these with real pre-state captured from
-        // a pre-call Spotify read; foundation pass leaves them None.
-        reversal_plan: None,
-        pre_state: None,
+        reversal_plan: initial_reversal_plan,
+        pre_state: initial_pre_state,
         status: OperationStatus::Pending,
         receipt_id: Some(receipt_id),
         subject_op_id: None,
@@ -912,7 +1188,14 @@ async fn record_operation<T>(
     };
     let _ = state.store().insert_pending_operation(&row).await;
 
-    let result = record_mutation_with_id(state, receipt_id, action, request_summary, body).await;
+    let result = record_mutation_with_id(
+        state,
+        receipt_id,
+        action,
+        request_summary,
+        body(operation_id),
+    )
+    .await;
 
     let finished = now_ms();
     let (status, error) = match &result {

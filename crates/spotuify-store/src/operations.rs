@@ -92,6 +92,58 @@ impl Store {
         Ok(())
     }
 
+    /// Phase 12 (P12-B) — fill in `pre_state_json` and
+    /// `reversal_plan_json` after the daemon has captured pre-mutation
+    /// state inside the body. Only updates pending rows so that a
+    /// crash mid-mutation doesn't retroactively edit a finalised op.
+    pub async fn update_operation_plan(
+        &self,
+        operation_id: OperationId,
+        pre_state: Option<&PreState>,
+        plan: Option<&ReversalPlan>,
+    ) -> Result<()> {
+        let pre_state_json = match pre_state {
+            Some(p) => Some(serde_json::to_string(p)?),
+            None => None,
+        };
+        let reversal_plan_json = match plan {
+            Some(plan) => Some(serde_json::to_string(plan)?),
+            None => None,
+        };
+        sqlx::query(
+            "UPDATE operations
+             SET pre_state_json = ?, reversal_plan_json = ?
+             WHERE operation_id = ? AND status = 'pending'",
+        )
+        .bind(pre_state_json)
+        .bind(reversal_plan_json)
+        .bind(operation_id.0.to_string())
+        .execute((&self.writer))
+        .await?;
+        Ok(())
+    }
+
+    /// Phase 12 (P12-B) — late-bound `subject_uris` update used by
+    /// `playlist_create` whose result URIs are unknown until Spotify
+    /// returns the new playlist id.
+    pub async fn update_operation_subject_uris(
+        &self,
+        operation_id: OperationId,
+        subject_uris: &[String],
+    ) -> Result<()> {
+        let subject_uris_json = serde_json::to_string(subject_uris)?;
+        sqlx::query(
+            "UPDATE operations
+             SET subject_uris_json = ?
+             WHERE operation_id = ? AND status = 'pending'",
+        )
+        .bind(subject_uris_json)
+        .bind(operation_id.0.to_string())
+        .execute((&self.writer))
+        .await?;
+        Ok(())
+    }
+
     /// Mark a succeeded operation as undone, recording the new undo op
     /// that performed the reversal. Silent no-op for rows not currently
     /// in `succeeded` — the caller surfaces "already undone" /
