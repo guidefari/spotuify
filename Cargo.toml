@@ -179,8 +179,6 @@ spotuify-cli = { workspace = true }
 spotuify-sync = { workspace = true }
 spotuify-daemon = { workspace = true }
 spotuify-tui = { workspace = true }
-spotuify-keychain = { workspace = true }
-
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
@@ -208,6 +206,33 @@ tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 url = { workspace = true }
+spotuify-keychain = { workspace = true }
+
+# Phase 11 (F9): Windows-only ffi for SetConsoleOutputCP(CP_UTF8).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+
+# Phase 11 (F8) — recommended audio-backend feature flags per target.
+# Cargo cannot conditionally activate features by cfg, so CI / packagers
+# pass the appropriate flag on the build command line:
+#
+#     # Linux gnu (alsa native, falls through pipewire-alsa shim):
+#     cargo build --release --features 'embedded-playback,alsa-backend'
+#
+#     # Linux musl (no alsa headers — use the pure-Rust rodio backend):
+#     cargo build --release --no-default-features \
+#                 --features 'embedded-playback,rodio-backend'
+#
+#     # macOS (CoreAudio via portaudio):
+#     cargo build --release --features 'embedded-playback,portaudio-backend'
+#
+#     # Windows (rodio writes to WASAPI):
+#     cargo build --release --features 'embedded-playback,rodio-backend'
+#
+# Pulse env vars (PULSE_PROP_application.name etc.) are set unconditionally
+# at `crates/spotuify-player/src/backends/embedded/mod.rs:92` under
+# `#[cfg(target_os = "linux")]` so pavucontrol shows "spotuify" by name
+# regardless of which audio backend is compiled in.
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
@@ -219,6 +244,27 @@ tempfile = { workspace = true }
 lto = true
 strip = true
 codegen-units = 1
+
+# Phase 11 (P11.7) — `cargo deb` package metadata for the Linux gnu
+# distribution channel. Run `cargo deb --no-build` after a release
+# build to drop a .deb into target/{triple}/debian/.
+[package.metadata.deb]
+maintainer = "Bhekani Khumalo <bhekanik@gmail.com>"
+copyright = "2026 Bhekani Khumalo"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+A keyboard-native Spotify TUI, CLI, and MCP server. Embedded librespot
+playback with system-Keychain-backed credentials, jj-style operation
+log + undo, and Wrapped-style local listening analytics."""
+depends = "libasound2 (>= 1.0.16), libdbus-1-3 (>= 1.6), libssl3 | libssl1.1"
+section = "sound"
+priority = "optional"
+assets = [
+  ["target/release/spotuify", "usr/bin/", "755"],
+  ["README.md", "usr/share/doc/spotuify/README", "644"],
+  ["install/systemd/user/spotuify-daemon.service", "usr/share/spotuify/install/systemd/user/", "644"],
+  ["docs/recipes/README.md", "usr/share/doc/spotuify/recipes-README", "644"],
+]
 
 [lints]
 workspace = true
