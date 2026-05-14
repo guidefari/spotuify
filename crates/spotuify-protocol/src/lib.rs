@@ -746,12 +746,17 @@ pub struct DaemonStatus {
     pub daemon_build_id: Option<String>,
 }
 
+/// Phase 13 (P13-K) — three-variant health class. `Unhealthy` is
+/// distinct from `Degraded` so monitoring scripts and the doctor TUI
+/// can act differently on "running with a soft failure" vs "cannot
+/// reach Spotify / no auth / daemon down".
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthClass {
     #[default]
     Healthy,
     Degraded,
+    Unhealthy,
 }
 
 impl HealthClass {
@@ -759,6 +764,7 @@ impl HealthClass {
         match self {
             Self::Healthy => "healthy",
             Self::Degraded => "degraded",
+            Self::Unhealthy => "unhealthy",
         }
     }
 }

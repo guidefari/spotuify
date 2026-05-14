@@ -276,15 +276,25 @@ fn maybe_start_spotifyd(config: &Config) -> Option<bool> {
 fn finalize_report(report: &mut DoctorReport) {
     report.findings = build_findings(report);
     report.recommended_next_steps = recommended_next_steps(report);
-    report.healthy = report
+    let has_error = report
         .findings
         .iter()
-        .all(|finding| matches!(finding.severity, DoctorFindingSeverity::Info));
-    report.health_class = if report.healthy {
-        HealthClass::Healthy
-    } else {
+        .any(|f| matches!(f.severity, DoctorFindingSeverity::Error));
+    let has_warning = report
+        .findings
+        .iter()
+        .any(|f| matches!(f.severity, DoctorFindingSeverity::Warning));
+    // Phase 13 (P13-K) — three-variant election. Any `Error` →
+    // Unhealthy (can't reach Spotify, no auth, daemon down). Any
+    // `Warning` with no errors → Degraded. All-info → Healthy.
+    report.health_class = if has_error {
+        HealthClass::Unhealthy
+    } else if has_warning {
         HealthClass::Degraded
+    } else {
+        HealthClass::Healthy
     };
+    report.healthy = matches!(report.health_class, HealthClass::Healthy);
 }
 
 fn timed_sync<T, F>(
@@ -860,6 +870,10 @@ mod tests {
 
     #[test]
     fn core_playback_api_failure_makes_doctor_unhealthy() {
+        // Phase 13 (P13-K) — `Unhealthy` is the new third health
+        // class. Errors (vs Warnings) now upgrade the rollup from
+        // Degraded to Unhealthy so monitoring scripts can act on the
+        // hard-failure case differently.
         let mut report = healthy_report();
         report.api_checks.push(DoctorCheck {
             name: "api playback".into(),
@@ -871,7 +885,7 @@ mod tests {
         finalize_report(&mut report);
 
         assert!(!report.healthy);
-        assert_eq!(report.health_class, HealthClass::Degraded);
+        assert_eq!(report.health_class, HealthClass::Unhealthy);
         assert_eq!(report.findings[0].severity, DoctorFindingSeverity::Error);
     }
 }
