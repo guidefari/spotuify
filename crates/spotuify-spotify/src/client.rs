@@ -21,6 +21,19 @@ pub use spotuify_core::{Device, MediaItem, MediaKind, Playback, Playlist, Queue}
 
 const API: &str = "https://api.spotify.com/v1";
 
+/// Phase 13 (P13-E) — canonical User-Agent attached to every outbound
+/// HTTP request. The OS+arch suffix lets Spotify operations triage
+/// platform-specific issues; the GitHub URL is etiquette for any
+/// third-party endpoints we hit (LRCLIB, image CDNs, etc.).
+pub fn user_agent_string() -> String {
+    format!(
+        "spotuify/{version} ({os}; {arch}; +https://github.com/planetaryescape/spotuify)",
+        version = env!("CARGO_PKG_VERSION"),
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH,
+    )
+}
+
 #[derive(Clone)]
 pub struct SpotifyClient {
     config: Config,
@@ -37,7 +50,7 @@ pub struct SpotifyClient {
 impl SpotifyClient {
     pub fn new(config: Config) -> Result<Self> {
         let http = Client::builder()
-            .user_agent(format!("spotuify/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(user_agent_string())
             .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
             .connect_timeout(Duration::from_secs(4))
             .read_timeout(Duration::from_secs(8))
@@ -582,6 +595,163 @@ impl SpotifyClient {
             }
             _ => bail!("only tracks and episodes can be saved from now playing"),
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 12 (P12-A) — inverse mutators used by `apply_reversal`.
+    //
+    // Each method delegates URL+body shape to a pure helper at the
+    // bottom of the file so the wire format stays unit-testable.
+    // ---------------------------------------------------------------
+
+    /// `DELETE /v1/playlists/{id}/tracks` with `tracks[].uri` and
+    /// optional `snapshot_id` precondition. Returns the new
+    /// `snapshot_id` Spotify hands back so the caller can persist it.
+    pub async fn remove_playlist_items(
+        &mut self,
+        playlist_id: &str,
+        uris: &[String],
+        snapshot_id: Option<&str>,
+    ) -> Result<String> {
+        if self.fake {
+            if fake_playlists().iter().any(|p| p.id == playlist_id) {
+                return Ok("fake-snap-after-remove".to_string());
+            }
+            bail!("no playlist matching `{playlist_id}`");
+        }
+        if uris.is_empty() {
+            // No-op remove still needs a snapshot to return; surface the
+            // caller's stored one (best-effort) or empty so the caller
+            // can decide not to persist.
+            return Ok(snapshot_id.unwrap_or_default().to_string());
+        }
+        let encoded = encode_component(playlist_id);
+        let mut current_snapshot = snapshot_id.map(str::to_string);
+        for chunk in uris.chunks(100) {
+            let body = playlist_remove_items_body(chunk, current_snapshot.as_deref());
+            let resp = self
+                .request_json::<SnapshotResponse>(
+                    Method::DELETE,
+                    &format!("/playlists/{encoded}/tracks"),
+                    Some(body),
+                )
+                .await?
+                .ok_or_else(|| anyhow!("Spotify returned no response for playlist-remove"))?;
+            current_snapshot = Some(resp.snapshot_id);
+        }
+        current_snapshot.ok_or_else(|| anyhow!("Spotify returned no snapshot_id"))
+    }
+
+    /// Re-add items at their original positions (undo of a previous
+    /// remove). Groups by position so each unique position becomes one
+    /// `POST /v1/playlists/{id}/tracks?position={p}` call carrying the
+    /// URIs that landed at that position.
+    pub async fn add_items_to_playlist_at_positions(
+        &mut self,
+        playlist_id: &str,
+        items: &[(String, u32)],
+        snapshot_id: Option<&str>,
+    ) -> Result<String> {
+        let _ = snapshot_id; // Spotify's add endpoint ignores snapshot_id.
+        if self.fake {
+            if fake_playlists().iter().any(|p| p.id == playlist_id) {
+                return Ok("fake-snap-after-readd".to_string());
+            }
+            bail!("no playlist matching `{playlist_id}`");
+        }
+        if items.is_empty() {
+            return Ok(String::new());
+        }
+        let encoded = encode_component(playlist_id);
+        let groups = group_items_by_position(items);
+        let mut last_snapshot = String::new();
+        for (position, uris) in groups {
+            for chunk in uris.chunks(100) {
+                let body = serde_json::json!({ "uris": chunk });
+                let resp = self
+                    .request_json::<SnapshotResponse>(
+                        Method::POST,
+                        &format!("/playlists/{encoded}/tracks?position={position}"),
+                        Some(body),
+                    )
+                    .await?
+                    .ok_or_else(|| anyhow!("Spotify returned no response for playlist-add"))?;
+                last_snapshot = resp.snapshot_id;
+            }
+        }
+        Ok(last_snapshot)
+    }
+
+    /// Reorder a contiguous range of items in a playlist.
+    /// `PUT /v1/playlists/{id}/tracks` with `{range_start, range_length,
+    /// insert_before, snapshot_id?}`.
+    pub async fn reorder_playlist_items(
+        &mut self,
+        playlist_id: &str,
+        range_start: u32,
+        insert_before: u32,
+        range_length: u32,
+        snapshot_id: Option<&str>,
+    ) -> Result<String> {
+        if self.fake {
+            if fake_playlists().iter().any(|p| p.id == playlist_id) {
+                return Ok("fake-snap-after-reorder".to_string());
+            }
+            bail!("no playlist matching `{playlist_id}`");
+        }
+        let encoded = encode_component(playlist_id);
+        let body =
+            playlist_reorder_body(range_start, insert_before, range_length, snapshot_id);
+        let resp = self
+            .request_json::<SnapshotResponse>(
+                Method::PUT,
+                &format!("/playlists/{encoded}/tracks"),
+                Some(body),
+            )
+            .await?
+            .ok_or_else(|| anyhow!("Spotify returned no response for playlist-reorder"))?;
+        Ok(resp.snapshot_id)
+    }
+
+    /// Unfollow / delete a playlist. Spotify models playlist deletion
+    /// as the owner unfollowing it. `DELETE /v1/playlists/{id}/followers`.
+    pub async fn unfollow_playlist(&mut self, playlist_id: &str) -> Result<()> {
+        if self.fake {
+            if fake_playlists().iter().any(|p| p.id == playlist_id) {
+                return Ok(());
+            }
+            bail!("no playlist matching `{playlist_id}`");
+        }
+        let encoded = encode_component(playlist_id);
+        self.empty(
+            Method::DELETE,
+            &format!("/playlists/{encoded}/followers"),
+            None::<()>,
+        )
+        .await
+    }
+
+    /// Save (=like) an item by URI. Routes to the correct
+    /// `/me/{tracks,albums,episodes,shows}` endpoint based on the URI
+    /// kind and uses Spotify's `?ids=` query syntax.
+    pub async fn library_save_by_uri(&mut self, uri: &str) -> Result<()> {
+        if self.fake {
+            selection_like_uri_check(uri)?;
+            return Ok(());
+        }
+        let (path, _id) = library_endpoint_for_uri(uri)?;
+        self.empty(Method::PUT, &path, None::<()>).await
+    }
+
+    /// Inverse of `library_save_by_uri`. `DELETE` against the same
+    /// endpoint family.
+    pub async fn library_unsave_by_uri(&mut self, uri: &str) -> Result<()> {
+        if self.fake {
+            selection_like_uri_check(uri)?;
+            return Ok(());
+        }
+        let (path, _id) = library_endpoint_for_uri(uri)?;
+        self.empty(Method::DELETE, &path, None::<()>).await
     }
 
     pub async fn image(&self, url: &str) -> Result<Vec<u8>> {
@@ -1135,6 +1305,83 @@ struct ImageRef {
     width: Option<u32>,
 }
 
+/// Spotify returns `{ "snapshot_id": "..." }` on playlist mutations
+/// (add/remove/reorder/replace). The new snapshot is the concurrency
+/// token for the next mutation — the daemon persists it so the next
+/// undo can compare against it.
+#[derive(Debug, Deserialize)]
+struct SnapshotResponse {
+    snapshot_id: String,
+}
+
+// --- Phase 12 (P12-A) URL/body helpers (pure, unit-testable) ---
+
+/// Build the JSON body for `DELETE /playlists/{id}/tracks`.
+/// Spotify expects `{ "tracks": [{ "uri": "..." }, ...], "snapshot_id"? }`.
+fn playlist_remove_items_body(uris: &[String], snapshot_id: Option<&str>) -> serde_json::Value {
+    let tracks: Vec<serde_json::Value> = uris
+        .iter()
+        .map(|uri| serde_json::json!({ "uri": uri }))
+        .collect();
+    match snapshot_id {
+        Some(snap) => serde_json::json!({ "tracks": tracks, "snapshot_id": snap }),
+        None => serde_json::json!({ "tracks": tracks }),
+    }
+}
+
+/// Build the JSON body for `PUT /playlists/{id}/tracks` reorder.
+fn playlist_reorder_body(
+    range_start: u32,
+    insert_before: u32,
+    range_length: u32,
+    snapshot_id: Option<&str>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "range_start": range_start,
+        "range_length": range_length,
+        "insert_before": insert_before,
+    });
+    if let Some(snap) = snapshot_id {
+        body["snapshot_id"] = serde_json::Value::String(snap.to_string());
+    }
+    body
+}
+
+/// Group `(uri, position)` items into `BTreeMap<position, Vec<uri>>`
+/// so re-adds use the fewest possible API calls. BTreeMap keeps
+/// positions sorted; smallest position first means later inserts
+/// don't shift earlier ones.
+fn group_items_by_position(items: &[(String, u32)]) -> std::collections::BTreeMap<u32, Vec<String>> {
+    let mut grouped: std::collections::BTreeMap<u32, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (uri, position) in items {
+        grouped.entry(*position).or_default().push(uri.clone());
+    }
+    grouped
+}
+
+/// Resolve a Spotify URI to its library endpoint path and id.
+/// Returns `("/me/tracks?ids=abc", "abc")` etc.
+fn library_endpoint_for_uri(uri: &str) -> Result<(String, String)> {
+    let id = uri
+        .rsplit(':')
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("malformed Spotify URI `{uri}`"))?
+        .to_string();
+    let path = match crate::selection::media_kind_from_uri(uri)? {
+        MediaKind::Track => format!("/me/tracks?ids={id}"),
+        MediaKind::Album => format!("/me/albums?ids={id}"),
+        MediaKind::Episode => format!("/me/episodes?ids={id}"),
+        MediaKind::Artist => format!("/me/following?type=artist&ids={id}"),
+        MediaKind::Playlist => bail!(
+            "playlists are saved/unsaved via /playlists/{{id}}/followers, \
+             not /me/{{tracks,albums,episodes,artists}}"
+        ),
+    };
+    Ok((path, id))
+}
+
 fn playlist_owner_name(owner: Option<PlaylistOwner>) -> String {
     owner
         .and_then(|owner| owner.display_name.or(owner.id))
@@ -1337,7 +1584,10 @@ fn selection_like_uri_check(uri: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{search_path, MediaKind};
+    use super::{
+        group_items_by_position, library_endpoint_for_uri, playlist_remove_items_body,
+        playlist_reorder_body, search_path, MediaKind,
+    };
 
     #[test]
     fn search_path_uses_valid_spotify_type_and_limit_params() {
@@ -1362,6 +1612,116 @@ mod tests {
                 50,
             ),
             "/search?q=jazz&type=track,episode,album,artist,playlist&limit=10"
+        );
+    }
+
+    // --- Phase 12 (P12-A) inverse mutator shape tests ---
+
+    #[test]
+    fn playlist_remove_items_body_emits_tracks_array_with_uri_field_per_spotify_api() {
+        let uris = vec![
+            "spotify:track:1".to_string(),
+            "spotify:track:2".to_string(),
+        ];
+        let body = playlist_remove_items_body(&uris, None);
+        let tracks = body["tracks"]
+            .as_array()
+            .expect("body must contain a tracks array");
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0]["uri"].as_str().unwrap(), "spotify:track:1");
+        assert_eq!(tracks[1]["uri"].as_str().unwrap(), "spotify:track:2");
+        // snapshot_id is absent when not provided; presence forces
+        // Spotify's optimistic-concurrency precondition which we only
+        // want when the daemon captured one.
+        assert!(body.get("snapshot_id").is_none());
+    }
+
+    #[test]
+    fn playlist_remove_items_body_includes_snapshot_id_when_present() {
+        let body = playlist_remove_items_body(&["spotify:track:x".to_string()], Some("snap-A"));
+        assert_eq!(body["snapshot_id"].as_str().unwrap(), "snap-A");
+    }
+
+    #[test]
+    fn playlist_reorder_body_carries_all_three_position_fields_and_snapshot() {
+        let body = playlist_reorder_body(2, 0, 1, Some("snap-Z"));
+        assert_eq!(body["range_start"].as_u64().unwrap(), 2);
+        assert_eq!(body["range_length"].as_u64().unwrap(), 1);
+        assert_eq!(body["insert_before"].as_u64().unwrap(), 0);
+        assert_eq!(body["snapshot_id"].as_str().unwrap(), "snap-Z");
+    }
+
+    #[test]
+    fn playlist_reorder_body_omits_snapshot_when_unknown() {
+        // Spotify rejects requests where snapshot_id is the literal
+        // empty string, so we must omit the field entirely when None.
+        let body = playlist_reorder_body(0, 5, 3, None);
+        assert!(body.get("snapshot_id").is_none());
+    }
+
+    #[test]
+    fn group_items_by_position_collapses_repeats_and_orders_ascending() {
+        let items = vec![
+            ("spotify:track:a".to_string(), 3),
+            ("spotify:track:b".to_string(), 0),
+            ("spotify:track:c".to_string(), 3),
+        ];
+        let grouped = group_items_by_position(&items);
+        let positions: Vec<u32> = grouped.keys().copied().collect();
+        // BTreeMap ordering means we process the lowest-position
+        // bucket first; that prevents later inserts from shifting
+        // earlier indices in the playlist.
+        assert_eq!(positions, vec![0, 3]);
+        assert_eq!(grouped[&0], vec!["spotify:track:b".to_string()]);
+        assert_eq!(
+            grouped[&3],
+            vec![
+                "spotify:track:a".to_string(),
+                "spotify:track:c".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn library_endpoint_for_uri_routes_each_media_kind_to_correct_spotify_endpoint() {
+        let cases = [
+            ("spotify:track:abc", "/me/tracks?ids=abc"),
+            ("spotify:album:xyz", "/me/albums?ids=xyz"),
+            ("spotify:episode:e1", "/me/episodes?ids=e1"),
+            (
+                "spotify:artist:a1",
+                "/me/following?type=artist&ids=a1",
+            ),
+        ];
+        for (uri, expected_path) in cases {
+            let (path, _id) = library_endpoint_for_uri(uri).unwrap();
+            assert_eq!(path, expected_path, "wrong endpoint for {uri}");
+        }
+    }
+
+    #[test]
+    fn user_agent_string_carries_version_os_arch_and_github_url() {
+        // Operators triaging Spotify API logs need at least the
+        // version, OS, and arch fields to be present and machine-
+        // parseable. The GitHub URL is etiquette for third-party
+        // services like LRCLIB.
+        let ua = super::user_agent_string();
+        assert!(ua.starts_with(&format!("spotuify/{}", env!("CARGO_PKG_VERSION"))));
+        assert!(ua.contains(std::env::consts::OS));
+        assert!(ua.contains(std::env::consts::ARCH));
+        assert!(ua.contains("https://github.com/planetaryescape/spotuify"));
+    }
+
+    #[test]
+    fn library_endpoint_for_uri_rejects_playlists() {
+        // Playlists are followed/unfollowed via /playlists/{id}/followers,
+        // not the generic /me/* family. Calling library_save on a
+        // playlist URI by accident would silently 404; we'd rather
+        // bail with a clear error.
+        let err = library_endpoint_for_uri("spotify:playlist:p1").unwrap_err();
+        assert!(
+            err.to_string().contains("playlists"),
+            "expected playlist-specific error, got `{err}`"
         );
     }
 }
