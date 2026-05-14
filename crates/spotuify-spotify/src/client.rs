@@ -10,9 +10,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use tokio::sync::Mutex;
 
-use spotuify_core::{
-    now_ms, spotify_api_finished_event, AnalyticsEvent, AnalyticsSource,
-};
+use spotuify_core::{now_ms, spotify_api_finished_event, AnalyticsEvent, AnalyticsSource};
 
 use crate::auth::{self, StoredToken};
 use crate::config::Config;
@@ -65,6 +63,8 @@ impl SpotifyClient {
             spotifyd_config_path: PathBuf::from("fake-spotifyd.conf"),
             spotifyd_device_name: Some("spotuify-fake".to_string()),
             spotifyd_autostart: false,
+            player: crate::config::PlayerConfig::default(),
+            analytics: crate::config::AnalyticsConfig::default(),
         };
         Ok(Self::new(config)?.with_fake_backend())
     }

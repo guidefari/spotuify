@@ -3,12 +3,10 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use tokio::time;
 
-use spotuify_core::{
-    action_finished_event, now_ms, Device, MediaItem, Playback, Playlist, Queue,
-};
 use crate::config::Config;
 use crate::spotifyd;
 use crate::SpotifyClient;
+use spotuify_core::{action_finished_event, now_ms, Device, MediaItem, Playback, Playlist, Queue};
 
 use crate::selection::media_kind_from_uri;
 
@@ -501,6 +499,8 @@ mod tests {
             spotifyd_config_path: "spotifyd.conf".into(),
             spotifyd_device_name: preferred.map(str::to_string),
             spotifyd_autostart: true,
+            player: crate::config::PlayerConfig::default(),
+            analytics: crate::config::AnalyticsConfig::default(),
         }
     }
 

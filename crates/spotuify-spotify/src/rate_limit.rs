@@ -116,7 +116,11 @@ pub fn decide_retry(
     if (500..600).contains(&status) {
         if attempt + 1 >= MAX_TRANSIENT_RETRIES {
             return RetryAction::GiveUp(classify_response(
-                status, retry_after, endpoint, body, now,
+                status,
+                retry_after,
+                endpoint,
+                body,
+                now,
             ));
         }
         let delay = jittered_backoff(attempt, rng);
