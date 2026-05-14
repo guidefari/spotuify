@@ -224,6 +224,18 @@ pub const TOOLS: &[Tool] = &[
         kind: ToolKind::Analytics,
         destructive: false,
     },
+    Tool {
+        name: "analytics_search",
+        description: "Search history with normalized/raw query mode (local data).",
+        kind: ToolKind::Analytics,
+        destructive: false,
+    },
+    Tool {
+        name: "analytics_rediscovery",
+        description: "Tracks worth re-discovering — qualified listens older than the gap window (local data).",
+        kind: ToolKind::Analytics,
+        destructive: false,
+    },
     // Ops (Phase 12) -- undo bypasses confirm because it IS the safety net
     Tool {
         name: "ops_log",

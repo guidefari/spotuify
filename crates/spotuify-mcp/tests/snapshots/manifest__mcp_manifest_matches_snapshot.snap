@@ -1,5 +1,6 @@
 ---
 source: crates/spotuify-mcp/tests/manifest.rs
+assertion_line: 9
 expression: manifest
 ---
 spec_version: 2024-11-05
@@ -119,6 +120,14 @@ tools:
     destructive: false
   - name: analytics_habits
     description: Listening habits by day/week/month (local data).
+    kind: analytics
+    destructive: false
+  - name: analytics_search
+    description: Search history with normalized/raw query mode (local data).
+    kind: analytics
+    destructive: false
+  - name: analytics_rediscovery
+    description: Tracks worth re-discovering — qualified listens older than the gap window (local data).
     kind: analytics
     destructive: false
   - name: ops_log

@@ -199,14 +199,87 @@ fn pause_translates_to_playback_command_pause() {
 
 #[test]
 fn deferred_tools_signal_via_local_deferred() {
+    // Tools that remain deferred until later phases land:
     let call = translate("lyrics", &json!({})).unwrap();
     assert!(matches!(call, TranslatedCall::LocalDeferred(_)));
+}
 
-    let call = translate("ops_log", &json!({})).unwrap();
-    assert!(matches!(call, TranslatedCall::LocalDeferred(_)));
+#[test]
+fn phase_12_ops_tools_route_to_typed_requests() {
+    use spotuify_protocol::Request;
+    // ops_log -> Request::OpsLog
+    let call = translate("ops_log", &json!({"limit": 5, "source": "mcp"})).unwrap();
+    let TranslatedCall::Request(r) = call else {
+        panic!("ops_log must route to a typed Request, not LocalDeferred")
+    };
+    match r {
+        Request::OpsLog { limit, source, .. } => {
+            assert_eq!(limit, 5);
+            assert_eq!(source, Some(spotuify_protocol::OperationSource::Mcp));
+        }
+        other => panic!("expected OpsLog, got {other:?}"),
+    }
 
+    // undo_last -> Request::OpsUndo
     let call = translate("undo_last", &json!({})).unwrap();
-    assert!(matches!(call, TranslatedCall::LocalDeferred(_)));
+    let TranslatedCall::Request(r) = call else {
+        panic!("undo_last must route to a typed Request")
+    };
+    match r {
+        Request::OpsUndo {
+            operation_id,
+            dry_run,
+            force,
+            bulk_since_ms,
+        } => {
+            assert!(
+                operation_id.is_none(),
+                "undo_last targets the last reversible op"
+            );
+            assert!(!dry_run);
+            assert!(!force);
+            assert!(bulk_since_ms.is_none());
+        }
+        other => panic!("expected OpsUndo, got {other:?}"),
+    }
+}
+
+#[test]
+fn phase_10_analytics_tools_route_to_typed_requests() {
+    use spotuify_protocol::Request;
+
+    let call = translate(
+        "analytics_top",
+        &json!({"kind": "artists", "since": "7d", "limit": 5}),
+    )
+    .unwrap();
+    let TranslatedCall::Request(r) = call else {
+        panic!("analytics_top must route to a typed Request")
+    };
+    match r {
+        Request::AnalyticsTop {
+            kind,
+            since_window,
+            limit,
+        } => {
+            assert_eq!(kind, spotuify_protocol::TopKind::Artists);
+            assert_eq!(since_window, spotuify_protocol::SinceWindow::Days(7));
+            assert_eq!(limit, 5);
+        }
+        other => panic!("expected AnalyticsTop, got {other:?}"),
+    }
+
+    let call = translate("analytics_habits", &json!({"window": "month"})).unwrap();
+    let TranslatedCall::Request(r) = call else {
+        panic!("analytics_habits must route to a typed Request")
+    };
+    assert!(matches!(
+        r,
+        Request::AnalyticsHabits {
+            window: spotuify_protocol::HabitWindow::Month,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -216,4 +289,132 @@ fn unknown_tool_returns_bridge_unknown_tool() {
         BridgeError::UnknownTool(name) => assert_eq!(name, "not_a_tool"),
         other => panic!("expected UnknownTool, got {other:?}"),
     }
+}
+
+#[test]
+fn analytics_search_routes_with_mode_and_limit() {
+    use spotuify_protocol::Request;
+    let call = translate(
+        "analytics_search",
+        &json!({"mode": "normalized", "limit": 75}),
+    )
+    .unwrap();
+    let TranslatedCall::Request(r) = call else {
+        panic!("analytics_search must route to a typed Request")
+    };
+    match r {
+        Request::AnalyticsSearch { mode, limit } => {
+            assert_eq!(mode, spotuify_protocol::SearchMode::Normalized);
+            assert_eq!(limit, 75);
+        }
+        other => panic!("expected AnalyticsSearch, got {other:?}"),
+    }
+}
+
+#[test]
+fn analytics_search_defaults_mode_to_raw_when_unset() {
+    use spotuify_protocol::Request;
+    let call = translate("analytics_search", &json!({})).unwrap();
+    let TranslatedCall::Request(Request::AnalyticsSearch { mode, limit }) = call else {
+        panic!("expected AnalyticsSearch")
+    };
+    assert_eq!(mode, spotuify_protocol::SearchMode::Raw);
+    assert_eq!(limit, 50, "default limit is 50");
+}
+
+#[test]
+fn analytics_search_caps_limit_at_200() {
+    use spotuify_protocol::Request;
+    let call = translate(
+        "analytics_search",
+        &json!({"limit": 100_000}),
+    )
+    .unwrap();
+    let TranslatedCall::Request(Request::AnalyticsSearch { limit, .. }) = call else {
+        panic!("expected AnalyticsSearch")
+    };
+    assert_eq!(limit, 200, "limit must clamp to 200 to bound result size");
+}
+
+#[test]
+fn analytics_rediscovery_parses_gap_value() {
+    use spotuify_protocol::Request;
+    let call = translate("analytics_rediscovery", &json!({"gap": "365d"})).unwrap();
+    let TranslatedCall::Request(Request::AnalyticsRediscovery { gap_days }) = call else {
+        panic!("expected AnalyticsRediscovery")
+    };
+    assert_eq!(gap_days, 365);
+}
+
+#[test]
+fn analytics_rediscovery_defaults_gap_to_90() {
+    use spotuify_protocol::Request;
+    let call = translate("analytics_rediscovery", &json!({})).unwrap();
+    let TranslatedCall::Request(Request::AnalyticsRediscovery { gap_days }) = call else {
+        panic!("expected AnalyticsRediscovery")
+    };
+    assert_eq!(gap_days, 90, "default gap is 90 days");
+}
+
+#[test]
+fn analytics_top_clamps_limit() {
+    use spotuify_protocol::Request;
+    let call = translate(
+        "analytics_top",
+        &json!({"kind": "tracks", "limit": 100_000}),
+    )
+    .unwrap();
+    let TranslatedCall::Request(Request::AnalyticsTop { limit, .. }) = call else {
+        panic!("expected AnalyticsTop")
+    };
+    assert_eq!(limit, 100, "limit must clamp at 100");
+}
+
+#[test]
+fn analytics_top_defaults_to_tracks_30d() {
+    use spotuify_protocol::Request;
+    let call = translate("analytics_top", &json!({})).unwrap();
+    let TranslatedCall::Request(Request::AnalyticsTop {
+        kind,
+        since_window,
+        limit,
+    }) = call
+    else {
+        panic!("expected AnalyticsTop")
+    };
+    assert_eq!(kind, spotuify_protocol::TopKind::Tracks);
+    assert_eq!(since_window, spotuify_protocol::SinceWindow::Days(30));
+    assert_eq!(limit, 25);
+}
+
+#[test]
+fn analytics_top_since_all_maps_to_unbounded_window() {
+    use spotuify_protocol::Request;
+    let call = translate("analytics_top", &json!({"since": "all"})).unwrap();
+    let TranslatedCall::Request(Request::AnalyticsTop { since_window, .. }) = call else {
+        panic!("expected AnalyticsTop")
+    };
+    assert_eq!(since_window, spotuify_protocol::SinceWindow::All);
+}
+
+#[test]
+fn ops_log_propagates_unknown_source_as_none() {
+    use spotuify_protocol::Request;
+    // An unknown `source` label must NOT abort — it just drops the
+    // filter so the user sees the unfiltered log.
+    let call = translate("ops_log", &json!({"source": "robot"})).unwrap();
+    let TranslatedCall::Request(Request::OpsLog { source, .. }) = call else {
+        panic!("expected OpsLog")
+    };
+    assert!(source.is_none(), "unknown source label must degrade to no filter");
+}
+
+#[test]
+fn undo_last_honours_force_flag() {
+    use spotuify_protocol::Request;
+    let call = translate("undo_last", &json!({"force": true})).unwrap();
+    let TranslatedCall::Request(Request::OpsUndo { force, .. }) = call else {
+        panic!("expected OpsUndo")
+    };
+    assert!(force, "force=true on the MCP call must round-trip into Request::OpsUndo");
 }

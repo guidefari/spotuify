@@ -60,10 +60,7 @@ pub enum TranslatedCall {
 
 /// Translate `(tool_name, args)` into either a daemon Request or a
 /// deferred-feature marker.
-pub fn translate(
-    tool: &str,
-    args: &Value,
-) -> Result<TranslatedCall, BridgeError> {
+pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError> {
     use spotuify_protocol::PlaybackCommand;
     use spotuify_protocol::Request as R;
 
@@ -72,7 +69,9 @@ pub fn translate(
             let query = required_str(args, tool, "query")?.to_string();
             let scope = parse_scope(optional_str(args, "kind"));
             let source = parse_source(optional_str(args, "source"));
-            let limit = optional_u64(args, "limit").map(|n| n.min(50) as u32).unwrap_or(20);
+            let limit = optional_u64(args, "limit")
+                .map(|n| n.min(50) as u32)
+                .unwrap_or(20);
             Ok(TranslatedCall::Request(R::Search {
                 query,
                 scope,
@@ -89,7 +88,9 @@ pub fn translate(
             Ok(TranslatedCall::Request(R::PlaylistTracks { playlist }))
         }
         "library_list" => {
-            let limit = optional_u64(args, "limit").map(|n| n.min(500) as u32).unwrap_or(100);
+            let limit = optional_u64(args, "limit")
+                .map(|n| n.min(500) as u32)
+                .unwrap_or(100);
             Ok(TranslatedCall::Request(R::LibraryList { limit }))
         }
         "play" | "play_uri" => {
@@ -115,12 +116,11 @@ pub fn translate(
             command: PlaybackCommand::Previous,
         })),
         "seek" => {
-            let position_ms = optional_u64(args, "position_ms").ok_or_else(|| {
-                BridgeError::MissingArg {
+            let position_ms =
+                optional_u64(args, "position_ms").ok_or_else(|| BridgeError::MissingArg {
                     tool: tool.into(),
                     arg: "position_ms".into(),
-                }
-            })?;
+                })?;
             Ok(TranslatedCall::Request(R::PlaybackCommand {
                 command: PlaybackCommand::Seek { position_ms },
             }))
@@ -193,7 +193,10 @@ pub fn translate(
                     tool: tool.into(),
                     arg: "uris".into(),
                 })?;
-            Ok(TranslatedCall::Request(R::PlaylistAddItems { playlist, uris }))
+            Ok(TranslatedCall::Request(R::PlaylistAddItems {
+                playlist,
+                uris,
+            }))
         }
         "library_save" | "library_unsave" => {
             let uri = required_str(args, tool, "uri")?.to_string();
@@ -205,15 +208,93 @@ pub fn translate(
                 current: false,
             }))
         }
-        // Deferred until Phase 9/10/12 land.
-        "lyrics"
-        | "radio_start"
-        | "related_artists"
-        | "analytics_top"
-        | "analytics_habits"
-        | "ops_log"
-        | "undo_last"
-        | "playlist_remove" => Ok(TranslatedCall::LocalDeferred(static_label(tool))),
+        // Phase 10 — analytics tools route to typed daemon Requests.
+        "analytics_top" => {
+            use spotuify_protocol::{Request as R, SinceWindow, TopKind};
+            let kind = match optional_str(args, "kind").unwrap_or("tracks") {
+                "tracks" => TopKind::Tracks,
+                "artists" => TopKind::Artists,
+                "albums" => TopKind::Albums,
+                "playlists" => TopKind::Playlists,
+                _ => TopKind::Tracks,
+            };
+            let since_window = match optional_str(args, "since").unwrap_or("30d") {
+                "all" => SinceWindow::All,
+                raw => {
+                    let n = raw
+                        .strip_suffix('d')
+                        .unwrap_or(raw)
+                        .parse::<u32>()
+                        .unwrap_or(30);
+                    SinceWindow::Days(n)
+                }
+            };
+            let limit = optional_u64(args, "limit")
+                .map(|n| n.min(100) as u32)
+                .unwrap_or(25);
+            Ok(TranslatedCall::Request(R::AnalyticsTop {
+                kind,
+                since_window,
+                limit,
+            }))
+        }
+        "analytics_habits" => {
+            use spotuify_protocol::{HabitWindow, Request as R};
+            let window = match optional_str(args, "window").unwrap_or("week") {
+                "day" => HabitWindow::Day,
+                "month" => HabitWindow::Month,
+                _ => HabitWindow::Week,
+            };
+            Ok(TranslatedCall::Request(R::AnalyticsHabits {
+                window,
+                since_ms: None,
+            }))
+        }
+        "analytics_search" => {
+            use spotuify_protocol::{Request as R, SearchMode};
+            let mode = match optional_str(args, "mode").unwrap_or("raw") {
+                "normalized" => SearchMode::Normalized,
+                _ => SearchMode::Raw,
+            };
+            let limit = optional_u64(args, "limit")
+                .map(|n| n.min(200) as u32)
+                .unwrap_or(50);
+            Ok(TranslatedCall::Request(R::AnalyticsSearch { mode, limit }))
+        }
+        "analytics_rediscovery" => {
+            use spotuify_protocol::Request as R;
+            let gap_days = optional_str(args, "gap")
+                .and_then(|s| s.strip_suffix('d').unwrap_or(s).parse::<u32>().ok())
+                .unwrap_or(90);
+            Ok(TranslatedCall::Request(R::AnalyticsRediscovery {
+                gap_days,
+            }))
+        }
+        // Phase 12 — ops_log + undo_last route to typed daemon Requests.
+        "ops_log" => {
+            use spotuify_protocol::{OperationSource, Request as R};
+            let limit = optional_u64(args, "limit")
+                .map(|n| n.min(200) as u32)
+                .unwrap_or(20);
+            let source = optional_str(args, "source").and_then(OperationSource::from_label);
+            Ok(TranslatedCall::Request(R::OpsLog {
+                limit,
+                since_ms: None,
+                source,
+            }))
+        }
+        "undo_last" => {
+            use spotuify_protocol::Request as R;
+            Ok(TranslatedCall::Request(R::OpsUndo {
+                operation_id: None,
+                dry_run: false,
+                force: optional_bool(args, "force").unwrap_or(false),
+                bulk_since_ms: None,
+            }))
+        }
+        "lyrics" | "radio_start" | "related_artists" | "playlist_remove" => {
+            Ok(TranslatedCall::LocalDeferred(static_label(tool)))
+        }
         other => Err(BridgeError::UnknownTool(other.to_string())),
     }
 }
@@ -246,6 +327,8 @@ fn static_label(tool: &str) -> &'static str {
         "related_artists" => "related_artists (Phase 9 / embedded backend required)",
         "analytics_top" => "analytics_top (Phase 10)",
         "analytics_habits" => "analytics_habits (Phase 10)",
+        "analytics_search" => "analytics_search (Phase 10)",
+        "analytics_rediscovery" => "analytics_rediscovery (Phase 10)",
         "ops_log" => "ops_log (Phase 12)",
         "undo_last" => "undo_last (Phase 12)",
         "playlist_remove" => "playlist_remove (queued for daemon support)",

@@ -81,7 +81,11 @@ fn handle(request: RpcRequest, rt: &tokio::runtime::Runtime) -> RpcResponse {
     if request.method == "tools/call" {
         let id = request.id.clone().unwrap_or(Value::Null);
         let params = request.params.clone();
-        let name = params.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
         let confirm = args.get("confirm").and_then(Value::as_bool);
 
@@ -191,5 +195,16 @@ fn kind_label(data: &spotuify_protocol::ResponseData) -> &'static str {
         D::Logs { .. } => "logs",
         D::Mutation { .. } => "mutation",
         D::PlaylistCreate { .. } => "playlist-create",
+        // Phase 10 — analytics responses
+        D::AnalyticsTop { .. } => "analytics-top",
+        D::AnalyticsHabits { .. } => "analytics-habits",
+        D::AnalyticsSearch { .. } => "analytics-search",
+        D::AnalyticsRediscovery { .. } => "analytics-rediscovery",
+        D::AnalyticsRebuildReport { .. } => "analytics-rebuild",
+        D::AnalyticsPruneReport { .. } => "analytics-prune",
+        // Phase 12 — operations responses
+        D::Operations { .. } => "operations",
+        D::OperationDetail { .. } => "operation-detail",
+        D::OperationUndoResult { .. } => "operation-undo-result",
     }
 }
