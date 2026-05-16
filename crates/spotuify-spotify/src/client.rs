@@ -277,36 +277,49 @@ impl SpotifyClient {
         // sequential rather than concurrent — the shared rate-limiter
         // serialises them anyway, and Spotify's catalog endpoints
         // typically return under ~150ms each.
+        //
+        // Spotify can return the same item across multiple type
+        // queries (e.g. an album's lead single appearing in both
+        // track and album responses), so dedup by URI on the way out
+        // with first-occurrence-wins to preserve relevance ordering
+        // within each type.
         let mut items = Vec::new();
+        let mut seen_uris: std::collections::HashSet<String> = std::collections::HashSet::new();
         for kind in kinds {
             let path = search_path(query, std::slice::from_ref(kind), limit);
             let response = self
                 .request_json::<SearchResponse>(Method::GET, &path, None::<()>)
                 .await?
                 .ok_or_else(|| anyhow!("Spotify returned no search response"))?;
+            let mut batch: Vec<MediaItem> = Vec::new();
             if let Some(tracks) = response.tracks {
-                items.extend(tracks.items.into_iter().map(RawTrack::into_media_item));
+                batch.extend(tracks.items.into_iter().map(RawTrack::into_media_item));
             }
             if let Some(episodes) = response.episodes {
-                items.extend(episodes.items.into_iter().map(RawEpisode::into_media_item));
+                batch.extend(episodes.items.into_iter().map(RawEpisode::into_media_item));
             }
             if let Some(shows) = response.shows {
-                items.extend(shows.items.into_iter().map(RawShow::into_media_item));
+                batch.extend(shows.items.into_iter().map(RawShow::into_media_item));
             }
             if let Some(albums) = response.albums {
-                items.extend(albums.items.into_iter().map(RawAlbum::into_media_item));
+                batch.extend(albums.items.into_iter().map(RawAlbum::into_media_item));
             }
             if let Some(artists) = response.artists {
-                items.extend(artists.items.into_iter().map(RawArtist::into_media_item));
+                batch.extend(artists.items.into_iter().map(RawArtist::into_media_item));
             }
             if let Some(playlists) = response.playlists {
-                items.extend(
+                batch.extend(
                     playlists
                         .items
                         .into_iter()
                         .flatten()
                         .filter_map(RawPlaylist::into_media_item),
                 );
+            }
+            for item in batch {
+                if seen_uris.insert(item.uri.clone()) {
+                    items.push(item);
+                }
             }
         }
 
