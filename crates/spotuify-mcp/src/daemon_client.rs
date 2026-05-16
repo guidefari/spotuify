@@ -14,18 +14,16 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use futures::{SinkExt, StreamExt};
-use spotuify_protocol::{IpcCodec, IpcMessage, IpcPayload, Request, Response};
+use spotuify_protocol::{
+    default_socket_path as protocol_socket_path, IpcCodec, IpcMessage, IpcPayload, OperationSource,
+    Request, Response,
+};
 use tokio::net::UnixStream;
 use tokio_util::codec::Framed;
 
 /// Default daemon socket path. The daemon writes here at startup.
 pub fn default_socket_path() -> PathBuf {
-    if let Some(custom) = std::env::var_os("SPOTUIFY_SOCKET") {
-        return PathBuf::from(custom);
-    }
-    dirs::cache_dir()
-        .unwrap_or_else(|| std::env::temp_dir())
-        .join("spotuify/daemon.sock")
+    protocol_socket_path()
 }
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -45,6 +43,7 @@ pub async fn round_trip(socket_path: &Path, request: Request) -> Result<Response
 
     let envelope = IpcMessage {
         id: 1,
+        source: Some(OperationSource::Mcp),
         payload: IpcPayload::Request(request),
     };
     framed
@@ -88,7 +87,7 @@ mod tests {
 
     #[test]
     fn default_socket_path_honours_env_override() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = ENV_LOCK.lock().expect("env lock should not be poisoned");
         std::env::set_var("SPOTUIFY_SOCKET", "/tmp/spotuify-test.sock");
         let p = default_socket_path();
         assert_eq!(p, PathBuf::from("/tmp/spotuify-test.sock"));
@@ -96,13 +95,12 @@ mod tests {
     }
 
     #[test]
-    fn default_socket_path_falls_back_to_cache_dir() {
-        let _g = ENV_LOCK.lock().unwrap();
+    fn default_socket_path_uses_shared_runtime_resolver() {
+        let _g = ENV_LOCK.lock().expect("env lock should not be poisoned");
         std::env::remove_var("SPOTUIFY_SOCKET");
+        std::env::set_var("SPOTUIFY_RUNTIME_DIR", "/tmp/spotuify-runtime-test");
         let p = default_socket_path();
-        assert!(
-            p.to_string_lossy().ends_with("spotuify/daemon.sock"),
-            "expected cache-dir suffix, got {p:?}"
-        );
+        assert_eq!(p, PathBuf::from("/tmp/spotuify-runtime-test/daemon.sock"));
+        std::env::remove_var("SPOTUIFY_RUNTIME_DIR");
     }
 }

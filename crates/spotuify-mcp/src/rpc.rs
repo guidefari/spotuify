@@ -172,19 +172,7 @@ fn tools_call(id: Value, params: Value) -> RpcResponse {
 
     match decide(&name, confirm) {
         Err(err) => error_response(id, RpcError::invalid_request(err.to_string())),
-        Ok(Authorized::PreviewOnly) => ok_response(
-            id,
-            json!({
-                "content": [{
-                    "type": "text",
-                    "text": format!(
-                        "Tool `{name}` is destructive; re-invoke with `confirm: true` after the user approves."
-                    ),
-                }],
-                "isError": true,
-                "_meta": { "spotuify_preview_only": true },
-            }),
-        ),
+        Ok(Authorized::PreviewOnly) => preview_response(id, &name, &args),
         Ok(Authorized::Execute) => {
             // The bridge translates to a daemon Request; the wire
             // layer (Phase 8 follow-up) actually dispatches it. For
@@ -203,20 +191,94 @@ fn tools_call(id: Value, params: Value) -> RpcResponse {
                         }
                     }),
                 ),
-                Ok(crate::bridge::TranslatedCall::LocalDeferred(label)) => ok_response(
+                Ok(crate::bridge::TranslatedCall::LocalJson(value)) => ok_response(
                     id,
                     json!({
                         "content": [{
                             "type": "text",
-                            "text": format!("Deferred: {label} (gated on a later phase)."),
+                            "text": serde_json::to_string_pretty(&value).unwrap_or_else(|err| {
+                                format!("{{\"error\":\"serialization failed: {err}\"}}")
+                            }),
                         }],
-                        "isError": true,
+                        "_meta": {
+                            "spotuify_response_kind": "local_json",
+                        }
+                    }),
+                ),
+                Ok(crate::bridge::TranslatedCall::PlaylistResolveTracks { plan }) => ok_response(
+                    id,
+                    json!({
+                        "content": [{
+                            "type": "text",
+                            "text": format!(
+                                "Translated to daemon search workflow for {} candidate(s).",
+                                plan.candidate_searches.len()
+                            ),
+                        }],
+                        "_meta": {
+                            "spotuify_daemon_workflow": "playlist_resolve_tracks",
+                        }
                     }),
                 ),
                 Err(err) => error_response(id, RpcError::invalid_params(err.to_string())),
             }
         }
     }
+}
+
+pub(crate) fn preview_response(id: Value, name: &str, args: &Value) -> RpcResponse {
+    let preview = destructive_preview(name, args);
+    ok_response(
+        id,
+        json!({
+            "content": [{
+                "type": "text",
+                "text": format!(
+                    "Preview for destructive tool `{name}`. Not executed; re-invoke with `confirm: true` after the user approves."
+                ),
+            }],
+            "_meta": {
+                "spotuify_preview_only": true,
+                "spotuify_preview": preview,
+            },
+        }),
+    )
+}
+
+fn destructive_preview(name: &str, args: &Value) -> Value {
+    let clean_args = args_without_confirm(args);
+    let action = match name {
+        "playlist_create" => "playlist-create",
+        "playlist_add" => "playlist-add",
+        "playlist_remove" => "playlist-remove",
+        "library_save" => "library-save",
+        "library_unsave" => "library-unsave",
+        "queue_add" => "queue-add",
+        "transfer_device" => "transfer-device",
+        other => other,
+    };
+    let mut preview = json!({
+        "tool": name,
+        "action": action,
+        "confirm_required": true,
+        "would_execute": clean_args,
+    });
+    if let Some(obj) = preview.as_object_mut() {
+        for key in ["name", "description", "playlist", "uri", "device", "uris"] {
+            if let Some(value) = clean_args.get(key) {
+                obj.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    preview
+}
+
+fn args_without_confirm(args: &Value) -> Value {
+    let mut clean = args.clone();
+    if let Some(obj) = clean.as_object_mut() {
+        obj.remove("confirm");
+    }
+    clean
 }
 
 fn resources_list(id: Value) -> RpcResponse {
@@ -297,6 +359,8 @@ fn tool_input_schema(tool: &str) -> Value {
 fn required_props_for(tool: &str) -> Vec<&'static str> {
     match tool {
         "search" => vec!["query"],
+        "playlist_plan" => vec!["brief"],
+        "playlist_resolve_tracks" => vec!["plan"],
         "play" | "play_uri" => vec!["uri"],
         "playlist_tracks" => vec!["playlist"],
         "playlist_create" => vec!["name"],

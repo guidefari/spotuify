@@ -20,8 +20,11 @@
 pub mod bridge;
 pub mod confirm;
 pub mod daemon_client;
+pub mod http;
 pub mod resources;
 pub mod rpc;
+pub mod server;
+pub mod stdio;
 pub mod tools;
 
 pub use confirm::{ConfirmDecision, ConfirmationRequired};

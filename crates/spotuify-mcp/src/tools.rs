@@ -11,9 +11,8 @@
 //! - `Destructive`: mutates persistent state (playlist add/remove,
 //!   library save/unsave, playlist create, device transfer). Requires
 //!   explicit `confirm: true` in the args.
-//! - `Mercury`: Phase 9 librespot mercury bus (lyrics, radio,
-//!   related-artists). Gated until embedded backend lands; surfaces a
-//!   clear error on spotifyd/connect backends.
+//! - `Mercury`: librespot mercury/local provider surfaces such as
+//!   lyrics. Only implemented tools appear in the live manifest.
 //! - `Analytics`: Phase 10 derivations (top, habits, rediscovery).
 //! - `Ops`: Phase 12 operation log + undo.
 
@@ -88,10 +87,22 @@ pub const TOOLS: &[Tool] = &[
         kind: ToolKind::Read,
         destructive: false,
     },
+    Tool {
+        name: "playlist_plan",
+        description: "Build a deterministic playlist-plan scaffold from a user brief.",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    Tool {
+        name: "playlist_resolve_tracks",
+        description: "Resolve a playlist plan's candidate searches into track candidates via daemon search.",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
     // Transport -- reversible, no confirm needed
     Tool {
         name: "play",
-        description: "Start playback from a query (best match).",
+        description: "Start playback of an exact Spotify URI returned by search.",
         kind: ToolKind::Transport,
         destructive: false,
     },
@@ -192,22 +203,10 @@ pub const TOOLS: &[Tool] = &[
         kind: ToolKind::Destructive,
         destructive: true,
     },
-    // Mercury (Phase 9 gated) -- error on non-embedded backend
+    // Mercury / provider-backed read tools.
     Tool {
         name: "lyrics",
-        description: "Get synced lyrics for the current or specified track (requires embedded librespot backend).",
-        kind: ToolKind::Mercury,
-        destructive: false,
-    },
-    Tool {
-        name: "radio_start",
-        description: "Start a radio station from the current track (replacement for the deprecated /recommendations endpoint).",
-        kind: ToolKind::Mercury,
-        destructive: false,
-    },
-    Tool {
-        name: "related_artists",
-        description: "Get artists related to the specified artist (replacement for the deprecated /related-artists endpoint).",
+        description: "Get synced lyrics for the current or specified track, using cached Spotify mercury/LRCLIB data when available.",
         kind: ToolKind::Mercury,
         destructive: false,
     },

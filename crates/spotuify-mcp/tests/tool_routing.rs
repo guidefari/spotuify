@@ -1,5 +1,7 @@
 //! MCP tool catalogue + bridge + confirmation tests.
 
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 use serde_json::json;
 use spotuify_mcp::bridge::{translate, BridgeError, TranslatedCall};
 use spotuify_mcp::confirm::{decide, Authorized, ConfirmDecision};
@@ -109,6 +111,50 @@ fn search_tool_translates_to_request_search() {
 }
 
 #[test]
+fn playlist_plan_builds_agent_plan_without_daemon() {
+    let call = translate("playlist_plan", &json!({"brief": "rainy night focus"})).unwrap();
+    match call {
+        TranslatedCall::LocalJson(value) => {
+            assert_eq!(value["title"], "Rainy Night Focus");
+            assert_eq!(value["target_length"], 12);
+            assert!(value["candidate_searches"]
+                .as_array()
+                .expect("candidate_searches should be an array")
+                .iter()
+                .any(|query| query == "rainy night focus"));
+        }
+        other => panic!("expected local playlist plan JSON, got {other:?}"),
+    }
+}
+
+#[test]
+fn playlist_resolve_tracks_accepts_plan_for_daemon_search_resolution() {
+    let call = translate(
+        "playlist_resolve_tracks",
+        &json!({
+            "plan": {
+                "title": "Focus",
+                "description": "desc",
+                "target_length": 2,
+                "mood": "quiet",
+                "theme_notes": [],
+                "candidate_searches": ["one", "two"],
+                "sequencing_notes": [],
+                "exclusions": []
+            }
+        }),
+    )
+    .unwrap();
+
+    match call {
+        TranslatedCall::PlaylistResolveTracks { plan } => {
+            assert_eq!(plan.candidate_searches, vec!["one", "two"]);
+        }
+        other => panic!("expected PlaylistResolveTracks, got {other:?}"),
+    }
+}
+
+#[test]
 fn search_tool_clamps_excessive_limit_to_50() {
     let call = translate("search", &json!({"query": "x", "limit": 1000})).unwrap();
     match call {
@@ -187,6 +233,41 @@ fn playlist_create_with_missing_name_errors() {
 }
 
 #[test]
+fn playlist_remove_routes_to_typed_daemon_request() {
+    let call = translate(
+        "playlist_remove",
+        &json!({
+            "playlist": "Focus",
+            "uris": ["spotify:track:one", "spotify:track:two"]
+        }),
+    )
+    .unwrap();
+
+    match call {
+        TranslatedCall::Request(spotuify_protocol::Request::PlaylistRemoveItems {
+            playlist,
+            uris,
+        }) => {
+            assert_eq!(playlist, "Focus");
+            assert_eq!(uris, vec!["spotify:track:one", "spotify:track:two"]);
+        }
+        other => panic!("expected PlaylistRemoveItems, got {other:?}"),
+    }
+}
+
+#[test]
+fn library_unsave_routes_to_unsave_request_not_save() {
+    let call = translate("library_unsave", &json!({"uri": "spotify:track:remove-me"})).unwrap();
+
+    match call {
+        TranslatedCall::Request(spotuify_protocol::Request::LibraryUnsave { uri }) => {
+            assert_eq!(uri, "spotify:track:remove-me");
+        }
+        other => panic!("expected LibraryUnsave, got {other:?}"),
+    }
+}
+
+#[test]
 fn pause_translates_to_playback_command_pause() {
     let call = translate("pause", &json!({})).unwrap();
     match call {
@@ -198,10 +279,14 @@ fn pause_translates_to_playback_command_pause() {
 }
 
 #[test]
-fn deferred_tools_signal_via_local_deferred() {
-    // Tools that remain deferred until later phases land:
-    let call = translate("lyrics", &json!({})).unwrap();
-    assert!(matches!(call, TranslatedCall::LocalDeferred(_)));
+fn lyrics_routes_to_typed_request() {
+    let call = translate("lyrics", &json!({"track_uri": "spotify:track:abc"})).unwrap();
+    match call {
+        TranslatedCall::Request(spotuify_protocol::Request::LyricsGet { track_uri, .. }) => {
+            assert_eq!(track_uri.as_deref(), Some("spotify:track:abc"));
+        }
+        other => panic!("expected LyricsGet, got {other:?}"),
+    }
 }
 
 #[test]
@@ -325,11 +410,7 @@ fn analytics_search_defaults_mode_to_raw_when_unset() {
 #[test]
 fn analytics_search_caps_limit_at_200() {
     use spotuify_protocol::Request;
-    let call = translate(
-        "analytics_search",
-        &json!({"limit": 100_000}),
-    )
-    .unwrap();
+    let call = translate("analytics_search", &json!({"limit": 100_000})).unwrap();
     let TranslatedCall::Request(Request::AnalyticsSearch { limit, .. }) = call else {
         panic!("expected AnalyticsSearch")
     };
@@ -406,7 +487,10 @@ fn ops_log_propagates_unknown_source_as_none() {
     let TranslatedCall::Request(Request::OpsLog { source, .. }) = call else {
         panic!("expected OpsLog")
     };
-    assert!(source.is_none(), "unknown source label must degrade to no filter");
+    assert!(
+        source.is_none(),
+        "unknown source label must degrade to no filter"
+    );
 }
 
 #[test]
@@ -416,5 +500,8 @@ fn undo_last_honours_force_flag() {
     let TranslatedCall::Request(Request::OpsUndo { force, .. }) = call else {
         panic!("expected OpsUndo")
     };
-    assert!(force, "force=true on the MCP call must round-trip into Request::OpsUndo");
+    assert!(
+        force,
+        "force=true on the MCP call must round-trip into Request::OpsUndo"
+    );
 }

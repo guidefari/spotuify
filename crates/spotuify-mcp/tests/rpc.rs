@@ -1,5 +1,7 @@
 //! Phase 8.6/8.7 — MCP JSON-RPC dispatch tests.
 
+#![allow(clippy::unwrap_used)]
+
 use serde_json::{json, Value};
 use spotuify_mcp::{dispatch, RpcRequest};
 
@@ -124,14 +126,21 @@ fn tools_call_destructive_without_confirm_returns_preview() {
         "tools/call",
         json!({
             "name": "playlist_create",
-            "arguments": { "name": "Focus" }
+            "arguments": {
+                "name": "Focus",
+                "description": "deep work",
+                "uris": ["spotify:track:one"]
+            }
         }),
         7,
     ));
-    let is_error = result.get("isError").and_then(Value::as_bool);
-    assert_eq!(is_error, Some(true), "preview path sets isError");
     let preview_meta = result["_meta"]["spotuify_preview_only"].as_bool();
     assert_eq!(preview_meta, Some(true));
+    let preview = &result["_meta"]["spotuify_preview"];
+    assert_eq!(preview["action"], "playlist-create");
+    assert_eq!(preview["name"], "Focus");
+    assert_eq!(preview["uris"][0], "spotify:track:one");
+    assert_eq!(preview["confirm_required"], true);
     let text = result["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("confirm: true"), "text should guide LLM");
 }
@@ -187,16 +196,15 @@ fn ping_returns_empty_ok() {
 }
 
 #[test]
-fn deferred_tool_returns_ok_with_local_deferred_marker() {
-    let result = ok_value(request(
+fn future_mercury_tools_are_not_advertised_as_callable() {
+    let resp = dispatch(request(
         "tools/call",
-        json!({"name": "lyrics", "arguments": {}}),
+        json!({"name": "radio_start", "arguments": {}}),
         14,
     ));
-    let is_error = result.get("isError").and_then(Value::as_bool);
-    assert_eq!(is_error, Some(true), "deferred tools mark isError");
-    let text = result["content"][0]["text"].as_str().unwrap();
-    assert!(text.to_lowercase().contains("deferred"), "got text: {text}");
+    let err = resp.error.expect("unknown future tool should error");
+    assert_eq!(err.code, -32600);
+    assert!(err.message.contains("not found"));
 }
 
 #[test]

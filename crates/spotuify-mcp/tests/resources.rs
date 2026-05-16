@@ -1,5 +1,7 @@
 //! MCP resource catalogue tests.
 
+#![allow(clippy::unwrap_used)]
+
 use spotuify_mcp::resources::{resource_uris_invalidated_by, ResourceCatalogue};
 
 #[test]

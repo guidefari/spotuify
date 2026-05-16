@@ -5,7 +5,7 @@
 //! actual MCP transport (rmcp stdio/HTTP) is a thin wrapper around
 //! these.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
@@ -13,6 +13,12 @@ pub enum BridgeError {
     MissingArg { tool: String, arg: String },
     #[error("tool `{tool}` arg `{arg}` had wrong type")]
     BadArgType { tool: String, arg: String },
+    #[error("tool `{tool}` arg `{arg}` is invalid: {message}")]
+    InvalidArg {
+        tool: String,
+        arg: String,
+        message: String,
+    },
     #[error("tool `{0}` not implemented yet (gated on later phases)")]
     NotYetImplemented(String),
     #[error("tool `{0}` not in catalogue")]
@@ -53,13 +59,16 @@ pub fn optional_bool(args: &Value, key: &str) -> Option<bool> {
 pub enum TranslatedCall {
     /// Forward to the daemon as a typed Request.
     Request(spotuify_protocol::Request),
-    /// Run a local read-only query (analytics, ops log) implemented as a
-    /// daemon Request once Phases 10/12 land. For now: NotImplemented.
-    LocalDeferred(&'static str),
+    /// Return local JSON without contacting the daemon.
+    LocalJson(Value),
+    /// Resolve plan candidates by issuing one daemon search per candidate.
+    PlaylistResolveTracks {
+        plan: spotuify_protocol::PlaylistPlan,
+    },
 }
 
-/// Translate `(tool_name, args)` into either a daemon Request or a
-/// deferred-feature marker.
+/// Translate `(tool_name, args)` into either a daemon Request or a local
+/// read-only workflow.
 pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError> {
     use spotuify_protocol::PlaybackCommand;
     use spotuify_protocol::Request as R;
@@ -93,6 +102,22 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
                 .unwrap_or(100);
             Ok(TranslatedCall::Request(R::LibraryList { limit }))
         }
+        "playlist_plan" => {
+            let brief = required_str(args, tool, "brief")?;
+            let plan =
+                spotuify_protocol::agent_playlists::build_playlist_plan(brief).map_err(|err| {
+                    BridgeError::InvalidArg {
+                        tool: tool.into(),
+                        arg: "brief".into(),
+                        message: err.to_string(),
+                    }
+                })?;
+            Ok(TranslatedCall::LocalJson(json!(plan)))
+        }
+        "playlist_resolve_tracks" => {
+            let plan = parse_playlist_plan_arg(args, tool)?;
+            Ok(TranslatedCall::PlaylistResolveTracks { plan })
+        }
         "play" | "play_uri" => {
             // The MCP "play" tool requires a URI -- LLMs are expected to
             // call `search` first when they have a name. That keeps the
@@ -116,6 +141,17 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
             command: PlaybackCommand::Previous,
         })),
         "seek" => {
+            // Phase 5 — accept either `position_ms` (absolute) or
+            // `offset_ms` (relative). The daemon resolves relative
+            // offsets against its `PlaybackClock`.
+            if let Some(offset_ms) = args
+                .get("offset_ms")
+                .and_then(|v| v.as_i64())
+            {
+                return Ok(TranslatedCall::Request(R::PlaybackCommand {
+                    command: PlaybackCommand::SeekRelative { offset_ms },
+                }));
+            }
             let position_ms =
                 optional_u64(args, "position_ms").ok_or_else(|| BridgeError::MissingArg {
                     tool: tool.into(),
@@ -198,7 +234,27 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
                 uris,
             }))
         }
-        "library_save" | "library_unsave" => {
+        "playlist_remove" => {
+            let playlist = required_str(args, tool, "playlist")?.to_string();
+            let uris = args
+                .get("uris")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .ok_or_else(|| BridgeError::MissingArg {
+                    tool: tool.into(),
+                    arg: "uris".into(),
+                })?;
+            Ok(TranslatedCall::Request(R::PlaylistRemoveItems {
+                playlist,
+                uris,
+            }))
+        }
+        "library_save" => {
             let uri = required_str(args, tool, "uri")?.to_string();
             // The legacy LibrarySave request carries Option<String> because
             // it also supports "current track" mode. MCP always supplies
@@ -207,6 +263,10 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
                 uri: Some(uri),
                 current: false,
             }))
+        }
+        "library_unsave" => {
+            let uri = required_str(args, tool, "uri")?.to_string();
+            Ok(TranslatedCall::Request(R::LibraryUnsave { uri }))
         }
         // Phase 10 — analytics tools route to typed daemon Requests.
         "analytics_top" => {
@@ -292,11 +352,41 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
                 bulk_since_ms: None,
             }))
         }
-        "lyrics" | "radio_start" | "related_artists" | "playlist_remove" => {
-            Ok(TranslatedCall::LocalDeferred(static_label(tool)))
+        "lyrics" => {
+            use spotuify_protocol::Request as R;
+            Ok(TranslatedCall::Request(R::LyricsGet {
+                track_uri: optional_str(args, "track_uri")
+                    .or_else(|| optional_str(args, "uri"))
+                    .map(str::to_string),
+                force_refresh: optional_bool(args, "force_refresh").unwrap_or(false),
+            }))
         }
         other => Err(BridgeError::UnknownTool(other.to_string())),
     }
+}
+
+fn parse_playlist_plan_arg(
+    args: &Value,
+    tool: &str,
+) -> Result<spotuify_protocol::PlaylistPlan, BridgeError> {
+    let Some(raw) = args.get("plan") else {
+        return Err(BridgeError::MissingArg {
+            tool: tool.into(),
+            arg: "plan".into(),
+        });
+    };
+    if let Some(plan_json) = raw.as_str() {
+        return serde_json::from_str(plan_json).map_err(|err| BridgeError::InvalidArg {
+            tool: tool.into(),
+            arg: "plan".into(),
+            message: err.to_string(),
+        });
+    }
+    serde_json::from_value(raw.clone()).map_err(|err| BridgeError::InvalidArg {
+        tool: tool.into(),
+        arg: "plan".into(),
+        message: err.to_string(),
+    })
 }
 
 fn parse_scope(raw: Option<&str>) -> spotuify_protocol::SearchScopeData {
@@ -304,6 +394,7 @@ fn parse_scope(raw: Option<&str>) -> spotuify_protocol::SearchScopeData {
     match raw.unwrap_or("track") {
         "track" => S::Track,
         "episode" => S::Episode,
+        "show" | "podcast" | "podcasts" => S::Show,
         "album" => S::Album,
         "artist" => S::Artist,
         "playlist" => S::Playlist,
@@ -317,21 +408,5 @@ fn parse_source(raw: Option<&str>) -> spotuify_protocol::SearchSourceData {
         "local" => S::Local,
         "spotify" => S::Spotify,
         _ => S::Hybrid,
-    }
-}
-
-fn static_label(tool: &str) -> &'static str {
-    match tool {
-        "lyrics" => "lyrics (Phase 9 / embedded backend required)",
-        "radio_start" => "radio_start (Phase 9 / embedded backend required)",
-        "related_artists" => "related_artists (Phase 9 / embedded backend required)",
-        "analytics_top" => "analytics_top (Phase 10)",
-        "analytics_habits" => "analytics_habits (Phase 10)",
-        "analytics_search" => "analytics_search (Phase 10)",
-        "analytics_rediscovery" => "analytics_rediscovery (Phase 10)",
-        "ops_log" => "ops_log (Phase 12)",
-        "undo_last" => "undo_last (Phase 12)",
-        "playlist_remove" => "playlist_remove (queued for daemon support)",
-        _ => "deferred",
     }
 }
