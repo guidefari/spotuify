@@ -283,7 +283,7 @@ impl SearchIndex {
             return Ok(Vec::new());
         }
 
-        let parser = QueryParser::for_index(
+        let mut parser = QueryParser::for_index(
             &self.index,
             vec![
                 self.schema.name,
@@ -292,6 +292,14 @@ impl SearchIndex {
                 self.schema.uri,
             ],
         );
+        // Tantivy's QueryParser defaults to OR — `get lifted` would
+        // match docs containing either word. For a music search bar,
+        // that's almost always the wrong default: typing two words
+        // means "find tracks where both appear" (in the track name,
+        // artist, album, or wherever). Flip to AND so multi-word
+        // queries do what the user expects. UPPERCASE OR/NOT and
+        // explicit grouping still override.
+        parser.set_conjunction_by_default();
         let text_query = parser.parse_query(query)?;
         let query: Box<dyn Query> = if scope == SearchScopeData::All {
             text_query
@@ -394,6 +402,51 @@ mod tests {
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].uri, "spotify:track:1");
+    }
+
+    #[test]
+    fn multi_word_query_requires_all_terms_to_match() {
+        // Adversarial: a user typing "get lifted" expects results
+        // containing BOTH words, not "get" OR "lifted". Tantivy's
+        // QueryParser default is OR, so without
+        // set_conjunction_by_default() this returns the wrong items.
+        let mut index = SearchIndex::in_memory().unwrap();
+        for entry in [
+            IndexedMediaItem {
+                item: track("spotify:track:get-only", "Let's Get Together", "Artist A"),
+                liked: false,
+                saved: false,
+                added_at_ms: None,
+                source: "spotify".to_string(),
+            },
+            IndexedMediaItem {
+                item: track(
+                    "spotify:track:lifted-only",
+                    "Burdens Are Lifted at Calvary",
+                    "Artist B",
+                ),
+                liked: false,
+                saved: false,
+                added_at_ms: None,
+                source: "spotify".to_string(),
+            },
+            IndexedMediaItem {
+                item: track("spotify:track:both", "Get Lifted", "Artist C"),
+                liked: false,
+                saved: false,
+                added_at_ms: None,
+                source: "spotify".to_string(),
+            },
+        ] {
+            index.index_item(&entry).unwrap();
+        }
+        index.commit().unwrap();
+
+        let hits = index
+            .search("get lifted", SearchScopeData::Track, 10)
+            .unwrap();
+        let uris: Vec<&str> = hits.iter().map(|h| h.uri.as_str()).collect();
+        assert_eq!(uris, vec!["spotify:track:both"]);
     }
 
     #[test]
