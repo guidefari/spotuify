@@ -36,6 +36,51 @@ spotuify login
 
 If you changed app credentials, login again.
 
+## Permissions out of date
+
+The TUI shows the banner *"Spotify permissions out of date. Quit,
+run `spotuify logout && spotuify login`, then restart."* when your
+stored token was issued before a scope that newer features require
+(like follow/unfollow or playlist add). The fix is exactly what the
+banner says:
+
+```bash
+spotuify logout
+spotuify login
+```
+
+```bash
+spotuify status
+```
+
+The status line under `tokens.scopes_missing` lists which scopes you
+still need to grant on next login.
+
+## macOS keychain prompt storm
+
+Each cold start of `spotuify` (or `spotuify daemon`) reads your Spotify
+OAuth token from the macOS Keychain. On a fresh binary the system
+prompts for approval; the in-memory token cache only deduplicates
+within a single process.
+
+To kill the prompts on a binary you trust:
+
+- Click **Always Allow** the next time macOS prompts for that exact
+  binary. The grant is bound to the binary identity, so it survives
+  daemon restarts but resets when you rebuild from source.
+
+For local development and tests:
+
+```bash
+# Skip the proactive scope-drift check at startup (one fewer
+# keychain hit per cold start; the first real API call still
+# reads the token).
+SPOTUIFY_SKIP_KEYCHAIN_ON_START=1 spotuify daemon start
+```
+
+`SPOTUIFY_FAKE_SPOTIFY=1` already implies the skip. Fake-mode runs
+never touch the keychain.
+
 ## No active device
 
 ```bash

@@ -29,7 +29,7 @@ Arguments:
 
 Options:
       --log-format <LOG_FORMAT>  Phase 13 (P13-A) - pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT` [possible values: text, json]
-      --type <KIND>              Media type to search [default: all] [possible values: all, track, episode, album, artist, playlist]
+      --type <KIND>              Media type to search [default: all] [possible values: all, track, episode, show, album, artist, playlist]
       --no-daemon-start          Phase 13 (P13-H) - if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
       --source <SOURCE>          Search source. hybrid returns cached local results immediately and refreshes Spotify in the background [default: hybrid] [possible values: local, spotify, hybrid]
       --limit <LIMIT>            Maximum results to return [default: 10]

@@ -24,6 +24,25 @@ Add by search:
 spotuify queue add --search "never too much"
 ```
 
+The TUI append behavior is the same product rule: queueing a track appends one
+URI; queueing a playlist or album expands it to playable tracks and appends
+them. It does not replace the current queue.
+
+```bash
+spotuify queue
+```
+
+In the TUI, `Enter` *replaces* the queue with the item you picked and starts
+playback. `e` appends. A toast after `Enter` reminds you of the alternative:
+
+```text
+Playing Wonderwall (queue replaced · e to enqueue next time)
+```
+
+If you wanted to append, `Esc` dismisses the toast, then re-select and press
+`e`. The replaced queue can also be restored with `u` (undo); see
+[Architecture](/guides/architecture/).
+
 ## List playlists
 
 ```bash
@@ -44,6 +63,13 @@ spotuify playlist play "Quiet Storm"
 ```
 
 ## Add with a dry-run
+
+```bash
+spotuify playlist add "Quiet Storm" spotify:track:4uLU6hMCjMI75M1A2tKUQC --dry-run
+```
+
+In the TUI, press `a` or `A` on a selected item. A playlist picker opens; use
+`Space` to select one or more playlists, then `Enter` to add.
 
 ```bash
 spotuify playlist add "Quiet Storm" spotify:track:4uLU6hMCjMI75M1A2tKUQC --dry-run
@@ -70,6 +96,10 @@ spotuify playlist create "Exile and Return" --from candidates.jsonl --yes --form
 ```
 
 What you get: a receipt with playlist id, playlist URI, playlist name, and added item count.
+
+```bash
+spotuify playlist create "Exile and Return" --from candidates.jsonl --yes --format json
+```
 
 ## See Also
 

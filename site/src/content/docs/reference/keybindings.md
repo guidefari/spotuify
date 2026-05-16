@@ -16,6 +16,11 @@ Keybindings come from the TUI action registry. When a key has a CLI equivalent, 
 | `5` | Queue |
 | `6` | Devices |
 | `7` | Diagnostics |
+| `8` | Lyrics |
+| `Q` | show/hide queue rail |
+| `L` | show/hide lyrics rail |
+| `H` | show/hide contextual hints rail |
+| `F` | expand/collapse active queue or lyrics rail |
 | `j` / Down | move down |
 | `k` / Up | move up |
 | `Ctrl-d` | half page down |
@@ -36,8 +41,13 @@ spotuify
 | `p` | `spotuify previous` |
 | Left | `spotuify seek -15s` |
 | Right | `spotuify seek +15s` |
+| `+` / `=` | `spotuify volume +5` |
+| `-` | `spotuify volume -5` |
 | `s` | `spotuify shuffle toggle` |
 | `r` | `spotuify repeat context` |
+| `z` | switch compact/large player |
+| `v` | toggle visualizer |
+| `V` | cycle visualizer source |
 
 ```bash
 spotuify toggle
@@ -65,7 +75,7 @@ spotuify search "luther vandross"
 | `M` | mark range |
 | `e` | queue selected |
 | `l` | like selected/current |
-| `a` | add selected/current to playlist |
+| `a` / `A` | open playlist picker for selected/current |
 | `x` / Enter on devices | transfer playback |
 
 ```bash
@@ -80,9 +90,22 @@ spotuify playlist add "Coding" spotify:track:... --dry-run
 | `?` | searchable help |
 | `Ctrl-p` | command palette |
 | `u` | refresh current view |
+| `u` on Diagnostics | undo last reversible operation |
 
 ```bash
 spotuify doctor
+```
+
+## Diagnostics
+
+| Key | Action |
+| --- | --- |
+| `Ctrl-f` | filter recent logs |
+| `j` / Down | scroll log matches |
+| `k` / Up | scroll log matches |
+
+```bash
+spotuify logs tail 200
 ```
 
 ## See Also

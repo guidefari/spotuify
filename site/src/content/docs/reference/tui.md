@@ -24,6 +24,15 @@ Quit with `q`. Playback continues through the daemon.
 | `5` | Queue | current queue |
 | `6` | Devices | Spotify Connect devices |
 | `7` | Diagnostics | daemon, auth, cache, logs |
+| `8` | Lyrics | synced lyrics |
+
+The player bar stays visible at the bottom. Use `z` to switch player size,
+`L` to show or hide lyrics on the right, `Q` to show or hide the queue on the
+right, and `F` to expand the active rail to fullscreen.
+
+```bash
+spotuify status
+```
 
 ## Command palette
 
@@ -32,6 +41,10 @@ Ctrl-p
 ```
 
 The palette filters actions by the current context. Disabled actions should explain why.
+
+```bash
+spotuify
+```
 
 ## Help
 
@@ -47,7 +60,15 @@ How do I queue multiple tracks?
 How do I fix no active device?
 ```
 
+```bash
+spotuify
+```
+
 ## Diagnostics
+
+Diagnostics loads doctor, cache, operation history, and recent logs
+automatically. Use `Ctrl-f` to filter the recent logs and `j`/`k` or the arrow
+keys to scroll matches.
 
 If the TUI looks wrong, check the daemon from another terminal:
 
@@ -55,6 +76,17 @@ If the TUI looks wrong, check the daemon from another terminal:
 spotuify doctor
 spotuify daemon status
 spotuify logs tail 200
+```
+
+## Mouse
+
+Mouse is optional. The keyboard remains the complete control surface. You can
+click tabs to switch screens, click rows to select, click the progress bar to
+seek, click rail headers to expand or hide them, click the bottom-player
+transport to play/pause, and scroll on the bottom player to change volume.
+
+```bash
+spotuify
 ```
 
 ## See Also

@@ -55,7 +55,7 @@ hook_timeout_ms = 5000
 allow_file_credentials = false
 
 [viz]
-enabled = false
+enabled = true
 source = "auto"
 target_fps = 30
 smoothing = 0.5
@@ -63,12 +63,30 @@ noise_gate = 0.005
 color_scheme = "spotify-green"
 ```
 
+The visualizer ships on by default. Set `enabled = false` to opt out.
+With a Connect-only backend (no PCM samples) the spectrum draws a flat
+baseline rather than animating. Toggle it off if you want the player
+to use that vertical space for queue items instead.
+
 ## Environment variables
 
 ```bash
 SPOTUIFY_CLIENT_ID=... spotuify login
 SPOTUIFY_CLIENT_SECRET=... spotuify login
 SPOTUIFY_REDIRECT_URI=http://127.0.0.1:8888/callback spotuify login
+```
+
+For local development and tests:
+
+```bash
+# Skip the proactive scope-drift keychain read at daemon startup
+# (still reads the token on the first real API call). Cuts macOS
+# Keychain prompts in half for fresh builds.
+SPOTUIFY_SKIP_KEYCHAIN_ON_START=1 spotuify daemon start
+
+# Run the whole stack against fake Spotify data; never touches the
+# keychain. Honored by the CLI, daemon, and TUI uniformly.
+SPOTUIFY_FAKE_SPOTIFY=1 spotuify
 ```
 
 ## One-shot overrides

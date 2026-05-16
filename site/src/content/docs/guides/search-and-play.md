@@ -11,7 +11,16 @@ Search is navigation in `spotuify`: local cache when possible, Spotify when need
 spotuify search "burial archangel" --type track
 ```
 
-What you get: a ranked table of tracks, albums, artists, playlists, or episodes depending on `--type`.
+What you get: a ranked table of tracks, episodes, shows/podcasts, albums,
+artists, or playlists depending on `--type`.
+
+Search in the TUI is grouped by media kind so tracks, artists, albums,
+playlists, podcasts, and episodes do not collapse into one undifferentiated
+list.
+
+```bash
+spotuify search "design matters" --type show
+```
 
 ## Pick the source
 
@@ -22,6 +31,10 @@ spotuify search "quiet storm" --source hybrid --format jsonl
 ```
 
 Use `local` when you want cached library/search results only. Use `spotify` when discovery matters. `hybrid` is the normal default.
+
+```bash
+spotuify search "quiet storm" --source hybrid --format jsonl
+```
 
 ## Play a result directly
 
@@ -45,6 +58,10 @@ spotuify search "luther vandross" --type track --format ids \
 
 What you get: one stable Spotify URI per line. That is the easiest format for `fzf`, `xargs`, and agents.
 
+```bash
+spotuify search "luther vandross" --type track --format ids
+```
+
 ## Queue from search
 
 ```bash
@@ -56,6 +73,14 @@ Or queue many:
 ```bash
 spotuify search "luther vandross" --type track --format ids \
   | spotuify queue add --format json
+```
+
+In the TUI, press `e` on a track, playlist, or album. Tracks append directly;
+playlists and albums expand to their tracks and append without wiping the
+existing queue.
+
+```bash
+spotuify queue
 ```
 
 ## In real life

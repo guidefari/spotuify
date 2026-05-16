@@ -30,6 +30,7 @@ Commands:
   logout          Remove the stored Spotify token from macOS Keychain
   doctor          Check config, auth, Spotify API access, and visible devices
   daemon          Manage the local spotuify daemon
+  mcp             Run the MCP server transport
   status          Print current playback state
   devices         List visible Spotify Connect devices
   search          Search local cache and Spotify
@@ -52,6 +53,8 @@ Commands:
   library         Cached library operations
   lyrics          Synced lyrics operations
   viz             Configure the audio visualizer
+  hooks           Test configured shell hooks
+  mpris           Inspect OS media-control integration
   like            Save/like a Spotify URI or the current now-playing item
   save            Save a Spotify URI or the current now-playing item
   logs            Show spotuify log file location or recent log lines
@@ -60,7 +63,7 @@ Commands:
   ops             Inspect / undo / redo recorded operations (Phase 12)
   generate        Phase 13 (P13-J) - emit shell completions or a man page
   reload          Phase 13 (P13-I) - ask the running daemon to reload `config.toml`
-  reconnect       Phase 13 (P13-I) - force the daemon to rebuild its upstream Spotify session (after a VPN flap, network change, etc)
+  reconnect       Phase 13 (P13-I) - force the daemon to re-register its active player backend (after a VPN flap, network change, etc)
   bug-report      Phase 13 (P13-D) - bundle a redacted diagnostic tarball for bug reports. Never auto-uploads; the user inspects + shares it
   reindex         Rebuild the local search index from SQLite cache
   cache           Inspect local cache state
