@@ -5661,6 +5661,7 @@ dependencies = [
  "base64",
  "chrono",
  "dirs",
+ "futures",
  "open",
  "parking_lot",
  "pretty_assertions",

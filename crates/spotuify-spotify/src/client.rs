@@ -257,7 +257,7 @@ impl SpotifyClient {
     }
 
     pub async fn search_with_limit(
-        &mut self,
+        &self,
         query: &str,
         kinds: &[MediaKind],
         limit: u8,
@@ -269,60 +269,72 @@ impl SpotifyClient {
             return Ok(Vec::new());
         }
 
-        // Spotify's /v1/search rejects limit > 20 when multiple types
-        // are requested in a single call. To get the documented
-        // per-type max of 50 while supporting scope=All, fan out into
-        // one request per type. This matches the pattern used by
-        // ncspot, spotify-tui, and spotify-player. Requests are
-        // sequential rather than concurrent — the shared rate-limiter
-        // serialises them anyway, and Spotify's catalog endpoints
-        // typically return under ~150ms each.
+        // Spotify's /v1/search rejects `limit > 20` when more than one
+        // type is requested in a single call. To get the documented
+        // per-type max of 50 while supporting scope=All, we fan out
+        // into one request per `MediaKind`. The shared rate-limiter's
+        // `Arc<Semaphore>` caps in-flight concurrency, so up to its
+        // permit count run truly in parallel and the rest queue.
         //
         // Spotify can return the same item across multiple type
-        // queries (e.g. an album's lead single appearing in both
-        // track and album responses), so dedup by URI on the way out
-        // with first-occurrence-wins to preserve relevance ordering
-        // within each type.
+        // queries (e.g. an album's lead single appearing in both the
+        // `track` and `album` responses), so dedup by URI on the way
+        // out with first-occurrence-wins to preserve per-type
+        // relevance ordering.
+        let futures = kinds
+            .iter()
+            .cloned()
+            .map(|kind| self.search_single_type(query, kind, limit));
+        let batches: Vec<Vec<MediaItem>> = futures::future::try_join_all(futures).await?;
+
         let mut items = Vec::new();
         let mut seen_uris: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for kind in kinds {
-            let path = search_path(query, std::slice::from_ref(kind), limit);
-            let response = self
-                .request_json::<SearchResponse>(Method::GET, &path, None::<()>)
-                .await?
-                .ok_or_else(|| anyhow!("Spotify returned no search response"))?;
-            let mut batch: Vec<MediaItem> = Vec::new();
-            if let Some(tracks) = response.tracks {
-                batch.extend(tracks.items.into_iter().map(RawTrack::into_media_item));
-            }
-            if let Some(episodes) = response.episodes {
-                batch.extend(episodes.items.into_iter().map(RawEpisode::into_media_item));
-            }
-            if let Some(shows) = response.shows {
-                batch.extend(shows.items.into_iter().map(RawShow::into_media_item));
-            }
-            if let Some(albums) = response.albums {
-                batch.extend(albums.items.into_iter().map(RawAlbum::into_media_item));
-            }
-            if let Some(artists) = response.artists {
-                batch.extend(artists.items.into_iter().map(RawArtist::into_media_item));
-            }
-            if let Some(playlists) = response.playlists {
-                batch.extend(
-                    playlists
-                        .items
-                        .into_iter()
-                        .flatten()
-                        .filter_map(RawPlaylist::into_media_item),
-                );
-            }
+        for batch in batches {
             for item in batch {
                 if seen_uris.insert(item.uri.clone()) {
                     items.push(item);
                 }
             }
         }
+        Ok(items)
+    }
 
+    async fn search_single_type(
+        &self,
+        query: &str,
+        kind: MediaKind,
+        limit: u8,
+    ) -> SpotifyResult<Vec<MediaItem>> {
+        let path = search_path(query, std::slice::from_ref(&kind), limit);
+        let response = self
+            .request_json::<SearchResponse>(Method::GET, &path, None::<()>)
+            .await?
+            .ok_or_else(|| anyhow!("Spotify returned no search response"))?;
+        let mut items: Vec<MediaItem> = Vec::new();
+        if let Some(tracks) = response.tracks {
+            items.extend(tracks.items.into_iter().map(RawTrack::into_media_item));
+        }
+        if let Some(episodes) = response.episodes {
+            items.extend(episodes.items.into_iter().map(RawEpisode::into_media_item));
+        }
+        if let Some(shows) = response.shows {
+            items.extend(shows.items.into_iter().map(RawShow::into_media_item));
+        }
+        if let Some(albums) = response.albums {
+            items.extend(albums.items.into_iter().map(RawAlbum::into_media_item));
+        }
+        if let Some(artists) = response.artists {
+            items.extend(artists.items.into_iter().map(RawArtist::into_media_item));
+        }
+        if let Some(playlists) = response.playlists {
+            items.extend(
+                playlists
+                    .items
+                    .into_iter()
+                    .flatten()
+                    .filter_map(RawPlaylist::into_media_item),
+            );
+        }
         Ok(items)
     }
 
@@ -1097,7 +1109,7 @@ impl SpotifyClient {
     }
 
     async fn request_json<T: DeserializeOwned>(
-        &mut self,
+        &self,
         method: Method,
         path: &str,
         body: Option<impl Serialize>,

@@ -203,3 +203,110 @@ async fn skip_next_request_carries_json_object_body_so_spotify_edge_accepts_it()
         .await
         .expect("next should succeed when request body is a JSON object");
 }
+
+#[tokio::test]
+async fn search_with_limit_fans_per_type_requests_and_dedupes_results() {
+    // Adversarial: concurrent fanout must hit /search once per media
+    // kind (since Spotify rejects limit > 20 on multi-type queries),
+    // and the merged result must dedupe by URI so a track surfaced
+    // in both `track` and `album` responses isn't repeated.
+    let server = MockServer::start().await;
+
+    let shared_uri = "spotify:track:dual";
+    let track_only_uri = "spotify:track:only";
+    let album_only_uri = "spotify:album:only";
+
+    Mock::given(method("GET"))
+        .and(path("/v1/search"))
+        .and(query_param("type", "track"))
+        .and(query_param("q", "jazz"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tracks": {
+                "href": "",
+                "limit": 5,
+                "offset": 0,
+                "total": 2,
+                "items": [
+                    {
+                        "id": "dual",
+                        "uri": shared_uri,
+                        "name": "Dual Track",
+                        "duration_ms": 180_000,
+                        "artists": [{"id": "a1", "name": "Artist One", "uri": "spotify:artist:a1"}],
+                        "album": {
+                            "id": "alb1",
+                            "name": "Album One",
+                            "uri": "spotify:album:alb1",
+                            "images": []
+                        }
+                    },
+                    {
+                        "id": "only",
+                        "uri": track_only_uri,
+                        "name": "Track Only",
+                        "duration_ms": 200_000,
+                        "artists": [{"id": "a2", "name": "Artist Two", "uri": "spotify:artist:a2"}],
+                        "album": {
+                            "id": "alb2",
+                            "name": "Album Two",
+                            "uri": "spotify:album:alb2",
+                            "images": []
+                        }
+                    }
+                ]
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/search"))
+        .and(query_param("type", "album"))
+        .and(query_param("q", "jazz"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "albums": {
+                "href": "",
+                "limit": 5,
+                "offset": 0,
+                "total": 2,
+                "items": [
+                    // Same URI as the track above — must dedupe.
+                    {
+                        "id": "dual",
+                        "uri": shared_uri,
+                        "name": "Dual Track",
+                        "album_type": "single",
+                        "artists": [{"id": "a1", "name": "Artist One", "uri": "spotify:artist:a1"}],
+                        "images": []
+                    },
+                    {
+                        "id": "alb-only",
+                        "uri": album_only_uri,
+                        "name": "Album Only",
+                        "album_type": "album",
+                        "artists": [{"id": "a3", "name": "Artist Three", "uri": "spotify:artist:a3"}],
+                        "images": []
+                    }
+                ]
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Immutable binding — proves search_with_limit takes `&self` now.
+    let client = test_client(&server).await;
+    let items = client
+        .search_with_limit("jazz", &[MediaKind::Track, MediaKind::Album], 5)
+        .await
+        .expect("concurrent fanout should succeed against both mocks");
+
+    let uris: Vec<&str> = items.iter().map(|i| i.uri.as_str()).collect();
+    // Three unique URIs total. The shared one appears once (first
+    // occurrence wins — from the track response).
+    assert_eq!(uris.len(), 3, "expected 3 deduped items, got {uris:?}");
+    assert!(uris.contains(&shared_uri));
+    assert!(uris.contains(&track_only_uri));
+    assert!(uris.contains(&album_only_uri));
+}

@@ -12,6 +12,7 @@ spotuify-keychain = { workspace = true }
 
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+futures = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

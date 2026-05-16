@@ -32,13 +32,12 @@ use spotuify_protocol::{
 use spotuify_spotify::client::{Device, MediaItem, MediaKind, Playback, Playlist, Queue};
 use spotuify_spotify::config::Config;
 
-// Catalog search fans 6 sequential Spotify requests for scope=All
-// (one per media kind, since /v1/search rejects limit > 20 when
-// multiple types are requested in a single call). 30s gives the
-// rate-limiter + token-refresh path room to breathe without
-// truncating a slow but otherwise successful response. Lower would
-// only matter if we switched to truly-concurrent fanout.
-const TUI_SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
+// Catalog search fans 6 concurrent /v1/search calls (one per media
+// kind) bounded by the rate-limiter's foreground-semaphore permits.
+// Wall-clock is roughly one round-trip plus a small queueing tail —
+// 15s is the contract; anything slower is a backend problem worth
+// surfacing.
+const TUI_SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 const TUI_PLAYLIST_TIMEOUT: Duration = Duration::from_secs(30);
 const TUI_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 // 5 minutes — the initial library sync paginates Spotify's
