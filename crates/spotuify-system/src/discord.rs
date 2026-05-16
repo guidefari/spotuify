@@ -38,6 +38,10 @@ impl DiscordHandle {
         &self.config.application_id
     }
 
+    pub fn enabled(&self) -> bool {
+        self.config.enabled
+    }
+
     /// Today this is a no-op stub; the IPC client wire-up lands in a
     /// follow-up once we enrich PlaybackChanged with track metadata.
     /// The handle exists so the SystemIntegration actor compiles

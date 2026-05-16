@@ -48,6 +48,10 @@ impl NotificationsHandle {
         Ok(Self { config })
     }
 
+    pub fn enabled(&self) -> bool {
+        self.config.enabled
+    }
+
     pub async fn handle(&self, event: &DaemonEvent) {
         if !self.config.enabled {
             return;
@@ -80,7 +84,7 @@ impl NotificationsHandle {
 
     fn render(&self, event: &DaemonEvent) -> Option<(String, String)> {
         match event {
-            DaemonEvent::PlaybackChanged { action } if self.config.on_track_change => {
+            DaemonEvent::PlaybackChanged { action, ..  } if self.config.on_track_change => {
                 let s = expand_tokens(&self.config.summary, action);
                 let b = expand_tokens(&self.config.body, action);
                 Some((s, b))
@@ -130,13 +134,14 @@ mod tests {
             enabled: false,
             ..NotificationsConfig::default()
         })
-        .unwrap();
+        .expect("notifications handle should construct");
         // PlaybackChanged would normally fire, but the gate is at the
         // top of handle(); render() is called only after the gate.
         // Calling render() directly still returns Some — render() is
         // pure; the gate lives in handle(). This test locks the gate.
         let ev = DaemonEvent::PlaybackChanged {
             action: "next".into(),
+                        playback: None,
         };
         assert!(h.render(&ev).is_some());
         // The actual `handle()` invocation skips the notification when

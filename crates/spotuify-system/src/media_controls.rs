@@ -11,7 +11,12 @@
 //! deployment without a UI process emits
 //! `DaemonEvent::MediaControlsUnavailable` and degrades gracefully.
 
+use std::sync::Mutex;
+use std::time::Duration;
+
+use anyhow::Context;
 use spotuify_protocol::{DaemonEvent, PlaybackCommand};
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
 pub struct MediaControlsConfig {
@@ -34,21 +39,57 @@ impl Default for MediaControlsConfig {
 pub struct MediaControlsHandle {
     config: MediaControlsConfig,
     bus_name: String,
+    commands_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<PlaybackCommand>>,
+    controls: Mutex<souvlaki::MediaControls>,
 }
 
 impl MediaControlsHandle {
     pub fn new(config: MediaControlsConfig) -> anyhow::Result<Self> {
         let bus_name = format!("spotuify.instance{}", std::process::id());
-        // Defer the actual souvlaki MediaControls setup to a runtime
-        // helper so this constructor doesn't block on D-Bus / SMTC
-        // initialisation. The handle is the public surface; init() is
-        // the operation that actually opens the bus.
-        let handle = Self { config, bus_name };
+        let (commands_tx, commands_rx) = mpsc::unbounded_channel();
+
+        #[cfg(target_os = "windows")]
+        let hwnd = {
+            if config.allow_hidden_window {
+                anyhow::bail!("Windows media controls need the hidden-window driver");
+            }
+            anyhow::bail!("Windows media controls disabled without a window handle");
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        let hwnd = None;
+
+        let mut controls = souvlaki::MediaControls::new(souvlaki::PlatformConfig {
+            display_name: "spotuify",
+            dbus_name: &bus_name,
+            hwnd,
+        })
+        .context("failed to create souvlaki media controls")?;
+        controls
+            .attach(move |event| {
+                if let Some(command) =
+                    souvlaki_event_to_action(event).and_then(map_media_control_event)
+                {
+                    let _ = commands_tx.send(command);
+                }
+            })
+            .context("failed to attach souvlaki media controls")?;
+
+        let handle = Self {
+            config,
+            bus_name,
+            commands_rx: tokio::sync::Mutex::new(commands_rx),
+            controls: Mutex::new(controls),
+        };
         Ok(handle)
     }
 
     pub fn bus_name(&self) -> &str {
         &self.bus_name
+    }
+
+    pub async fn recv_command(&self) -> Option<PlaybackCommand> {
+        self.commands_rx.lock().await.recv().await
     }
 
     /// Fan an event out to the media controls if enabled. Today the
@@ -60,13 +101,32 @@ impl MediaControlsHandle {
         if !self.config.enabled {
             return;
         }
-        match event {
-            DaemonEvent::PlaybackChanged { action } => {
-                tracing::trace!(action = %action, "media-controls would push update");
+        if let Some(playback) = playback_for_event(event) {
+            if let Ok(mut controls) = self.controls.lock() {
+                if let Err(err) = controls.set_playback(playback) {
+                    tracing::warn!(error = %err, "media-controls playback update failed");
+                }
             }
-            _ => {}
         }
     }
+}
+
+fn playback_for_event(event: &DaemonEvent) -> Option<souvlaki::MediaPlayback> {
+    let DaemonEvent::PlaybackChanged { action, ..  } = event else {
+        return None;
+    };
+    if action == "paused" || action == "pause" {
+        return Some(souvlaki::MediaPlayback::Paused { progress: None });
+    }
+    if action == "resumed"
+        || action == "resume"
+        || action == "play-uri"
+        || action.starts_with("started ")
+        || action.starts_with("track changed ")
+    {
+        return Some(souvlaki::MediaPlayback::Playing { progress: None });
+    }
+    None
 }
 
 /// Phase 14 (P14-C) — pure mapping from souvlaki `MediaControlEvent`
@@ -84,8 +144,35 @@ pub fn map_media_control_event(action: SouvlakiAction) -> Option<PlaybackCommand
         A::SetVolume(pct) => Some(PlaybackCommand::Volume {
             volume_percent: pct.clamp(0, 100),
         }),
+        A::OpenUri(uri) => Some(PlaybackCommand::PlayUri { uri }),
         A::Stop | A::Quit | A::Raise => None,
     }
+}
+
+fn souvlaki_event_to_action(event: souvlaki::MediaControlEvent) -> Option<SouvlakiAction> {
+    match event {
+        souvlaki::MediaControlEvent::Play => Some(SouvlakiAction::Play),
+        souvlaki::MediaControlEvent::Pause => Some(SouvlakiAction::Pause),
+        souvlaki::MediaControlEvent::Toggle => Some(SouvlakiAction::Toggle),
+        souvlaki::MediaControlEvent::Next => Some(SouvlakiAction::Next),
+        souvlaki::MediaControlEvent::Previous => Some(SouvlakiAction::Previous),
+        souvlaki::MediaControlEvent::Stop => Some(SouvlakiAction::Stop),
+        souvlaki::MediaControlEvent::SetPosition(position) => {
+            Some(SouvlakiAction::SeekToMs(duration_ms(position.0)))
+        }
+        souvlaki::MediaControlEvent::SetVolume(volume) => {
+            let percent = (volume * 100.0).round().clamp(0.0, 100.0) as u8;
+            Some(SouvlakiAction::SetVolume(percent))
+        }
+        souvlaki::MediaControlEvent::OpenUri(uri) => Some(SouvlakiAction::OpenUri(uri)),
+        souvlaki::MediaControlEvent::Raise => Some(SouvlakiAction::Raise),
+        souvlaki::MediaControlEvent::Quit => Some(SouvlakiAction::Quit),
+        souvlaki::MediaControlEvent::Seek(_) | souvlaki::MediaControlEvent::SeekBy(_, _) => None,
+    }
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 /// A subset of souvlaki's MediaControlEvent that we project into
@@ -104,6 +191,7 @@ pub enum SouvlakiAction {
     Raise,
     SeekToMs(u64),
     SetVolume(u8),
+    OpenUri(String),
 }
 
 #[cfg(test)]
@@ -149,5 +237,30 @@ mod tests {
         // bridge silently ignores the key.
         assert_eq!(map_media_control_event(SouvlakiAction::Stop), None);
         assert_eq!(map_media_control_event(SouvlakiAction::Quit), None);
+    }
+
+    #[test]
+    fn souvlaki_set_position_maps_to_absolute_seek() {
+        let action = souvlaki_event_to_action(souvlaki::MediaControlEvent::SetPosition(
+            souvlaki::MediaPosition(Duration::from_millis(42_500)),
+        ));
+
+        assert_eq!(action, Some(SouvlakiAction::SeekToMs(42_500)));
+    }
+
+    #[test]
+    fn playback_events_update_souvlaki_state() {
+        assert_eq!(
+            playback_for_event(&DaemonEvent::PlaybackChanged {
+                action: "paused".to_string()
+            }),
+            Some(souvlaki::MediaPlayback::Paused { progress: None })
+        );
+        assert_eq!(
+            playback_for_event(&DaemonEvent::PlaybackChanged {
+                action: "started spotify:track:1".to_string()
+            }),
+            Some(souvlaki::MediaPlayback::Playing { progress: None })
+        );
     }
 }

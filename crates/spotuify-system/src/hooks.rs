@@ -157,10 +157,35 @@ impl HookDispatcher {
         Self { config }
     }
 
+    pub fn hook_command(&self) -> &str {
+        &self.config.hook_command
+    }
+
+    pub fn timeout_ms(&self) -> u64 {
+        self.config.timeout_ms
+    }
+
     /// Spawn the user's hook for `event`. Never blocks longer than
     /// `config.timeout_ms`; logs and drops non-zero exit + timeout
     /// without bubbling to the daemon.
     pub async fn fire(&self, event: HookEvent) -> anyhow::Result<()> {
+        match self.fire_inner(event).await {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                tracing::warn!(error = %err, "hook failed");
+                Ok(())
+            }
+        }
+    }
+
+    /// Spawn the user's hook and return failures. Intended for
+    /// `spotuify hooks test`; daemon event dispatch uses [`Self::fire`]
+    /// so playback is never blocked by a user script.
+    pub async fn fire_checked(&self, event: HookEvent) -> anyhow::Result<()> {
+        self.fire_inner(event).await
+    }
+
+    async fn fire_inner(&self, event: HookEvent) -> anyhow::Result<()> {
         if self.config.hook_command.trim().is_empty() {
             return Ok(());
         }
@@ -187,31 +212,16 @@ impl HookDispatcher {
                 let outcome = tokio::time::timeout(timeout, wait_child(child)).await;
                 match outcome {
                     Ok(Ok(status)) if status.success() => Ok(()),
-                    Ok(Ok(status)) => {
-                        tracing::warn!(
-                            elapsed_ms = started.elapsed().as_millis(),
-                            exit = ?status.code(),
-                            "hook exited non-zero"
-                        );
-                        Ok(())
-                    }
-                    Ok(Err(err)) => {
-                        tracing::warn!(error = %err, "hook process error");
-                        Ok(())
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            timeout_ms = self.config.timeout_ms,
-                            "hook timed out; killed"
-                        );
-                        Ok(())
-                    }
+                    Ok(Ok(status)) => anyhow::bail!(
+                        "hook exited non-zero after {}ms: {:?}",
+                        started.elapsed().as_millis(),
+                        status.code()
+                    ),
+                    Ok(Err(err)) => Err(err.into()),
+                    Err(_) => anyhow::bail!("hook timed out after {}ms", self.config.timeout_ms),
                 }
             }
-            Err(err) => {
-                tracing::warn!(error = %err, command = %command, "failed to spawn hook");
-                Ok(())
-            }
+            Err(err) => Err(anyhow::anyhow!("failed to spawn `{command}`: {err}")),
         }
     }
 
@@ -251,8 +261,31 @@ pub fn project(event: &DaemonEvent) -> Option<HookEvent> {
             uri: track_uri.clone(),
             duration_ms: *duration_ms,
         }),
+        E::PlaybackChanged { action, ..  } => project_playback_changed(action),
         _ => None,
     }
+}
+
+fn project_playback_changed(action: &str) -> Option<HookEvent> {
+    if let Some(uri) = action
+        .strip_prefix("track changed ")
+        .or_else(|| action.strip_prefix("started "))
+    {
+        return Some(HookEvent::TrackChange {
+            uri: uri.to_string(),
+            track: String::new(),
+            artist: String::new(),
+            album: String::new(),
+            duration_ms: 0,
+        });
+    }
+    if let Some(uri) = action.strip_prefix("ended ") {
+        return Some(HookEvent::TrackFinished {
+            uri: uri.to_string(),
+            reason: "completed".to_string(),
+        });
+    }
+    None
 }
 
 #[cfg(test)]
@@ -307,12 +340,52 @@ mod tests {
             artist_uri: None,
             album_uri: None,
         };
-        match project(&ev) {
-            Some(HookEvent::ListenQualified { uri, duration_ms }) => {
-                assert_eq!(uri, "spotify:track:abc");
-                assert_eq!(duration_ms, 250_000);
-            }
-            other => panic!("expected ListenQualified, got {other:?}"),
+        let projected = project(&ev);
+        assert!(matches!(projected, Some(HookEvent::ListenQualified { .. })));
+        if let Some(HookEvent::ListenQualified { uri, duration_ms }) = projected {
+            assert_eq!(uri, "spotify:track:abc");
+            assert_eq!(duration_ms, 250_000);
+        }
+    }
+
+    #[test]
+    fn project_maps_playback_changed_track_actions_to_hooks() {
+        let changed = DaemonEvent::PlaybackChanged {
+            action: "track changed spotify:track:def".into(),
+                        playback: None,
+        };
+        let projected_changed = project(&changed);
+        assert!(matches!(
+            projected_changed,
+            Some(HookEvent::TrackChange { .. })
+        ));
+        if let Some(HookEvent::TrackChange {
+            uri,
+            track,
+            artist,
+            album,
+            duration_ms,
+        }) = projected_changed
+        {
+            assert_eq!(uri, "spotify:track:def");
+            assert_eq!(track, "");
+            assert_eq!(artist, "");
+            assert_eq!(album, "");
+            assert_eq!(duration_ms, 0);
+        }
+
+        let ended = DaemonEvent::PlaybackChanged {
+            action: "ended spotify:track:ghi".into(),
+                        playback: None,
+        };
+        let projected_ended = project(&ended);
+        assert!(matches!(
+            projected_ended,
+            Some(HookEvent::TrackFinished { .. })
+        ));
+        if let Some(HookEvent::TrackFinished { uri, reason }) = projected_ended {
+            assert_eq!(uri, "spotify:track:ghi");
+            assert_eq!(reason, "completed");
         }
     }
 
@@ -332,5 +405,23 @@ mod tests {
         let (prog, args) = split_command("/usr/bin/env python /opt/hook.py");
         assert_eq!(prog, "/usr/bin/env");
         assert_eq!(args, vec!["python", "/opt/hook.py"]);
+    }
+
+    #[tokio::test]
+    async fn fire_checked_reports_spawn_failure() {
+        let dispatcher = HookDispatcher::new(HookConfig {
+            hook_command: "definitely-not-a-spotuify-hook-command".to_string(),
+            timeout_ms: 500,
+        });
+
+        let err = dispatcher
+            .fire_checked(HookEvent::ListenQualified {
+                uri: "spotify:track:test".to_string(),
+                duration_ms: 123,
+            })
+            .await
+            .expect_err("missing command should fail in strict mode");
+
+        assert!(err.to_string().contains("failed to spawn"));
     }
 }
