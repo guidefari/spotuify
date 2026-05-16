@@ -7,7 +7,7 @@
 //! The test is permissive while crates are being extracted (no errors when a
 //! crate doesn't yet exist). It tightens automatically as crates land.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
@@ -46,11 +46,11 @@ fn internal_dep_names(manifest: &toml::Value) -> BTreeSet<String> {
 ///   2. spotuify-protocol: core only
 ///   3. spotuify-store, spotuify-search: core only
 ///   4. spotuify-spotify: core only
-///   5. spotuify-player: core + spotify
+///   5. spotuify-player: core + spotify + audio
 ///   6. spotuify-sync: core + store + search + spotify + player
 ///   7. spotuify-system: core + protocol
 ///   8. spotuify-lyrics: core + store + player
-///   9. spotuify-audio: core + player
+///   9. spotuify-audio: core
 ///  10. spotuify-daemon: integration point (everything backend)
 ///  11. spotuify-cli, spotuify-tui, spotuify-mcp: protocol only
 fn allowed_deps(crate_name: &str) -> Option<BTreeSet<&'static str>> {
@@ -70,7 +70,10 @@ fn allowed_deps(crate_name: &str) -> Option<BTreeSet<&'static str>> {
         // spotuify-keychain is a leaf crate (cross-platform creds) consumed
         // by auth.rs.
         "spotuify-spotify" => &["spotuify-core", "spotuify-protocol", "spotuify-keychain"],
-        "spotuify-player" => &["spotuify-core", "spotuify-spotify"],
+        // Phase 17: player owns the embedded sink-tap and feeds raw
+        // samples into spotuify-audio's analyzer handle. Keep FFT and
+        // loopback code out of player, but allow this one-way edge.
+        "spotuify-player" => &["spotuify-core", "spotuify-spotify", "spotuify-audio"],
         "spotuify-sync" => &[
             "spotuify-core",
             "spotuify-protocol",
@@ -81,7 +84,7 @@ fn allowed_deps(crate_name: &str) -> Option<BTreeSet<&'static str>> {
         ],
         "spotuify-system" => &["spotuify-core", "spotuify-protocol"],
         "spotuify-lyrics" => &["spotuify-core", "spotuify-store", "spotuify-player"],
-        "spotuify-audio" => &["spotuify-core", "spotuify-player"],
+        "spotuify-audio" => &["spotuify-core"],
         "spotuify-daemon" => &[
             "spotuify-core",
             "spotuify-protocol",

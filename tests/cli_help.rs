@@ -36,6 +36,7 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_logout", &["logout", "--help"]),
         ("cli_help_doctor", &["doctor", "--help"]),
         ("cli_help_daemon", &["daemon", "--help"]),
+        ("cli_help_mcp", &["mcp", "--help"]),
         ("cli_help_daemon_start", &["daemon", "start", "--help"]),
         ("cli_help_daemon_stop", &["daemon", "stop", "--help"]),
         ("cli_help_daemon_restart", &["daemon", "restart", "--help"]),
@@ -77,6 +78,15 @@ fn cli_help_snapshots_cover_command_tree() {
         ),
         ("cli_help_library", &["library", "--help"]),
         ("cli_help_library_tracks", &["library", "tracks", "--help"]),
+        ("cli_help_viz", &["viz", "--help"]),
+        ("cli_help_viz_enable", &["viz", "enable", "--help"]),
+        ("cli_help_viz_disable", &["viz", "disable", "--help"]),
+        ("cli_help_viz_source", &["viz", "source", "--help"]),
+        ("cli_help_viz_status", &["viz", "status", "--help"]),
+        ("cli_help_hooks", &["hooks", "--help"]),
+        ("cli_help_hooks_test", &["hooks", "test", "--help"]),
+        ("cli_help_mpris", &["mpris", "--help"]),
+        ("cli_help_mpris_status", &["mpris", "status", "--help"]),
         ("cli_help_like", &["like", "--help"]),
         ("cli_help_save", &["save", "--help"]),
         ("cli_help_logs", &["logs", "--help"]),
@@ -95,10 +105,12 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_reindex", &["reindex", "--help"]),
         ("cli_help_cache", &["cache", "--help"]),
         ("cli_help_cache_status", &["cache", "status", "--help"]),
+        ("cli_help_cache_reset", &["cache", "reset", "--help"]),
+        ("cli_help_cache_repair", &["cache", "repair", "--help"]),
         ("cli_help_sync", &["sync", "--help"]),
     ];
 
-    assert_eq!(cases.len(), 54);
+    assert_eq!(cases.len(), 66);
     for (name, args) in cases {
         assert_help_snapshot(name, args);
     }
