@@ -10,11 +10,22 @@ use anyhow::Result;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqlitePool};
 
-use spotuify_core::{Device, MediaItem, MediaKind, Playback, Playlist};
-use spotuify_protocol::{CacheStatus, SearchScopeData, SearchSourceData};
+use spotuify_core::{
+    Device, LyricLine, LyricsProvider, MediaItem, MediaKind, Playback, Playlist, Queue,
+    SyncedLyrics,
+};
+use spotuify_protocol::{
+    CacheFreshnessStatus, CacheStatus, FreshnessCounts, SearchScopeData, SearchSourceData,
+};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 const POOL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum rows committed per bulk-write transaction. Smaller windows
+/// release the SQLite write lock more often so a hot-path command
+/// (pause/skip) can sneak in between a sync flush's chunks instead of
+/// waiting for a 500-row playlist refresh to finish.
+const BULK_CHUNK_ROWS: usize = 64;
 
 /// Cache schema version recognised by this binary.
 ///
@@ -31,11 +42,30 @@ const POOL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
 ///   metrics, qualification_rules, playback_progress (Phase 10)
 /// - v5: operations log — jj-style mutation log with reversal plans
 ///   and pre-state capture for undo/redo (Phase 12)
-pub const CACHE_VERSION: u32 = 5;
+/// - v6: lyrics cache and per-track timing offsets (Phase 16)
+/// - v7: freshness columns for playlist cache tables (Phase 6.4)
+/// - v8: saved-library sync position for unchanged shortcuts (Phase 6.5)
+/// - v9: playlist item primary key preserves duplicate tracks
+/// - v10: queue cache snapshots and ordered upcoming items
+pub const CACHE_VERSION: u32 = 10;
+
+const FRESHNESS_FRESH: &str = "fresh";
 
 #[derive(Clone)]
 pub struct Store {
+    /// Hot-path writer pool. Interactive commands (PlaybackCommand,
+    /// receipt insert/finalize, operation log writes, listen_facts
+    /// finalize on track boundary) acquire connections here. A
+    /// separate acquire queue means hot writes never wait behind a
+    /// sync flush's 30s pool-acquire timeout.
     writer: SqlitePool,
+    /// Background-write pool. Sync (playlists/library refresh),
+    /// retention pruning, and any other bulk persist call routes here
+    /// via [`Store::bulk_writer`] and the chunked `_bulk` variants.
+    /// SQLite still serialises writes at the WAL header lock, but the
+    /// pool split + chunked transactions mean the lock window for any
+    /// single statement is short.
+    bulk_writer: SqlitePool,
     reader: SqlitePool,
     db_path: PathBuf,
     index_path: PathBuf,
@@ -61,17 +91,8 @@ impl Store {
         }
 
         let db_url = format!("sqlite:{}", db_path.display());
-        let write_opts = SqliteConnectOptions::from_str(&db_url)?
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal)
-            .busy_timeout(BUSY_TIMEOUT)
-            .pragma("foreign_keys", "ON");
-        let writer = SqlitePoolOptions::new()
-            .max_connections(1)
-            .acquire_timeout(POOL_ACQUIRE_TIMEOUT)
-            .connect_with(write_opts)
-            .await?;
+        let writer = build_writer_pool(&db_url).await?;
+        let bulk_writer = build_writer_pool(&db_url).await?;
 
         let read_opts = SqliteConnectOptions::from_str(&db_url)?
             .journal_mode(SqliteJournalMode::Wal)
@@ -87,6 +108,7 @@ impl Store {
 
         let store = Self {
             writer,
+            bulk_writer,
             reader,
             db_path: db_path.to_path_buf(),
             index_path: index_path.to_path_buf(),
@@ -96,6 +118,11 @@ impl Store {
     }
 
     /// In-memory store for tests across the workspace. Migrations run.
+    ///
+    /// SQLite `:memory:` databases are per-connection, so the hot
+    /// writer, the bulk writer, and the reader all share the same
+    /// pool here. Production callers use `open()` which builds three
+    /// separate connection pools against the same on-disk database.
     pub async fn in_memory() -> Result<Self> {
         let opts = SqliteConnectOptions::from_str("sqlite::memory:")?
             .journal_mode(SqliteJournalMode::Wal)
@@ -106,6 +133,7 @@ impl Store {
             .await?;
         let store = Self {
             writer: pool.clone(),
+            bulk_writer: pool.clone(),
             reader: pool,
             db_path: PathBuf::from(":memory:"),
             index_path: PathBuf::from(":memory:"),
@@ -119,41 +147,72 @@ impl Store {
     }
 
     pub async fn upsert_media_items(&self, items: &[MediaItem], source: &str) -> Result<u32> {
+        self.upsert_media_items_with(items, source, &self.writer)
+            .await
+    }
+
+    /// Bulk-pool variant of [`Self::upsert_media_items`]. Identical
+    /// semantics; routes through the background writer + chunks into
+    /// `BULK_CHUNK_ROWS` so a single 500-track playlist refresh
+    /// doesn't hold the SQLite write lock across the whole batch.
+    pub async fn upsert_media_items_bulk(&self, items: &[MediaItem], source: &str) -> Result<u32> {
+        self.upsert_media_items_with(items, source, &self.bulk_writer)
+            .await
+    }
+
+    async fn upsert_media_items_with(
+        &self,
+        items: &[MediaItem],
+        source: &str,
+        pool: &SqlitePool,
+    ) -> Result<u32> {
+        if items.is_empty() {
+            return Ok(0);
+        }
         let fetched_at_ms = now_ms();
         let mut written = 0;
-        for item in items {
-            let item_source = item.source.as_deref().unwrap_or(source);
-            sqlx::query(
-                "INSERT INTO media_items (
-                    uri, spotify_id, kind, name, subtitle, context, duration_ms,
-                    image_url, source, fetched_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(uri) DO UPDATE SET
-                    spotify_id = excluded.spotify_id,
-                    kind = excluded.kind,
-                    name = excluded.name,
-                    subtitle = excluded.subtitle,
-                    context = excluded.context,
-                    duration_ms = excluded.duration_ms,
-                    image_url = excluded.image_url,
-                    source = excluded.source,
-                    fetched_at_ms = excluded.fetched_at_ms,
-                    updated_at_ms = excluded.updated_at_ms",
-            )
-            .bind(&item.uri)
-            .bind(&item.id)
-            .bind(item.kind.label())
-            .bind(&item.name)
-            .bind(&item.subtitle)
-            .bind(&item.context)
-            .bind(item.duration_ms as i64)
-            .bind(&item.image_url)
-            .bind(item_source)
-            .bind(fetched_at_ms)
-            .bind(fetched_at_ms)
-            .execute(&self.writer)
-            .await?;
-            written += 1;
+        for chunk in items.chunks(BULK_CHUNK_ROWS) {
+            let mut tx = pool.begin().await?;
+            for item in chunk {
+                let item_source = item.source.as_deref().unwrap_or(source);
+                sqlx::query(
+                    "INSERT INTO media_items (
+                        uri, spotify_id, kind, name, subtitle, context, duration_ms,
+                        image_url, source, fetched_at_ms, updated_at_ms,
+                        freshness_class, sync_generation
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(uri) DO UPDATE SET
+                        spotify_id = excluded.spotify_id,
+                        kind = excluded.kind,
+                        name = excluded.name,
+                        subtitle = excluded.subtitle,
+                        context = excluded.context,
+                        duration_ms = excluded.duration_ms,
+                        image_url = excluded.image_url,
+                        source = excluded.source,
+                        fetched_at_ms = excluded.fetched_at_ms,
+                        updated_at_ms = excluded.updated_at_ms,
+                        freshness_class = excluded.freshness_class,
+                        sync_generation = excluded.sync_generation",
+                )
+                .bind(&item.uri)
+                .bind(&item.id)
+                .bind(item.kind.label())
+                .bind(&item.name)
+                .bind(&item.subtitle)
+                .bind(&item.context)
+                .bind(item.duration_ms as i64)
+                .bind(&item.image_url)
+                .bind(item_source)
+                .bind(fetched_at_ms)
+                .bind(fetched_at_ms)
+                .bind(FRESHNESS_FRESH)
+                .bind(fetched_at_ms)
+                .execute(&mut *tx)
+                .await?;
+                written += 1;
+            }
+            tx.commit().await?;
         }
         Ok(written)
     }
@@ -167,6 +226,7 @@ impl Store {
     ) -> Result<u32> {
         self.upsert_media_items(items, source.label()).await?;
         let fetched_at_ms = now_ms();
+        let mut tx = self.writer.begin().await?;
         let result = sqlx::query(
             "INSERT INTO search_runs (
                 query, normalized_query, scope, source, fetched_at_ms, status, result_count
@@ -178,7 +238,7 @@ impl Store {
         .bind(source.label())
         .bind(fetched_at_ms)
         .bind(items.len() as i64)
-        .execute(&self.writer)
+        .execute(&mut *tx)
         .await?;
         let search_run_id = result.last_insert_rowid();
         for (position, item) in items.iter().enumerate() {
@@ -189,9 +249,10 @@ impl Store {
             .bind(search_run_id)
             .bind(position as i64)
             .bind(&item.uri)
-            .execute(&self.writer)
+            .execute(&mut *tx)
             .await?;
         }
+        tx.commit().await?;
         Ok(items.len() as u32)
     }
 
@@ -280,6 +341,234 @@ impl Store {
         rows.into_iter().map(row_to_media_item).collect()
     }
 
+    /// Return the most recent `playback_snapshots` row if any, else
+    /// synthesise a [`Playback`] from the most recently played item
+    /// in `recent_items` (with `is_playing = false`, `device = None`).
+    /// Lets the daemon hand a cold-cache client *something* to render
+    /// — the last song the user heard — instead of an empty screen
+    /// while the first Spotify poll is in flight. Returns `None` only
+    /// when both tables are empty (first-ever launch, no listen
+    /// history).
+    pub async fn latest_playback_or_recent(&self) -> Result<Option<Playback>> {
+        if let Some(playback) = self.latest_playback().await? {
+            return Ok(Some(playback));
+        }
+        let Some(row) = sqlx::query(
+            "SELECT media_items.uri, spotify_id, media_items.kind, name, subtitle, context,
+                    duration_ms, image_url, source, liked, media_items.saved, updated_at_ms
+             FROM recent_items
+             JOIN media_items ON media_items.uri = recent_items.item_uri
+             ORDER BY recent_items.played_at_ms DESC, recent_items.position ASC
+             LIMIT 1",
+        )
+        .fetch_optional(&self.reader)
+        .await?
+        else {
+            return Ok(None);
+        };
+        let item = row_to_media_item(row)?;
+        Ok(Some(Playback {
+            item: Some(item),
+            device: None,
+            is_playing: false,
+            progress_ms: 0,
+            shuffle: false,
+            repeat: "off".to_string(),
+            source: Some(spotuify_core::PlaybackStateSource::RecentFallback),
+            ..Default::default()
+        }))
+    }
+
+    pub async fn latest_playback(&self) -> Result<Option<Playback>> {
+        let Some(row) = sqlx::query(
+            "SELECT item_uri, device_key, is_playing, progress_ms, shuffle, repeat_state
+             FROM playback_snapshots
+             ORDER BY fetched_at_ms DESC
+             LIMIT 1",
+        )
+        .fetch_optional(&self.reader)
+        .await?
+        else {
+            return Ok(None);
+        };
+
+        let item_uri = row.get::<Option<String>, _>("item_uri");
+        let device_key = row.get::<Option<String>, _>("device_key");
+        let item = match item_uri {
+            Some(uri) => self.media_items_by_uris(&[uri]).await?.into_iter().next(),
+            None => None,
+        };
+        let device = match device_key {
+            Some(key) => self.device_by_key(&key).await?,
+            None => None,
+        };
+        Ok(Some(Playback {
+            item,
+            device,
+            is_playing: row.get("is_playing"),
+            progress_ms: row.get::<i64, _>("progress_ms").max(0) as u64,
+            shuffle: row.get("shuffle"),
+            repeat: row.get("repeat_state"),
+            source: Some(spotuify_core::PlaybackStateSource::Cache),
+            ..Default::default()
+        }))
+    }
+
+    pub async fn latest_queue(&self, limit: u32) -> Result<Option<Queue>> {
+        let Some(row) = sqlx::query(
+            "SELECT id, currently_playing_uri
+             FROM queue_snapshots
+             ORDER BY fetched_at_ms DESC
+             LIMIT 1",
+        )
+        .fetch_optional(&self.reader)
+        .await?
+        else {
+            return Ok(None);
+        };
+
+        let snapshot_id = row.get::<i64, _>("id");
+        let currently_playing = match row.get::<Option<String>, _>("currently_playing_uri") {
+            Some(uri) => self.media_items_by_uris(&[uri]).await?.into_iter().next(),
+            None => None,
+        };
+        if limit == 0 {
+            return Ok(Some(Queue {
+                currently_playing,
+                items: Vec::new(),
+            }));
+        }
+
+        let rows = sqlx::query(
+            "SELECT media_items.uri, spotify_id, media_items.kind, name, subtitle, context,
+                    duration_ms, image_url, source, liked, media_items.saved, updated_at_ms
+             FROM queue_items
+             JOIN media_items ON media_items.uri = queue_items.item_uri
+             WHERE queue_items.snapshot_id = ?
+             ORDER BY queue_items.position ASC
+             LIMIT ?",
+        )
+        .bind(snapshot_id)
+        .bind(limit as i64)
+        .fetch_all(&self.reader)
+        .await?;
+        Ok(Some(Queue {
+            currently_playing,
+            items: rows
+                .into_iter()
+                .map(row_to_media_item)
+                .collect::<Result<Vec<_>>>()?,
+        }))
+    }
+
+    pub async fn list_devices(&self) -> Result<Vec<Device>> {
+        let rows = sqlx::query(
+            "SELECT id, name, kind, is_active, is_restricted, supports_volume, volume_percent
+             FROM devices
+             ORDER BY is_active DESC, fetched_at_ms DESC, name ASC",
+        )
+        .fetch_all(&self.reader)
+        .await?;
+        rows.into_iter().map(row_to_device).collect()
+    }
+
+    async fn device_by_key(&self, device_key: &str) -> Result<Option<Device>> {
+        sqlx::query(
+            "SELECT id, name, kind, is_active, is_restricted, supports_volume, volume_percent
+             FROM devices
+             WHERE device_key = ?",
+        )
+        .bind(device_key)
+        .fetch_optional(&self.reader)
+        .await?
+        .map(row_to_device)
+        .transpose()
+    }
+
+    pub async fn list_playlists(&self, limit: u32) -> Result<Vec<Playlist>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT id, name, owner, tracks_total, image_url, snapshot_id
+             FROM playlists
+             ORDER BY name COLLATE NOCASE ASC
+             LIMIT ?",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.reader)
+        .await?;
+        rows.into_iter().map(row_to_playlist).collect()
+    }
+
+    pub async fn playlist_items(&self, playlist_id: &str, limit: u32) -> Result<Vec<MediaItem>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT media_items.uri, spotify_id, media_items.kind, name, subtitle, context,
+                    duration_ms, image_url, source, liked, media_items.saved, updated_at_ms
+             FROM playlist_items
+             JOIN media_items ON media_items.uri = playlist_items.item_uri
+             WHERE playlist_items.playlist_id = ?
+             ORDER BY playlist_items.position ASC
+             LIMIT ?",
+        )
+        .bind(playlist_id)
+        .bind(limit as i64)
+        .fetch_all(&self.reader)
+        .await?;
+        rows.into_iter().map(row_to_media_item).collect()
+    }
+
+    pub async fn list_recent_items(&self, limit: u32) -> Result<Vec<MediaItem>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT media_items.uri, spotify_id, media_items.kind, name, subtitle, context,
+                    duration_ms, image_url, source, liked, media_items.saved, updated_at_ms
+             FROM recent_items
+             JOIN media_items ON media_items.uri = recent_items.item_uri
+             ORDER BY recent_items.played_at_ms DESC, recent_items.position ASC
+             LIMIT ?",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.reader)
+        .await?;
+        rows.into_iter().map(row_to_media_item).collect()
+    }
+
+    pub async fn saved_tracks_fingerprint(&self, limit: u32) -> Result<(u64, Vec<String>)> {
+        let total = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*)
+             FROM library_items
+             WHERE kind = 'track' AND saved = 1",
+        )
+        .fetch_one(&self.reader)
+        .await?
+        .max(0) as u64;
+        let rows = sqlx::query(
+            "SELECT COALESCE(media_items.spotify_id, library_items.item_uri) AS id
+             FROM library_items
+             JOIN media_items ON media_items.uri = library_items.item_uri
+             WHERE library_items.kind = 'track' AND library_items.saved = 1
+             ORDER BY library_items.sync_position ASC,
+                      library_items.fetched_at_ms DESC,
+                      library_items.item_uri ASC
+             LIMIT ?",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.reader)
+        .await?;
+        Ok((
+            total,
+            rows.into_iter()
+                .map(|row| row.get::<String, _>("id"))
+                .collect(),
+        ))
+    }
+
     pub async fn list_media_for_index(
         &self,
         limit: u32,
@@ -316,46 +605,76 @@ impl Store {
     }
 
     pub async fn persist_devices(&self, devices: &[Device]) -> Result<u32> {
+        self.persist_devices_with(devices, &self.writer).await
+    }
+
+    pub async fn persist_devices_bulk(&self, devices: &[Device]) -> Result<u32> {
+        self.persist_devices_with(devices, &self.bulk_writer).await
+    }
+
+    async fn persist_devices_with(&self, devices: &[Device], pool: &SqlitePool) -> Result<u32> {
+        if devices.is_empty() {
+            return Ok(0);
+        }
         let fetched_at_ms = now_ms();
-        for device in devices {
-            let device_key = device.id.as_deref().unwrap_or(&device.name);
-            sqlx::query(
-                "INSERT INTO devices (
-                    device_key, id, name, kind, is_active, is_restricted,
-                    supports_volume, volume_percent, fetched_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(device_key) DO UPDATE SET
-                    id = excluded.id,
-                    name = excluded.name,
-                    kind = excluded.kind,
-                    is_active = excluded.is_active,
-                    is_restricted = excluded.is_restricted,
-                    supports_volume = excluded.supports_volume,
-                    volume_percent = excluded.volume_percent,
-                    fetched_at_ms = excluded.fetched_at_ms",
-            )
-            .bind(device_key)
-            .bind(&device.id)
-            .bind(&device.name)
-            .bind(&device.kind)
-            .bind(device.is_active)
-            .bind(device.is_restricted)
-            .bind(device.supports_volume)
-            .bind(device.volume_percent.map(i64::from))
-            .bind(fetched_at_ms)
-            .execute(&self.writer)
-            .await?;
+        for chunk in devices.chunks(BULK_CHUNK_ROWS) {
+            let mut tx = pool.begin().await?;
+            for device in chunk {
+                let device_key = device.id.as_deref().unwrap_or(&device.name);
+                sqlx::query(
+                    "INSERT INTO devices (
+                        device_key, id, name, kind, is_active, is_restricted,
+                        supports_volume, volume_percent, fetched_at_ms,
+                        freshness_class, sync_generation
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(device_key) DO UPDATE SET
+                        id = excluded.id,
+                        name = excluded.name,
+                        kind = excluded.kind,
+                        is_active = excluded.is_active,
+                        is_restricted = excluded.is_restricted,
+                        supports_volume = excluded.supports_volume,
+                        volume_percent = excluded.volume_percent,
+                        fetched_at_ms = excluded.fetched_at_ms,
+                        freshness_class = excluded.freshness_class,
+                        sync_generation = excluded.sync_generation",
+                )
+                .bind(device_key)
+                .bind(&device.id)
+                .bind(&device.name)
+                .bind(&device.kind)
+                .bind(device.is_active)
+                .bind(device.is_restricted)
+                .bind(device.supports_volume)
+                .bind(device.volume_percent.map(i64::from))
+                .bind(fetched_at_ms)
+                .bind(FRESHNESS_FRESH)
+                .bind(fetched_at_ms)
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
         }
         Ok(devices.len() as u32)
     }
 
     pub async fn persist_playback(&self, playback: &Playback) -> Result<u32> {
+        self.persist_playback_with(playback, &self.writer).await
+    }
+
+    pub async fn persist_playback_bulk(&self, playback: &Playback) -> Result<u32> {
+        self.persist_playback_with(playback, &self.bulk_writer)
+            .await
+    }
+
+    async fn persist_playback_with(&self, playback: &Playback, pool: &SqlitePool) -> Result<u32> {
         if let Some(item) = &playback.item {
-            self.upsert_media_items(std::slice::from_ref(item), "spotify")
+            self.upsert_media_items_with(std::slice::from_ref(item), "spotify", pool)
                 .await?;
         }
         if let Some(device) = &playback.device {
-            self.persist_devices(std::slice::from_ref(device)).await?;
+            self.persist_devices_with(std::slice::from_ref(device), pool)
+                .await?;
         }
         let fetched_at_ms = now_ms();
         let device_key = playback
@@ -364,8 +683,9 @@ impl Store {
             .map(|device| device.id.as_deref().unwrap_or(&device.name).to_string());
         sqlx::query(
             "INSERT INTO playback_snapshots (
-                item_uri, device_key, is_playing, progress_ms, shuffle, repeat_state, fetched_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                item_uri, device_key, is_playing, progress_ms, shuffle, repeat_state,
+                fetched_at_ms, freshness_class, sync_generation
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(playback.item.as_ref().map(|item| item.uri.as_str()))
         .bind(device_key)
@@ -374,41 +694,138 @@ impl Store {
         .bind(playback.shuffle)
         .bind(&playback.repeat)
         .bind(fetched_at_ms)
-        .execute(&self.writer)
+        .bind(FRESHNESS_FRESH)
+        .bind(fetched_at_ms)
+        .execute(pool)
         .await?;
         Ok(1)
     }
 
+    pub async fn persist_queue(&self, queue: &Queue) -> Result<u32> {
+        self.persist_queue_with(queue, &self.writer).await
+    }
+
+    pub async fn persist_queue_bulk(&self, queue: &Queue) -> Result<u32> {
+        self.persist_queue_with(queue, &self.bulk_writer).await
+    }
+
+    async fn persist_queue_with(&self, queue: &Queue, pool: &SqlitePool) -> Result<u32> {
+        // The queue is a set: each URI appears at most once in the
+        // upcoming items. Dedupe before persisting so a stale snapshot
+        // never leaks duplicates into the cache, into events, or onto
+        // the UI. First occurrence wins.
+        let mut normalised = queue.clone();
+        normalised.dedupe_items();
+        let queue = &normalised;
+
+        let mut media_items = Vec::with_capacity(queue.items.len() + 1);
+        if let Some(item) = &queue.currently_playing {
+            media_items.push(item.clone());
+        }
+        media_items.extend(queue.items.iter().cloned());
+        self.upsert_media_items_with(&media_items, "spotify", pool)
+            .await?;
+
+        let fetched_at_ms = now_ms();
+        let mut tx = pool.begin().await?;
+        let result = sqlx::query(
+            "INSERT INTO queue_snapshots (
+                currently_playing_uri, fetched_at_ms, freshness_class, sync_generation
+             )
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(
+            queue
+                .currently_playing
+                .as_ref()
+                .map(|item| item.uri.as_str()),
+        )
+        .bind(fetched_at_ms)
+        .bind(FRESHNESS_FRESH)
+        .bind(fetched_at_ms)
+        .execute(&mut *tx)
+        .await?;
+        let snapshot_id = result.last_insert_rowid();
+        // Track items within a queue snapshot are bounded (Spotify
+        // surfaces ~20 upcoming items at most) so a single tx here
+        // never accumulates a long write window.
+        for (position, item) in queue.items.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO queue_items (
+                    snapshot_id, item_uri, position, freshness_class, sync_generation
+                 )
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(snapshot_id)
+            .bind(&item.uri)
+            .bind(position as i64)
+            .bind(FRESHNESS_FRESH)
+            .bind(fetched_at_ms)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(1)
+    }
+
     pub async fn persist_playlists(&self, playlists: &[Playlist]) -> Result<u32> {
+        self.persist_playlists_with(playlists, &self.writer).await
+    }
+
+    pub async fn persist_playlists_bulk(&self, playlists: &[Playlist]) -> Result<u32> {
+        self.persist_playlists_with(playlists, &self.bulk_writer)
+            .await
+    }
+
+    async fn persist_playlists_with(
+        &self,
+        playlists: &[Playlist],
+        pool: &SqlitePool,
+    ) -> Result<u32> {
+        if playlists.is_empty() {
+            return Ok(0);
+        }
         let fetched_at_ms = now_ms();
         let media_items = playlists
             .iter()
             .map(playlist_media_item)
             .collect::<Vec<_>>();
-        self.upsert_media_items(&media_items, "spotify").await?;
-        for playlist in playlists {
-            sqlx::query(
-                "INSERT INTO playlists (id, uri, name, owner, tracks_total, image_url, fetched_at_ms, snapshot_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(id) DO UPDATE SET
-                    uri = excluded.uri,
-                    name = excluded.name,
-                    owner = excluded.owner,
-                    tracks_total = excluded.tracks_total,
-                    image_url = excluded.image_url,
-                    fetched_at_ms = excluded.fetched_at_ms,
-                    snapshot_id = COALESCE(excluded.snapshot_id, playlists.snapshot_id)",
-            )
-            .bind(&playlist.id)
-            .bind(playlist_uri(&playlist.id))
-            .bind(&playlist.name)
-            .bind(&playlist.owner)
-            .bind(playlist.tracks_total as i64)
-            .bind(&playlist.image_url)
-            .bind(fetched_at_ms)
-            .bind(playlist.snapshot_id.as_deref())
-            .execute(&self.writer)
+        self.upsert_media_items_with(&media_items, "spotify", pool)
             .await?;
+        for chunk in playlists.chunks(BULK_CHUNK_ROWS) {
+            let mut tx = pool.begin().await?;
+            for playlist in chunk {
+                sqlx::query(
+                    "INSERT INTO playlists (
+                        id, uri, name, owner, tracks_total, image_url, fetched_at_ms,
+                        snapshot_id, freshness_class, sync_generation
+                     )
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT(id) DO UPDATE SET
+                        uri = excluded.uri,
+                        name = excluded.name,
+                        owner = excluded.owner,
+                        tracks_total = excluded.tracks_total,
+                        image_url = excluded.image_url,
+                        fetched_at_ms = excluded.fetched_at_ms,
+                        snapshot_id = COALESCE(excluded.snapshot_id, playlists.snapshot_id),
+                        freshness_class = excluded.freshness_class,
+                        sync_generation = excluded.sync_generation",
+                )
+                .bind(&playlist.id)
+                .bind(playlist_uri(&playlist.id))
+                .bind(&playlist.name)
+                .bind(&playlist.owner)
+                .bind(playlist.tracks_total as i64)
+                .bind(&playlist.image_url)
+                .bind(fetched_at_ms)
+                .bind(playlist.snapshot_id.as_deref())
+                .bind(FRESHNESS_FRESH)
+                .bind(fetched_at_ms)
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
         }
         Ok(playlists.len() as u32)
     }
@@ -424,71 +841,191 @@ impl Store {
         Ok(row.and_then(|(s,)| s))
     }
 
+    /// Count of cached `playlist_items` rows for a given playlist.
+    /// Used by the sync refetch gate to detect "snapshot matches but
+    /// items missing" — i.e. a cache that was left empty by a partial
+    /// failure during a previous persist. Without this check the
+    /// snapshot-equality gate would skip refetching and the playlist
+    /// would stay empty until Spotify-side mutations bumped the
+    /// snapshot.
+    pub async fn playlist_items_count(&self, playlist_id: &str) -> Result<u64> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM playlist_items WHERE playlist_id = ?")
+                .bind(playlist_id)
+                .fetch_one(&self.reader)
+                .await?;
+        Ok(count.max(0) as u64)
+    }
+
     pub async fn persist_playlist_items(
         &self,
         playlist_id: &str,
         items: &[MediaItem],
     ) -> Result<u32> {
-        self.upsert_media_items(items, "spotify").await?;
+        self.persist_playlist_items_with(playlist_id, items, &self.writer)
+            .await
+    }
+
+    pub async fn persist_playlist_items_bulk(
+        &self,
+        playlist_id: &str,
+        items: &[MediaItem],
+    ) -> Result<u32> {
+        self.persist_playlist_items_with(playlist_id, items, &self.bulk_writer)
+            .await
+    }
+
+    async fn persist_playlist_items_with(
+        &self,
+        playlist_id: &str,
+        items: &[MediaItem],
+        pool: &SqlitePool,
+    ) -> Result<u32> {
+        self.upsert_media_items_with(items, "spotify", pool).await?;
         let added_at_ms = now_ms();
+        // DELETE + all INSERTs must run in a SINGLE transaction so the
+        // playlist is never observed empty between the old set being
+        // removed and the new set being committed. SQLite WAL gives
+        // readers snapshot isolation, so they see either the prior
+        // contents or the new contents — never the gap. An earlier
+        // attempt at this code split DELETE into its own tx and put
+        // INSERTs in per-chunk txs to release the writer lock more
+        // often; that broke atomicity. If a partial failure left the
+        // playlist empty, the playlist's `snapshot_id` was already
+        // cached by `persist_playlists_with` so the sync refetch gate
+        // (`should_refetch_playlist_tracks`) skipped repair on
+        // subsequent runs and the playlist stayed empty forever.
+        // Holding the writer for one playlist refresh (~50-100ms for
+        // 500 tracks on local disk) is the correct trade-off.
+        let mut tx = pool.begin().await?;
         sqlx::query("DELETE FROM playlist_items WHERE playlist_id = ?")
             .bind(playlist_id)
-            .execute(&self.writer)
+            .execute(&mut *tx)
             .await?;
         for (position, item) in items.iter().enumerate() {
             sqlx::query(
-                "INSERT INTO playlist_items (playlist_id, item_uri, position, added_at_ms)
-                 VALUES (?, ?, ?, ?)",
+                "INSERT INTO playlist_items (
+                    playlist_id, item_uri, position, added_at_ms,
+                    freshness_class, sync_generation
+                 )
+                 VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(playlist_id)
             .bind(&item.uri)
             .bind(position as i64)
             .bind(added_at_ms)
-            .execute(&self.writer)
+            .bind(FRESHNESS_FRESH)
+            .bind(added_at_ms)
+            .execute(&mut *tx)
             .await?;
         }
+        tx.commit().await?;
         Ok(items.len() as u32)
     }
 
     pub async fn persist_recent_items(&self, items: &[MediaItem]) -> Result<u32> {
-        self.upsert_media_items(items, "spotify").await?;
+        self.persist_recent_items_with(items, &self.writer).await
+    }
+
+    pub async fn persist_recent_items_bulk(&self, items: &[MediaItem]) -> Result<u32> {
+        self.persist_recent_items_with(items, &self.bulk_writer)
+            .await
+    }
+
+    async fn persist_recent_items_with(
+        &self,
+        items: &[MediaItem],
+        pool: &SqlitePool,
+    ) -> Result<u32> {
+        if items.is_empty() {
+            return Ok(0);
+        }
+        self.upsert_media_items_with(items, "spotify", pool).await?;
         let fetched_at_ms = now_ms();
-        for (position, item) in items.iter().enumerate() {
-            sqlx::query(
-                "INSERT OR REPLACE INTO recent_items (item_uri, played_at_ms, fetched_at_ms, position)
-                 VALUES (?, ?, ?, ?)",
-            )
-            .bind(&item.uri)
-            .bind(fetched_at_ms.saturating_sub(position as i64))
-            .bind(fetched_at_ms)
-            .bind(position as i64)
-            .execute(&self.writer)
-            .await?;
+        for (chunk_index, chunk) in items.chunks(BULK_CHUNK_ROWS).enumerate() {
+            if chunk.is_empty() {
+                continue;
+            }
+            let chunk_base = chunk_index * BULK_CHUNK_ROWS;
+            let mut tx = pool.begin().await?;
+            for (offset, item) in chunk.iter().enumerate() {
+                let position = chunk_base + offset;
+                sqlx::query(
+                    "INSERT OR REPLACE INTO recent_items (
+                        item_uri, played_at_ms, fetched_at_ms, position,
+                        freshness_class, sync_generation
+                     )
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .bind(&item.uri)
+                .bind(fetched_at_ms.saturating_sub(position as i64))
+                .bind(fetched_at_ms)
+                .bind(position as i64)
+                .bind(FRESHNESS_FRESH)
+                .bind(fetched_at_ms)
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
         }
         Ok(items.len() as u32)
     }
 
     pub async fn persist_library_items(&self, items: &[MediaItem]) -> Result<u32> {
-        self.upsert_media_items(items, "spotify").await?;
+        self.persist_library_items_with(items, &self.writer).await
+    }
+
+    pub async fn persist_library_items_bulk(&self, items: &[MediaItem]) -> Result<u32> {
+        self.persist_library_items_with(items, &self.bulk_writer)
+            .await
+    }
+
+    async fn persist_library_items_with(
+        &self,
+        items: &[MediaItem],
+        pool: &SqlitePool,
+    ) -> Result<u32> {
+        if items.is_empty() {
+            return Ok(0);
+        }
+        self.upsert_media_items_with(items, "spotify", pool).await?;
         let fetched_at_ms = now_ms();
-        for item in items {
-            sqlx::query(
-                "INSERT INTO library_items (item_uri, kind, saved, followed, fetched_at_ms)
-                 VALUES (?, ?, 1, 0, ?)
-                 ON CONFLICT(item_uri) DO UPDATE SET
-                    kind = excluded.kind,
-                    saved = 1,
-                    fetched_at_ms = excluded.fetched_at_ms",
-            )
-            .bind(&item.uri)
-            .bind(item.kind.label())
-            .bind(fetched_at_ms)
-            .execute(&self.writer)
-            .await?;
-            sqlx::query("UPDATE media_items SET saved = 1, liked = 1 WHERE uri = ?")
+        for (chunk_index, chunk) in items.chunks(BULK_CHUNK_ROWS).enumerate() {
+            if chunk.is_empty() {
+                continue;
+            }
+            let chunk_base = chunk_index * BULK_CHUNK_ROWS;
+            let mut tx = pool.begin().await?;
+            for (offset, item) in chunk.iter().enumerate() {
+                let position = chunk_base + offset;
+                sqlx::query(
+                    "INSERT INTO library_items (
+                        item_uri, kind, saved, followed, fetched_at_ms,
+                        freshness_class, sync_generation, sync_position
+                     )
+                     VALUES (?, ?, 1, 0, ?, ?, ?, ?)
+                     ON CONFLICT(item_uri) DO UPDATE SET
+                        kind = excluded.kind,
+                        saved = 1,
+                        fetched_at_ms = excluded.fetched_at_ms,
+                        freshness_class = excluded.freshness_class,
+                        sync_generation = excluded.sync_generation,
+                        sync_position = excluded.sync_position",
+                )
                 .bind(&item.uri)
-                .execute(&self.writer)
+                .bind(item.kind.label())
+                .bind(fetched_at_ms)
+                .bind(FRESHNESS_FRESH)
+                .bind(fetched_at_ms)
+                .bind(position as i64)
+                .execute(&mut *tx)
                 .await?;
+                sqlx::query("UPDATE media_items SET saved = 1, liked = 1 WHERE uri = ?")
+                    .bind(&item.uri)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            tx.commit().await?;
         }
         Ok(items.len() as u32)
     }
@@ -501,6 +1038,45 @@ impl Store {
         row_count: u32,
         error: Option<&str>,
     ) -> Result<()> {
+        self.record_sync_event_with(
+            domain,
+            started_at_ms,
+            status,
+            row_count,
+            error,
+            &self.writer,
+        )
+        .await
+    }
+
+    pub async fn record_sync_event_bulk(
+        &self,
+        domain: &str,
+        started_at_ms: i64,
+        status: &str,
+        row_count: u32,
+        error: Option<&str>,
+    ) -> Result<()> {
+        self.record_sync_event_with(
+            domain,
+            started_at_ms,
+            status,
+            row_count,
+            error,
+            &self.bulk_writer,
+        )
+        .await
+    }
+
+    async fn record_sync_event_with(
+        &self,
+        domain: &str,
+        started_at_ms: i64,
+        status: &str,
+        row_count: u32,
+        error: Option<&str>,
+        pool: &SqlitePool,
+    ) -> Result<()> {
         let finished_at_ms = now_ms();
         sqlx::query(
             "INSERT INTO sync_events (domain, started_at_ms, finished_at_ms, status, row_count, error)
@@ -512,7 +1088,7 @@ impl Store {
         .bind(status)
         .bind(row_count as i64)
         .bind(error)
-        .execute(&self.writer)
+        .execute(pool)
         .await?;
         sqlx::query(
             "INSERT INTO sync_cursors (domain, last_success_at_ms, last_error)
@@ -525,7 +1101,7 @@ impl Store {
         .bind(if status == "ok" { Some(finished_at_ms) } else { None })
         .bind(error)
         .bind(status)
-        .execute(&self.writer)
+        .execute(pool)
         .await?;
         Ok(())
     }
@@ -553,23 +1129,99 @@ impl Store {
     }
 
     /// Phase 13 (P13-J) — drop search-cache rows older than the cutoff.
-    /// CASCADE in `search_results` handles the join table.
+    /// CASCADE in `search_results` handles the join table. Routes
+    /// through the bulk writer: retention is by definition background
+    /// work and shouldn't compete with a Pause command on the hot
+    /// pool.
     pub async fn prune_search_runs_older_than(&self, cutoff_ms: i64) -> Result<u64> {
         let result = sqlx::query("DELETE FROM search_runs WHERE fetched_at_ms < ?")
             .bind(cutoff_ms)
-            .execute(&self.writer)
+            .execute(&self.bulk_writer)
             .await?;
         Ok(result.rows_affected())
+    }
+
+    pub async fn cached_lyrics(
+        &self,
+        track_uri: &str,
+        ttl: Duration,
+    ) -> Result<Option<SyncedLyrics>> {
+        let cutoff_ms = now_ms().saturating_sub(ttl.as_millis() as i64);
+        let row = sqlx::query(
+            "SELECT provider, synced, lines_json, fetched_at_ms, language, source_url
+             FROM lyrics_cache
+             WHERE track_uri = ? AND fetched_at_ms >= ?",
+        )
+        .bind(track_uri)
+        .bind(cutoff_ms)
+        .fetch_optional(&self.reader)
+        .await?;
+        row.map(|row| row_to_lyrics(track_uri, row)).transpose()
+    }
+
+    pub async fn upsert_lyrics(&self, lyrics: &SyncedLyrics) -> Result<()> {
+        let lines_json = serde_json::to_string(&lyrics.lines)?;
+        sqlx::query(
+            "INSERT INTO lyrics_cache (
+                track_uri, provider, synced, lines_json, fetched_at_ms, language, source_url
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(track_uri) DO UPDATE SET
+                provider = excluded.provider,
+                synced = excluded.synced,
+                lines_json = excluded.lines_json,
+                fetched_at_ms = excluded.fetched_at_ms,
+                language = excluded.language,
+                source_url = excluded.source_url",
+        )
+        .bind(&lyrics.track_uri)
+        .bind(lyrics.provider.label())
+        .bind(if lyrics.synced { 1_i64 } else { 0_i64 })
+        .bind(lines_json)
+        .bind(lyrics.fetched_at_ms)
+        .bind(&lyrics.language)
+        .bind(&lyrics.source_url)
+        .execute(&self.writer)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn lyrics_offset_ms(&self, track_uri: &str) -> Result<i64> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT offset_ms FROM lyrics_offsets WHERE track_uri = ?")
+                .bind(track_uri)
+                .fetch_optional(&self.reader)
+                .await?;
+        Ok(row.map(|(offset_ms,)| offset_ms).unwrap_or(0))
+    }
+
+    pub async fn set_lyrics_offset_ms(&self, track_uri: &str, offset_ms: i64) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO lyrics_offsets (track_uri, offset_ms, updated_at_ms)
+             VALUES (?, ?, ?)
+             ON CONFLICT(track_uri) DO UPDATE SET
+                offset_ms = excluded.offset_ms,
+                updated_at_ms = excluded.updated_at_ms",
+        )
+        .bind(track_uri)
+        .bind(offset_ms)
+        .bind(now_ms())
+        .execute(&self.writer)
+        .await?;
+        Ok(())
     }
 
     pub async fn cache_status(&self, index_documents: u64) -> Result<CacheStatus> {
         Ok(CacheStatus {
             database_path: self.db_path.display().to_string(),
             index_path: self.index_path.display().to_string(),
+            cover_cache_path: String::new(),
             media_items: count_rows(&self.reader, "SELECT COUNT(*) FROM media_items").await?,
             devices: count_rows(&self.reader, "SELECT COUNT(*) FROM devices").await?,
             playback_snapshots: count_rows(&self.reader, "SELECT COUNT(*) FROM playback_snapshots")
                 .await?,
+            queue_snapshots: count_rows(&self.reader, "SELECT COUNT(*) FROM queue_snapshots")
+                .await?,
+            queue_items: count_rows(&self.reader, "SELECT COUNT(*) FROM queue_items").await?,
             playlists: count_rows(&self.reader, "SELECT COUNT(*) FROM playlists").await?,
             playlist_items: count_rows(&self.reader, "SELECT COUNT(*) FROM playlist_items").await?,
             recent_items: count_rows(&self.reader, "SELECT COUNT(*) FROM recent_items").await?,
@@ -577,11 +1229,29 @@ impl Store {
             search_runs: count_rows(&self.reader, "SELECT COUNT(*) FROM search_runs").await?,
             search_results: count_rows(&self.reader, "SELECT COUNT(*) FROM search_results").await?,
             sync_events: count_rows(&self.reader, "SELECT COUNT(*) FROM sync_events").await?,
+            lyrics_cache: count_rows(&self.reader, "SELECT COUNT(*) FROM lyrics_cache").await?,
+            lyrics_offsets: count_rows(&self.reader, "SELECT COUNT(*) FROM lyrics_offsets").await?,
+            cover_cache_files: 0,
+            cover_cache_bytes: 0,
+            cover_cache_oldest_entry_ms: None,
+            cover_cache_ttl_secs: 0,
+            cover_cache_max_bytes: 0,
             index_documents,
             last_sync_at_ms: max_i64(&self.reader, "SELECT MAX(finished_at_ms) FROM sync_events")
                 .await?,
             last_search_at_ms: max_i64(&self.reader, "SELECT MAX(fetched_at_ms) FROM search_runs")
                 .await?,
+            freshness: CacheFreshnessStatus {
+                media_items: freshness_counts(&self.reader, "media_items").await?,
+                devices: freshness_counts(&self.reader, "devices").await?,
+                playback_snapshots: freshness_counts(&self.reader, "playback_snapshots").await?,
+                queue_snapshots: freshness_counts(&self.reader, "queue_snapshots").await?,
+                queue_items: freshness_counts(&self.reader, "queue_items").await?,
+                playlists: freshness_counts(&self.reader, "playlists").await?,
+                playlist_items: freshness_counts(&self.reader, "playlist_items").await?,
+                recent_items: freshness_counts(&self.reader, "recent_items").await?,
+                library_items: freshness_counts(&self.reader, "library_items").await?,
+            },
         })
     }
 
@@ -617,6 +1287,14 @@ impl Store {
             MigrationKind::Sql(sql) => {
                 sqlx::raw_sql(sql).execute(&self.writer).await?;
             }
+            MigrationKind::AddColumns(columns) => {
+                for column in columns {
+                    self.add_column_if_missing(column).await?;
+                }
+            }
+            MigrationKind::RebuildPlaylistItemsPositionPk => {
+                self.rebuild_playlist_items_position_pk().await?;
+            }
         }
         sqlx::query(
             "INSERT INTO schema_migrations (version, name, applied_at_ms) VALUES (?, ?, ?)",
@@ -635,9 +1313,27 @@ impl Store {
         self.run_migrations().await
     }
 
+    /// Operator repair path for `spotuify cache repair`.
+    ///
+    /// Replays idempotent migrations and validates required columns.
+    /// Search repair is handled by the CLI/daemon caller because the
+    /// Tantivy index lives outside SQLite and is rebuildable.
+    pub async fn repair_schema(&self) -> Result<()> {
+        self.run_migrations().await
+    }
+
     /// Read-side connection pool. Used by tests + downstream introspection.
     pub fn reader(&self) -> &SqlitePool {
         &self.reader
+    }
+
+    /// Background-write pool. Exposed so the daemon's retention loop
+    /// and other genuinely-bulk writers can pick the right lane.
+    /// Day-to-day callers should prefer the per-method `_bulk`
+    /// variants (e.g. `persist_playback_bulk`) which already route
+    /// here and chunk transactions appropriately.
+    pub fn bulk_writer(&self) -> &SqlitePool {
+        &self.bulk_writer
     }
 
     /// Write-side connection pool — gated behind `for_test` so production
@@ -819,6 +1515,87 @@ impl Store {
             .iter()
             .any(|row| row.get::<String, _>("name") == column))
     }
+
+    async fn add_column_if_missing(&self, column: &ColumnMigration) -> Result<()> {
+        if self.column_exists(column.table, column.name).await? {
+            return Ok(());
+        }
+        let sql = format!(
+            "ALTER TABLE {} ADD COLUMN {}",
+            column.table, column.definition
+        );
+        sqlx::query(&sql).execute(&self.writer).await?;
+        Ok(())
+    }
+
+    async fn playlist_items_uses_position_pk(&self) -> Result<bool> {
+        let rows = sqlx::query("PRAGMA table_info(playlist_items)")
+            .fetch_all(&self.writer)
+            .await?;
+        let mut pk_columns = rows
+            .iter()
+            .filter_map(|row| {
+                let pk = row.get::<i64, _>("pk");
+                (pk > 0).then(|| (pk, row.get::<String, _>("name")))
+            })
+            .collect::<Vec<_>>();
+        pk_columns.sort_by_key(|(pk, _)| *pk);
+        Ok(pk_columns
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect::<Vec<_>>()
+            == ["playlist_id", "position"])
+    }
+
+    async fn rebuild_playlist_items_position_pk(&self) -> Result<()> {
+        if self.playlist_items_uses_position_pk().await? {
+            return Ok(());
+        }
+        sqlx::raw_sql(
+            r#"
+CREATE TABLE IF NOT EXISTS playlist_items_v9 (
+    playlist_id          TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    item_uri             TEXT NOT NULL REFERENCES media_items(uri) ON DELETE CASCADE,
+    position             INTEGER NOT NULL,
+    added_at_ms          INTEGER NOT NULL,
+    snapshot_id_at_fetch TEXT,
+    freshness_class      TEXT NOT NULL DEFAULT 'unknown',
+    sync_generation      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (playlist_id, position)
+);
+
+INSERT OR REPLACE INTO playlist_items_v9 (
+    playlist_id, item_uri, position, added_at_ms,
+    snapshot_id_at_fetch, freshness_class, sync_generation
+)
+SELECT playlist_id, item_uri, position, added_at_ms,
+       snapshot_id_at_fetch, freshness_class, sync_generation
+FROM playlist_items
+ORDER BY playlist_id, position;
+
+DROP TABLE playlist_items;
+ALTER TABLE playlist_items_v9 RENAME TO playlist_items;
+CREATE INDEX IF NOT EXISTS idx_playlist_items_item ON playlist_items(item_uri);
+"#,
+        )
+        .execute(&self.writer)
+        .await?;
+        Ok(())
+    }
+}
+
+async fn build_writer_pool(db_url: &str) -> Result<SqlitePool> {
+    let opts = SqliteConnectOptions::from_str(db_url)?
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(BUSY_TIMEOUT)
+        .pragma("foreign_keys", "ON");
+    Ok(SqlitePoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(POOL_ACQUIRE_TIMEOUT)
+        .connect_with(opts)
+        .await?)
 }
 
 pub fn cache_db_path() -> Result<PathBuf> {
@@ -873,10 +1650,54 @@ fn row_to_media_item(row: sqlx::sqlite::SqliteRow) -> Result<MediaItem> {
     })
 }
 
+fn row_to_device(row: sqlx::sqlite::SqliteRow) -> Result<Device> {
+    Ok(Device {
+        id: row.get("id"),
+        name: row.get("name"),
+        kind: row.get("kind"),
+        is_active: row.get("is_active"),
+        is_restricted: row.get("is_restricted"),
+        supports_volume: row.get("supports_volume"),
+        volume_percent: row
+            .get::<Option<i64>, _>("volume_percent")
+            .and_then(|value| u8::try_from(value).ok()),
+    })
+}
+
+fn row_to_playlist(row: sqlx::sqlite::SqliteRow) -> Result<Playlist> {
+    Ok(Playlist {
+        id: row.get("id"),
+        name: row.get("name"),
+        owner: row.get("owner"),
+        tracks_total: row.get::<i64, _>("tracks_total").max(0) as u64,
+        image_url: row.get("image_url"),
+        snapshot_id: row.get("snapshot_id"),
+    })
+}
+
+fn row_to_lyrics(track_uri: &str, row: sqlx::sqlite::SqliteRow) -> Result<SyncedLyrics> {
+    let provider: String = row.get("provider");
+    let provider = LyricsProvider::from_label(&provider)
+        .ok_or_else(|| anyhow::anyhow!("unknown lyrics provider `{provider}`"))?;
+    let lines_json: String = row.get("lines_json");
+    let lines: Vec<LyricLine> = serde_json::from_str(&lines_json)?;
+    let synced: i64 = row.get("synced");
+    Ok(SyncedLyrics {
+        provider,
+        track_uri: track_uri.to_string(),
+        lines,
+        fetched_at_ms: row.get("fetched_at_ms"),
+        synced: synced != 0,
+        language: row.get("language"),
+        source_url: row.get("source_url"),
+    })
+}
+
 fn media_kind_from_label(label: &str) -> Result<MediaKind> {
     match label {
         "track" => Ok(MediaKind::Track),
         "episode" => Ok(MediaKind::Episode),
+        "show" => Ok(MediaKind::Show),
         "album" => Ok(MediaKind::Album),
         "artist" => Ok(MediaKind::Artist),
         "playlist" => Ok(MediaKind::Playlist),
@@ -933,6 +1754,28 @@ async fn max_i64(pool: &SqlitePool, sql: &str) -> Result<Option<i64>> {
     Ok(sqlx::query_scalar::<_, Option<i64>>(sql)
         .fetch_one(pool)
         .await?)
+}
+
+async fn freshness_counts(pool: &SqlitePool, table: &str) -> Result<FreshnessCounts> {
+    let sql = format!(
+        "SELECT
+            COALESCE(SUM(CASE WHEN freshness_class = 'fresh' THEN 1 ELSE 0 END), 0) AS fresh,
+            COALESCE(SUM(CASE WHEN freshness_class = 'stale_but_usable' THEN 1 ELSE 0 END), 0) AS stale_but_usable,
+            COALESCE(SUM(CASE WHEN freshness_class = 'refreshing' THEN 1 ELSE 0 END), 0) AS refreshing,
+            COALESCE(SUM(CASE WHEN freshness_class = 'failed_refresh' THEN 1 ELSE 0 END), 0) AS failed_refresh,
+            COALESCE(SUM(CASE WHEN freshness_class = 'unknown' THEN 1 ELSE 0 END), 0) AS unknown,
+            COALESCE(MAX(sync_generation), 0) AS max_sync_generation
+         FROM {table}"
+    );
+    let row = sqlx::query(&sql).fetch_one(pool).await?;
+    Ok(FreshnessCounts {
+        fresh: row.get::<i64, _>("fresh").max(0) as u32,
+        stale_but_usable: row.get::<i64, _>("stale_but_usable").max(0) as u32,
+        refreshing: row.get::<i64, _>("refreshing").max(0) as u32,
+        failed_refresh: row.get::<i64, _>("failed_refresh").max(0) as u32,
+        unknown: row.get::<i64, _>("unknown").max(0) as u32,
+        max_sync_generation: row.get::<i64, _>("max_sync_generation").max(0),
+    })
 }
 
 const INITIAL_SCHEMA: &str = r#"
@@ -993,7 +1836,7 @@ CREATE TABLE IF NOT EXISTS playlist_items (
     item_uri    TEXT NOT NULL REFERENCES media_items(uri) ON DELETE CASCADE,
     position    INTEGER NOT NULL,
     added_at_ms INTEGER NOT NULL,
-    PRIMARY KEY (playlist_id, item_uri)
+    PRIMARY KEY (playlist_id, position)
 );
 CREATE INDEX IF NOT EXISTS idx_playlist_items_item ON playlist_items(item_uri);
 
@@ -1049,31 +1892,6 @@ CREATE TABLE IF NOT EXISTS sync_cursors (
     last_success_at_ms INTEGER,
     last_error         TEXT
 );
-"#;
-
-/// Phase 6.4 schema migration: snapshot_id, snapshot_id_at_fetch,
-/// freshness_class, sync_generation.
-///
-/// `freshness_class` accepts values in {fresh, stale_but_usable,
-/// refreshing, failed_refresh, unknown}. Application-enforced; no CHECK
-/// constraint because SQLite would prevent migrating older rows.
-///
-/// `sync_generation` is bumped on each full sync so we can detect
-/// cache-version skew across daemon restarts.
-const MIGRATION_002_SNAPSHOT_ID_FRESHNESS: &str = r#"
-ALTER TABLE playlists      ADD COLUMN snapshot_id          TEXT;
-ALTER TABLE playlist_items ADD COLUMN snapshot_id_at_fetch TEXT;
-
-ALTER TABLE media_items        ADD COLUMN freshness_class TEXT NOT NULL DEFAULT 'unknown';
-ALTER TABLE media_items        ADD COLUMN sync_generation INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE devices            ADD COLUMN freshness_class TEXT NOT NULL DEFAULT 'unknown';
-ALTER TABLE devices            ADD COLUMN sync_generation INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE playback_snapshots ADD COLUMN freshness_class TEXT NOT NULL DEFAULT 'unknown';
-ALTER TABLE playback_snapshots ADD COLUMN sync_generation INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE recent_items       ADD COLUMN freshness_class TEXT NOT NULL DEFAULT 'unknown';
-ALTER TABLE recent_items       ADD COLUMN sync_generation INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE library_items      ADD COLUMN freshness_class TEXT NOT NULL DEFAULT 'unknown';
-ALTER TABLE library_items      ADD COLUMN sync_generation INTEGER NOT NULL DEFAULT 0;
 "#;
 
 /// Phase 6.6: receipts table for the two-stage mutation lifecycle.
@@ -1247,6 +2065,53 @@ CREATE INDEX IF NOT EXISTS idx_operations_subject_op
     ON operations(subject_op_id);
 "#;
 
+/// Phase 16: persistent lyrics cache and per-track manual timing offsets.
+const MIGRATION_006_LYRICS: &str = r#"
+CREATE TABLE IF NOT EXISTS lyrics_cache (
+    track_uri     TEXT PRIMARY KEY,
+    provider      TEXT NOT NULL,
+    synced        INTEGER NOT NULL,
+    lines_json    TEXT NOT NULL,
+    fetched_at_ms INTEGER NOT NULL,
+    language      TEXT,
+    source_url    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_lyrics_cache_fetched
+    ON lyrics_cache(fetched_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS lyrics_offsets (
+    track_uri     TEXT PRIMARY KEY,
+    offset_ms     INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+"#;
+
+/// Fast-cadence queue cache. A snapshot records the currently playing
+/// item plus the ordered upcoming queue so `spotuify queue` can be
+/// served locally and refreshed in the background.
+const MIGRATION_010_QUEUE_CACHE: &str = r#"
+CREATE TABLE IF NOT EXISTS queue_snapshots (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    currently_playing_uri TEXT REFERENCES media_items(uri) ON DELETE SET NULL,
+    fetched_at_ms         INTEGER NOT NULL,
+    freshness_class       TEXT NOT NULL DEFAULT 'unknown',
+    sync_generation       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_queue_snapshots_time
+    ON queue_snapshots(fetched_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS queue_items (
+    snapshot_id      INTEGER NOT NULL REFERENCES queue_snapshots(id) ON DELETE CASCADE,
+    item_uri         TEXT NOT NULL REFERENCES media_items(uri) ON DELETE CASCADE,
+    position         INTEGER NOT NULL,
+    freshness_class  TEXT NOT NULL DEFAULT 'unknown',
+    sync_generation  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (snapshot_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_queue_items_item
+    ON queue_items(item_uri);
+"#;
+
 /// Migration table-of-contents. Append-only: never edit a published
 /// migration's body or version. To change semantics, add a follow-up
 /// migration that mutates the new schema.
@@ -1263,7 +2128,107 @@ struct Migration {
 #[allow(dead_code)]
 enum MigrationKind {
     Sql(&'static str),
+    AddColumns(&'static [ColumnMigration]),
+    RebuildPlaylistItemsPositionPk,
 }
+
+struct ColumnMigration {
+    table: &'static str,
+    name: &'static str,
+    definition: &'static str,
+}
+
+const MIGRATION_002_COLUMNS: &[ColumnMigration] = &[
+    ColumnMigration {
+        table: "playlists",
+        name: "snapshot_id",
+        definition: "snapshot_id TEXT",
+    },
+    ColumnMigration {
+        table: "playlist_items",
+        name: "snapshot_id_at_fetch",
+        definition: "snapshot_id_at_fetch TEXT",
+    },
+    ColumnMigration {
+        table: "media_items",
+        name: "freshness_class",
+        definition: "freshness_class TEXT NOT NULL DEFAULT 'unknown'",
+    },
+    ColumnMigration {
+        table: "media_items",
+        name: "sync_generation",
+        definition: "sync_generation INTEGER NOT NULL DEFAULT 0",
+    },
+    ColumnMigration {
+        table: "devices",
+        name: "freshness_class",
+        definition: "freshness_class TEXT NOT NULL DEFAULT 'unknown'",
+    },
+    ColumnMigration {
+        table: "devices",
+        name: "sync_generation",
+        definition: "sync_generation INTEGER NOT NULL DEFAULT 0",
+    },
+    ColumnMigration {
+        table: "playback_snapshots",
+        name: "freshness_class",
+        definition: "freshness_class TEXT NOT NULL DEFAULT 'unknown'",
+    },
+    ColumnMigration {
+        table: "playback_snapshots",
+        name: "sync_generation",
+        definition: "sync_generation INTEGER NOT NULL DEFAULT 0",
+    },
+    ColumnMigration {
+        table: "recent_items",
+        name: "freshness_class",
+        definition: "freshness_class TEXT NOT NULL DEFAULT 'unknown'",
+    },
+    ColumnMigration {
+        table: "recent_items",
+        name: "sync_generation",
+        definition: "sync_generation INTEGER NOT NULL DEFAULT 0",
+    },
+    ColumnMigration {
+        table: "library_items",
+        name: "freshness_class",
+        definition: "freshness_class TEXT NOT NULL DEFAULT 'unknown'",
+    },
+    ColumnMigration {
+        table: "library_items",
+        name: "sync_generation",
+        definition: "sync_generation INTEGER NOT NULL DEFAULT 0",
+    },
+];
+
+const MIGRATION_007_COLUMNS: &[ColumnMigration] = &[
+    ColumnMigration {
+        table: "playlists",
+        name: "freshness_class",
+        definition: "freshness_class TEXT NOT NULL DEFAULT 'unknown'",
+    },
+    ColumnMigration {
+        table: "playlists",
+        name: "sync_generation",
+        definition: "sync_generation INTEGER NOT NULL DEFAULT 0",
+    },
+    ColumnMigration {
+        table: "playlist_items",
+        name: "freshness_class",
+        definition: "freshness_class TEXT NOT NULL DEFAULT 'unknown'",
+    },
+    ColumnMigration {
+        table: "playlist_items",
+        name: "sync_generation",
+        definition: "sync_generation INTEGER NOT NULL DEFAULT 0",
+    },
+];
+
+const MIGRATION_008_COLUMNS: &[ColumnMigration] = &[ColumnMigration {
+    table: "library_items",
+    name: "sync_position",
+    definition: "sync_position INTEGER NOT NULL DEFAULT 0",
+}];
 
 const MIGRATIONS: &[Migration] = &[
     Migration {
@@ -1274,7 +2239,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
         name: "snapshot_id_freshness",
-        kind: MigrationKind::Sql(MIGRATION_002_SNAPSHOT_ID_FRESHNESS),
+        kind: MigrationKind::AddColumns(MIGRATION_002_COLUMNS),
     },
     Migration {
         version: 3,
@@ -1290,6 +2255,31 @@ const MIGRATIONS: &[Migration] = &[
         version: 5,
         name: "operations",
         kind: MigrationKind::Sql(MIGRATION_005_OPERATIONS),
+    },
+    Migration {
+        version: 6,
+        name: "lyrics",
+        kind: MigrationKind::Sql(MIGRATION_006_LYRICS),
+    },
+    Migration {
+        version: 7,
+        name: "playlist_freshness",
+        kind: MigrationKind::AddColumns(MIGRATION_007_COLUMNS),
+    },
+    Migration {
+        version: 8,
+        name: "library_sync_position",
+        kind: MigrationKind::AddColumns(MIGRATION_008_COLUMNS),
+    },
+    Migration {
+        version: 9,
+        name: "playlist_items_position_pk",
+        kind: MigrationKind::RebuildPlaylistItemsPositionPk,
+    },
+    Migration {
+        version: 10,
+        name: "queue_cache",
+        kind: MigrationKind::Sql(MIGRATION_010_QUEUE_CACHE),
     },
 ];
 
@@ -1335,13 +2325,55 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
         "playback_snapshots",
         &["item_uri", "is_playing", "fetched_at_ms"],
     ),
-    ("playlists", &["id", "name", "owner", "tracks_total"]),
-    ("playlist_items", &["playlist_id", "item_uri", "position"]),
+    (
+        "queue_snapshots",
+        &[
+            "id",
+            "currently_playing_uri",
+            "fetched_at_ms",
+            "freshness_class",
+            "sync_generation",
+        ],
+    ),
+    (
+        "queue_items",
+        &[
+            "snapshot_id",
+            "item_uri",
+            "position",
+            "freshness_class",
+            "sync_generation",
+        ],
+    ),
+    (
+        "playlists",
+        &[
+            "id",
+            "name",
+            "owner",
+            "tracks_total",
+            "freshness_class",
+            "sync_generation",
+        ],
+    ),
+    (
+        "playlist_items",
+        &[
+            "playlist_id",
+            "item_uri",
+            "position",
+            "freshness_class",
+            "sync_generation",
+        ],
+    ),
     (
         "recent_items",
         &["item_uri", "played_at_ms", "fetched_at_ms"],
     ),
-    ("library_items", &["item_uri", "kind", "saved", "followed"]),
+    (
+        "library_items",
+        &["item_uri", "kind", "saved", "followed", "sync_position"],
+    ),
     (
         "search_runs",
         &["query", "normalized_query", "scope", "source"],
@@ -1389,6 +2421,21 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
     (
         "operations",
         &["operation_id", "kind", "occurred_at_ms", "source", "status"],
+    ),
+    // v6 — lyrics cache
+    (
+        "lyrics_cache",
+        &[
+            "track_uri",
+            "provider",
+            "synced",
+            "lines_json",
+            "fetched_at_ms",
+        ],
+    ),
+    (
+        "lyrics_offsets",
+        &["track_uri", "offset_ms", "updated_at_ms"],
     ),
 ];
 
@@ -1447,6 +2494,226 @@ mod tests {
         assert_eq!(status.search_results, 1);
         assert_eq!(status.index_documents, 1);
         assert!(status.last_search_at_ms.is_some());
+        assert_eq!(status.freshness.media_items.fresh, 1);
+        assert_eq!(status.freshness.media_items.unknown, 0);
+        assert!(status.freshness.media_items.max_sync_generation > 0);
+    }
+
+    #[tokio::test]
+    async fn cache_writes_mark_user_facing_cache_tables_fresh() {
+        let store = Store::in_memory()
+            .await
+            .expect("in-memory store should open");
+        let item = track("spotify:track:1", "Sweet Thing", "Chaka Khan");
+        let device = Device {
+            id: Some("device-1".to_string()),
+            name: "spotuify-test".to_string(),
+            kind: "computer".to_string(),
+            is_active: true,
+            is_restricted: false,
+            volume_percent: Some(50),
+            supports_volume: true,
+        };
+        let playback = Playback {
+            item: Some(item.clone()),
+            device: Some(device.clone()),
+            is_playing: true,
+            progress_ms: 1_000,
+            shuffle: false,
+            repeat: "off".to_string(),
+            ..Default::default()
+        };
+        let playlist = Playlist {
+            id: "playlist-1".to_string(),
+            name: "Favorites".to_string(),
+            owner: "me".to_string(),
+            tracks_total: 1,
+            image_url: None,
+            snapshot_id: Some("snapshot-1".to_string()),
+        };
+
+        store
+            .persist_devices(&[device])
+            .await
+            .expect("devices should persist");
+        store
+            .persist_playback(&playback)
+            .await
+            .expect("playback should persist");
+        store
+            .persist_queue(&Queue {
+                currently_playing: Some(item.clone()),
+                items: vec![item.clone()],
+            })
+            .await
+            .expect("queue should persist");
+        store
+            .persist_playlists(&[playlist])
+            .await
+            .expect("playlists should persist");
+        store
+            .persist_playlist_items("playlist-1", std::slice::from_ref(&item))
+            .await
+            .expect("playlist items should persist");
+        store
+            .persist_recent_items(std::slice::from_ref(&item))
+            .await
+            .expect("recent items should persist");
+        store
+            .persist_library_items(std::slice::from_ref(&item))
+            .await
+            .expect("library items should persist");
+
+        let status = store
+            .cache_status(0)
+            .await
+            .expect("cache status should load");
+
+        assert_eq!(status.freshness.devices.fresh, 1);
+        assert_eq!(status.freshness.playback_snapshots.fresh, 1);
+        assert_eq!(status.freshness.queue_snapshots.fresh, 1);
+        assert_eq!(status.freshness.queue_items.fresh, 1);
+        assert_eq!(status.freshness.playlists.fresh, 1);
+        assert_eq!(status.freshness.playlist_items.fresh, 1);
+        assert_eq!(status.freshness.recent_items.fresh, 1);
+        assert_eq!(status.freshness.library_items.fresh, 1);
+        assert_eq!(status.freshness.playlists.unknown, 0);
+        assert!(status.freshness.playlist_items.max_sync_generation > 0);
+    }
+
+    #[tokio::test]
+    async fn queue_cache_dedupes_duplicate_upcoming_items() {
+        let store = Store::in_memory()
+            .await
+            .expect("in-memory store should open");
+        let current = track("spotify:track:current", "Now", "Playing");
+        let queued = track("spotify:track:queued", "Next", "Again");
+        store
+            .persist_queue(&Queue {
+                currently_playing: Some(current.clone()),
+                items: vec![queued.clone(), queued.clone()],
+            })
+            .await
+            .expect("queue should persist");
+
+        let queue = store
+            .latest_queue(10)
+            .await
+            .expect("queue should read")
+            .expect("queue should exist");
+        let status = store.cache_status(0).await.expect("cache status");
+
+        assert_eq!(
+            queue
+                .currently_playing
+                .as_ref()
+                .map(|item| item.uri.as_str()),
+            Some("spotify:track:current")
+        );
+        assert_eq!(queue.items.len(), 1, "duplicate upcoming items collapse to one");
+        assert_eq!(queue.items[0].uri, "spotify:track:queued");
+        assert_eq!(status.queue_snapshots, 1);
+        assert_eq!(status.queue_items, 1);
+    }
+
+    #[tokio::test]
+    async fn playlist_items_preserve_duplicate_tracks_by_position() {
+        let store = Store::in_memory()
+            .await
+            .expect("in-memory store should open");
+        let item = track("spotify:track:1", "Sweet Thing", "Chaka Khan");
+        let playlist = Playlist {
+            id: "playlist-duplicates".to_string(),
+            name: "Duplicates".to_string(),
+            owner: "me".to_string(),
+            tracks_total: 2,
+            image_url: None,
+            snapshot_id: Some("snapshot-dup".to_string()),
+        };
+        store
+            .persist_playlists(&[playlist])
+            .await
+            .expect("playlist should persist");
+        store
+            .persist_playlist_items("playlist-duplicates", &[item.clone(), item.clone()])
+            .await
+            .expect("playlist items should persist");
+
+        let items = store
+            .playlist_items("playlist-duplicates", 10)
+            .await
+            .expect("playlist items should read");
+        let status = store.cache_status(0).await.expect("cache status");
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].uri, "spotify:track:1");
+        assert_eq!(items[1].uri, "spotify:track:1");
+        assert_eq!(status.playlist_items, 2);
+    }
+
+    #[tokio::test]
+    async fn saved_tracks_fingerprint_preserves_sync_order() {
+        let store = Store::in_memory()
+            .await
+            .expect("in-memory store should open");
+        let items = vec![
+            track("spotify:track:1", "Sweet Thing", "Chaka Khan"),
+            track("spotify:track:2", "Never Too Much", "Luther Vandross"),
+        ];
+        store
+            .persist_library_items(&items)
+            .await
+            .expect("library items should persist");
+
+        let (total, ids) = store
+            .saved_tracks_fingerprint(50)
+            .await
+            .expect("fingerprint should load");
+
+        assert_eq!(total, 2);
+        assert_eq!(ids, ["1", "2"]);
+    }
+
+    #[tokio::test]
+    async fn lyrics_cache_round_trips_lines_and_offset() {
+        let store = Store::in_memory().await.unwrap();
+        let lyrics = SyncedLyrics {
+            provider: LyricsProvider::Lrclib,
+            track_uri: "spotify:track:lyrics".to_string(),
+            lines: vec![LyricLine {
+                start_ms: 1_000,
+                text: "hello".to_string(),
+                is_rtl: false,
+            }],
+            fetched_at_ms: now_ms(),
+            synced: true,
+            language: Some("en".to_string()),
+            source_url: Some("https://lrclib.net".to_string()),
+        };
+
+        store.upsert_lyrics(&lyrics).await.unwrap();
+        store
+            .set_lyrics_offset_ms("spotify:track:lyrics", 125)
+            .await
+            .unwrap();
+
+        let cached = store
+            .cached_lyrics("spotify:track:lyrics", Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.provider, LyricsProvider::Lrclib);
+        assert_eq!(cached.lines[0].text, "hello");
+        assert_eq!(
+            store
+                .lyrics_offset_ms("spotify:track:lyrics")
+                .await
+                .unwrap(),
+            125
+        );
+        let status = store.cache_status(0).await.unwrap();
+        assert_eq!(status.lyrics_cache, 1);
+        assert_eq!(status.lyrics_offsets, 1);
     }
 
     #[tokio::test]

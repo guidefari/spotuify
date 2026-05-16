@@ -145,6 +145,26 @@ pub trait PlayerBackend: Send + Sync {
     async fn shuffle(&mut self, on: bool) -> PlayerResult<()>;
     async fn repeat(&mut self, mode: RepeatMode) -> PlayerResult<()>;
 
+    /// Best-effort audio preload for a playable URI. Only the embedded
+    /// librespot backend owns an audio buffer; remote-control backends
+    /// return `Unsupported`.
+    async fn preload_uri(&mut self, _uri: &str) -> PlayerResult<()> {
+        Err(PlayerError::Unsupported("preload_uri".to_string()))
+    }
+
+    /// Append a track, episode, album, or playlist URI to the active
+    /// device's queue. librespot 0.8's `Spirc::add_to_queue` is the
+    /// fast path on the embedded backend; remote-control backends fall
+    /// back to a Web API call. Artist and show URIs are rejected at the
+    /// caller layer (see daemon's queueable_uris_for_selection).
+    ///
+    /// Spirc gotcha: this silently no-ops if the embedded device is
+    /// not currently active. Callers should ensure activate-first
+    /// (handled by the daemon's activate-first guard).
+    async fn queue_add(&mut self, _uri: &str) -> PlayerResult<()> {
+        Err(PlayerError::Unsupported("queue_add".to_string()))
+    }
+
     /// Whether the backend currently has a healthy connection to
     /// Spotify (Connect device registered, session valid).
     async fn is_connected(&self) -> bool;
@@ -178,13 +198,16 @@ mod tests {
     #[test]
     fn repeat_mode_round_trips_through_label() {
         for mode in [RepeatMode::Off, RepeatMode::Context, RepeatMode::Track] {
-            assert_eq!(RepeatMode::parse(mode.label()).unwrap(), mode);
+            assert_eq!(
+                RepeatMode::parse(mode.label()).expect("repeat mode label should parse"),
+                mode
+            );
         }
     }
 
     #[test]
     fn repeat_mode_invalid_value_surfaces_input() {
-        let err = RepeatMode::parse("loop").unwrap_err();
+        let err = RepeatMode::parse("loop").expect_err("invalid repeat mode should error");
         // Adversarial: error must echo what the user typed so it's
         // useful in a CLI failure path.
         assert!(matches!(err, PlayerError::InvalidArg(ref msg) if msg.contains("loop")));

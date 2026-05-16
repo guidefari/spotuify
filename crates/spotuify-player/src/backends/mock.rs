@@ -41,6 +41,8 @@ pub enum RecordedCall {
     Volume(u8),
     Shuffle(bool),
     Repeat(RepeatMode),
+    PreloadUri(String),
+    QueueAdd(String),
     Shutdown,
 }
 
@@ -210,6 +212,16 @@ impl PlayerBackend for MockPlayerBackend {
         self.record(RecordedCall::Repeat(mode));
         self.ensure_registered()?;
         Ok(())
+    }
+
+    async fn preload_uri(&mut self, uri: &str) -> PlayerResult<()> {
+        self.record(RecordedCall::PreloadUri(uri.to_string()));
+        self.ensure_registered()
+    }
+
+    async fn queue_add(&mut self, uri: &str) -> PlayerResult<()> {
+        self.record(RecordedCall::QueueAdd(uri.to_string()));
+        self.ensure_registered()
     }
 
     async fn is_connected(&self) -> bool {

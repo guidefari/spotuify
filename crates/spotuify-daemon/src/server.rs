@@ -8,18 +8,33 @@ use anyhow::{Context, Result};
 use futures::{FutureExt, SinkExt, StreamExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::codec::Framed;
 
-use crate::handler::handle_request;
+use crate::handler::handle_request_with_source;
+use crate::retention::retention_cutoffs;
 use crate::state::DaemonState;
 use spotuify_protocol::ipc_client::IpcClient;
 use spotuify_protocol::{
-    DaemonEvent, DaemonStatus, IpcCodec, IpcMessage, IpcPayload, Request, Response, ResponseData,
-    IPC_PROTOCOL_VERSION,
+    DaemonEvent, DaemonStatus, IpcCodec, IpcMessage, IpcPayload, OperationSource, Request,
+    Response, ResponseData, IPC_PROTOCOL_VERSION,
 };
+use spotuify_spotify::actions;
+use spotuify_spotify::config::Config;
 
+/// Background-query and ambient request budget. Sized generously
+/// since handlers are cheap (cached reads, doctor scrapes).
 const REQUEST_CONCURRENCY_LIMIT: usize = 64;
+/// Dedicated fast lane for transport mutations + their immediate
+/// query partners. Even when the slow lane is saturated by a sync
+/// burst or a doctor sweep, a Pause / Resume / Seek / Toggle / Next
+/// / Previous / Volume / Shuffle / Repeat / DeviceTransfer /
+/// QueueAdd / PlaybackGet can still be admitted. Transport mutations
+/// only hold their permit through the optimistic receipt write +
+/// `MutationAccepted` emit (sub-ms); 16 permits is far more than the
+/// peak burst we expect from a single TUI + MCP + CLI talking at
+/// once.
+const TRANSPORT_CONCURRENCY_LIMIT: usize = 16;
 const CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const START_DAEMON_TIMEOUT: Duration = Duration::from_secs(5);
@@ -52,19 +67,36 @@ pub async fn run_daemon() -> Result<()> {
     // attempted.
     if let Err(err) = state.ensure_player_ready("spotuify").await {
         tracing::warn!(error = %err, "player backend register_device failed; continuing");
+    } else {
+        // Surface the registered backend through viz diagnostics so the
+        // TUI hint can be source-aware ("switch to embedded for sink tap").
+        let kind = state.player_kind().await;
+        state.viz_coordinator().set_backend_kind(kind);
     }
-    spotuify_sync::spawn_background_scheduler(state.clone());
+    let media_control_task = spawn_media_control_command_loop(state.clone());
+    let sync_tasks = spotuify_sync::spawn_background_scheduler(state.clone());
+    let queue_warm_task = state.start_queue_warm_scheduler();
+    // Eager warm: fire a playback + queue + devices + recent pull
+    // BEFORE the socket starts accepting connections so the very first
+    // PlaybackGet / QueueGet from a TUI launch can return cached data
+    // instead of a synthesized fallback. Fire-and-forget — failures
+    // (no auth, no network) fall back gracefully to the synthetic /
+    // empty response in the handlers. This is on top of the
+    // background scheduler's own first-tick (which would otherwise
+    // race the user's open).
+    spawn_initial_cache_warm(state.clone());
     // Phase 12 (P12.7) — operations + analytics retention. Default
     // windows: 90d operations, 90d playback_progress, 365d events.
     // Pass 2 (P11.x) reads windows from config; the foundation default
     // matches blueprint.
-    spawn_retention_loop(state.clone());
+    let retention_task = spawn_retention_loop(state.clone());
     let listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("failed to bind {}", socket_path.display()))?;
     write_daemon_pid_file()?;
     tracing::info!(socket = %socket_path.display(), "spotuify daemon listening");
 
     let request_semaphore = Arc::new(Semaphore::new(REQUEST_CONCURRENCY_LIMIT));
+    let transport_semaphore = Arc::new(Semaphore::new(TRANSPORT_CONCURRENCY_LIMIT));
     let mut shutdown_rx = state.shutdown_receiver();
     let mut connections = JoinSet::new();
 
@@ -85,6 +117,7 @@ pub async fn run_daemon() -> Result<()> {
                 let (stream, _) = accepted?;
                 let connection_state = state.clone();
                 let request_semaphore = request_semaphore.clone();
+                let transport_semaphore = transport_semaphore.clone();
                 let event_rx = state.event_tx.subscribe();
                 let connection_shutdown_rx = state.shutdown_receiver();
                 connections.spawn(async move {
@@ -92,6 +125,7 @@ pub async fn run_daemon() -> Result<()> {
                         stream,
                         connection_state,
                         request_semaphore,
+                        transport_semaphore,
                         event_rx,
                         connection_shutdown_rx,
                     ).await;
@@ -102,10 +136,24 @@ pub async fn run_daemon() -> Result<()> {
 
     let _ = state.event_tx.send(IpcMessage {
         id: 0,
+        source: None,
         payload: IpcPayload::Event(DaemonEvent::ShutdownRequested),
     });
+    state
+        .shutdown_background_tasks(CONNECTION_DRAIN_TIMEOUT)
+        .await;
     state.shutdown_search().await;
     state.shutdown_player().await;
+    drain_background_tasks(
+        sync_tasks
+            .into_iter()
+            .chain(media_control_task)
+            .chain(queue_warm_task)
+            .chain(std::iter::once(retention_task))
+            .collect(),
+        CONNECTION_DRAIN_TIMEOUT,
+    )
+    .await;
     drop(listener);
     drain_connection_tasks(&mut connections, CONNECTION_DRAIN_TIMEOUT).await;
     let _ = std::fs::remove_file(&socket_path);
@@ -113,10 +161,114 @@ pub async fn run_daemon() -> Result<()> {
     Ok(())
 }
 
+/// Fire a single round of cache-warming probes against Spotify as
+/// soon as the daemon comes up. The handlers themselves never block
+/// on Spotify any more, so without this the first PlaybackGet right
+/// after `spotuify` launches would always render a synthetic
+/// last-played (or an empty Playback on a truly fresh install) and
+/// the user would only see real state on the next sync tick. This
+/// warm-up makes the common case — daemon already running, TUI just
+/// opened — feel instant. Failures (no auth yet, no network) are
+/// silent; the regular sync scheduler retries on its 60s cadence.
+fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
+    let task_state = state.clone();
+    state.spawn_background("initial-cache-warm", async move {
+        // Run each probe sequentially rather than in parallel; the
+        // Spotify rate limiter would serialize them anyway and a
+        // single failure (e.g. invalid token) shouldn't fan out into
+        // four parallel error logs.
+        let Ok(mut client) = task_state.spotify_client().await else {
+            tracing::debug!("initial cache warm skipped: spotify client unavailable");
+            return;
+        };
+        if let Ok(playback) = actions::status(&mut client).await {
+            task_state.viz_coordinator().set_playing(playback.is_playing);
+            if let Err(err) = task_state.store().persist_playback(&playback).await {
+                tracing::debug!(error = %err, "initial playback warm persist failed");
+            }
+            // Phase 3 — warm the clock with the fresh poll so the very
+            // first PlaybackGet returns Web-API truth.
+            task_state.playback_clock.apply_command_result(
+                &playback,
+                spotuify_core::now_ms(),
+            );
+            task_state.emit_event(DaemonEvent::PlaybackChanged {
+                action: "warmed".to_string(),
+                playback: Some(task_state.snapshot_playback()),
+            });
+        }
+        if let Ok(queue) = actions::queue(&mut client).await {
+            if let Err(err) = task_state.store().persist_queue(&queue).await {
+                tracing::debug!(error = %err, "initial queue warm persist failed");
+            }
+            let mut snapshot = spotuify_core::Queue {
+                currently_playing: queue.currently_playing.clone(),
+                items: queue.items.clone(),
+            };
+            snapshot.dedupe_items();
+            task_state.emit_event(DaemonEvent::QueueChanged {
+                action: "warmed".to_string(),
+                uris: Vec::new(),
+                queue: Some(snapshot),
+            });
+        }
+        if let Ok(devices) = actions::devices(&mut client).await {
+            if let Err(err) = task_state.store().persist_devices(&devices).await {
+                tracing::debug!(error = %err, "initial devices warm persist failed");
+            }
+            task_state.emit_event(DaemonEvent::DevicesChanged {
+                action: "warmed".to_string(),
+                devices: Some(devices.clone()),
+            });
+        }
+        if let Ok(items) = client.recently_played().await {
+            if !items.is_empty() {
+                if let Err(err) = task_state.store().persist_recent_items(&items).await {
+                    tracing::debug!(error = %err, "initial recent warm persist failed");
+                }
+            }
+        }
+    });
+}
+
+fn spawn_media_control_command_loop(state: Arc<DaemonState>) -> Option<JoinHandle<()>> {
+    if !state.system_integration.has_media_controls() {
+        return None;
+    }
+    let system = state.system_integration.clone();
+    let mut shutdown_rx = state.shutdown_receiver();
+    Some(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow_and_update() {
+                        break;
+                    }
+                }
+                command = system.recv_media_control_command() => {
+                    let Some(command) = command else {
+                        break;
+                    };
+                    let response = handle_request_with_source(
+                        state.clone(),
+                        Request::PlaybackCommand { command },
+                        Some(OperationSource::DaemonInternal),
+                    )
+                    .await;
+                    if let Response::Error { message, .. } = response {
+                        tracing::warn!(error = %message, "media-control playback command failed");
+                    }
+                }
+            }
+        }
+    }))
+}
+
 async fn serve_client_connection(
     stream: UnixStream,
     state: Arc<DaemonState>,
     request_semaphore: Arc<Semaphore>,
+    transport_semaphore: Arc<Semaphore>,
     mut event_rx: tokio::sync::broadcast::Receiver<IpcMessage>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
@@ -124,15 +276,17 @@ async fn serve_client_connection(
     let mut request_tasks = JoinSet::new();
     let mut accept_requests = true;
     let mut can_send = true;
+    let mut events_subscribed = false;
     let mut shutdown_requested = false;
 
     loop {
+        let mut enable_event_subscription = false;
         tokio::select! {
             biased;
             joined = request_tasks.join_next(), if !request_tasks.is_empty() => {
                 match joined {
-                    Some(Ok(response)) if can_send => {
-                        if sink.send(response).await.is_err() {
+                    Some(Ok(response)) => {
+                        if can_send && sink.send(response).await.is_err() {
                             can_send = false;
                             accept_requests = false;
                         }
@@ -154,7 +308,7 @@ async fn serve_client_connection(
                     }
                 }
             }
-            event = event_rx.recv(), if can_send => {
+            event = event_rx.recv(), if events_subscribed && can_send => {
                 match event {
                     Ok(event) => {
                         if sink.send(event).await.is_err() {
@@ -171,56 +325,174 @@ async fn serve_client_connection(
             message = stream.next(), if accept_requests => {
                 match message {
                     Some(Ok(message)) => {
-                        let Ok(permit) = request_semaphore.clone().acquire_owned().await else {
+                        if !events_subscribed
+                            && matches!(
+                                &message.payload,
+                                IpcPayload::Request(Request::SubscribeEvents)
+                            )
+                        {
+                            enable_event_subscription = true;
+                        }
+                        // Pick the fast lane for transport-style work
+                        // so a saturated background lane (sync burst,
+                        // doctor sweep, mass library refresh) can't
+                        // delay a Pause / Resume / Seek.
+                        let semaphore = if is_transport_request(&message.payload) {
+                            transport_semaphore.clone()
+                        } else {
+                            request_semaphore.clone()
+                        };
+                        let Ok(permit) = semaphore.acquire_owned().await else {
                             accept_requests = false;
                             continue;
                         };
                         let state = state.clone();
                         request_tasks.spawn(async move {
                             let _permit = permit;
-                            guard_ipc_response(message.id, state, message.payload).await
+                            guard_ipc_response(message.id, state, message.payload, message.source)
+                                .await
                         });
                     }
                     Some(Err(err)) => {
                         tracing::warn!(error = %err, "failed to read IPC frame");
                         accept_requests = false;
                     }
-                    None => break,
+                    None => {
+                        accept_requests = false;
+                    }
                 }
             }
             else => break,
         }
 
-        if shutdown_requested && request_tasks.is_empty() {
-            break;
+        if enable_event_subscription {
+            // Start a fresh receiver so events broadcast before opt-in are not replayed.
+            event_rx = state.event_tx.subscribe();
+            events_subscribed = true;
         }
-        if !accept_requests && !can_send {
+
+        if !accept_requests && request_tasks.is_empty() {
             break;
         }
     }
+}
+
+/// Returns `true` when the inbound IPC payload should be routed to
+/// the fast-lane transport semaphore. The taxonomy is "anything the
+/// user perceives latency on": transport mutations, the now-playing
+/// snapshot read that drives the TUI's frame, device list / queue
+/// reads that mid-mutation reconciliation depends on, and the
+/// subscribe handshake itself. Background queries (search,
+/// analytics, ops log, cache status, doctor) intentionally fall back
+/// to the slow lane.
+fn is_transport_request(payload: &IpcPayload) -> bool {
+    let IpcPayload::Request(req) = payload else {
+        return false;
+    };
+    matches!(
+        req,
+        Request::PlaybackCommand { .. }
+            | Request::PlaybackGet
+            | Request::DeviceTransfer { .. }
+            | Request::DevicesList
+            | Request::QueueAdd { .. }
+            | Request::QueueGet
+            | Request::LibrarySave { .. }
+            | Request::LibraryUnsave { .. }
+            | Request::PlaylistAddItems { .. }
+            | Request::PlaylistRemoveItems { .. }
+            | Request::SubscribeEvents
+            | Request::Ping
+    )
 }
 
 async fn guard_ipc_response(
     message_id: u64,
     state: Arc<DaemonState>,
     payload: IpcPayload,
+    source: Option<spotuify_protocol::OperationSource>,
 ) -> IpcMessage {
-    let response = match payload {
-        IpcPayload::Request(request) => match AssertUnwindSafe(handle_request(state, request))
-            .catch_unwind()
-            .await
-        {
-            Ok(response) => response,
-            Err(_) => Response::error("IPC handler panicked"),
-        },
-        _ => Response::error("IPC frame was not a request"),
+    use tracing::Instrument;
+
+    let (request_kind, command_label, request_category) = match &payload {
+        IpcPayload::Request(req) => (
+            req.kind_label(),
+            match req {
+                Request::PlaybackCommand { command } => Some(command.label()),
+                _ => None,
+            },
+            Some(req.category().label()),
+        ),
+        IpcPayload::Response(_) => ("response", None, None),
+        IpcPayload::Event(_) => ("event", None, None),
     };
+
+    let span = tracing::info_span!(
+        target: "spotuify_daemon::ipc",
+        "ipc.request",
+        request_id = message_id,
+        request_kind = request_kind,
+        command = command_label,
+        category = request_category,
+        source = source.as_ref().map(|s| s.label()).unwrap_or("client"),
+        duration_ms = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+        error_kind = tracing::field::Empty,
+    );
+
+    let started = std::time::Instant::now();
+    let response = async move {
+        match payload {
+            IpcPayload::Request(request) => {
+                match AssertUnwindSafe(handle_request_with_source(state, request, source))
+                    .catch_unwind()
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(_) => Response::error("IPC handler panicked"),
+                }
+            }
+            _ => Response::error("IPC frame was not a request"),
+        }
+    }
+    .instrument(span.clone())
+    .await;
+
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    span.record("duration_ms", elapsed_ms);
+    match &response {
+        Response::Ok { .. } => {
+            span.record("outcome", "ok");
+        }
+        Response::Error { kind, .. } => {
+            span.record("outcome", "error");
+            span.record("error_kind", kind.as_code());
+        }
+    }
+    // Threshold-based escalation: slow IPCs become a warn-level event so they
+    // surface in default-level log tails without burning a span on every request.
+    if elapsed_ms >= SLOW_IPC_WARN_MS {
+        tracing::warn!(
+            target: "spotuify_daemon::ipc",
+            request_id = message_id,
+            request_kind = request_kind,
+            duration_ms = elapsed_ms,
+            "slow IPC request"
+        );
+    }
 
     IpcMessage {
         id: message_id,
+        source: None,
         payload: IpcPayload::Response(response),
     }
 }
+
+/// Threshold above which an IPC handler is considered slow and warrants
+/// a warn-level log event in addition to the per-request info span.
+/// The daemon's hot-path target is sub-10ms (cache read + clock snapshot);
+/// 250ms is a generous slop for warm caches + a single Spotify call.
+const SLOW_IPC_WARN_MS: u64 = 250;
 
 async fn drain_connection_tasks(connections: &mut JoinSet<()>, timeout: Duration) {
     let deadline = tokio::time::Instant::now() + timeout;
@@ -237,6 +509,29 @@ async fn drain_connection_tasks(connections: &mut JoinSet<()>, timeout: Duration
         }
     }
     connections.abort_all();
+}
+
+async fn drain_background_tasks(mut tasks: Vec<JoinHandle<()>>, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    for mut task in tasks.drain(..) {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            task.abort();
+            continue;
+        }
+        tokio::select! {
+            result = &mut task => {
+                if let Err(err) = result {
+                    tracing::debug!(error = %err, "daemon background task ended during shutdown");
+                }
+            }
+            _ = tokio::time::sleep(remaining) => {
+                tracing::warn!("daemon background task shutdown timed out; aborting task");
+                task.abort();
+                let _ = task.await;
+            }
+        }
+    }
 }
 
 pub async fn start_daemon(foreground: bool) -> Result<Option<DaemonStatus>> {
@@ -503,8 +798,17 @@ pub(crate) fn current_build_id() -> String {
 /// First tick is delayed one period to keep daemon startup fast; a
 /// one-shot prune fires immediately so a freshly-started daemon
 /// catches up on retention as soon as the socket is listening.
-fn spawn_retention_loop(state: Arc<DaemonState>) {
-    tokio::spawn(async move {
+fn spawn_retention_loop(state: Arc<DaemonState>) -> JoinHandle<()> {
+    // Retention is the canonical bulk-background job — it deletes
+    // hundreds-to-thousands of rows from operations / events /
+    // playback_progress at a daily cadence. Running it on the
+    // dedicated bg runtime means even when retention is mid-DELETE
+    // the main runtime's workers are free for IPC + handler dispatch.
+    let bg_handle = state.bg_runtime_handle();
+    let state_for_task = state.clone();
+    bg_handle.spawn(async move {
+        let state = state_for_task;
+        let mut shutdown_rx = state.shutdown_receiver();
         // One-shot startup pass — keeps long-idle databases bounded
         // without waiting 24h after the user reopens spotuify.
         run_retention_once(&state).await;
@@ -514,30 +818,47 @@ fn spawn_retention_loop(state: Arc<DaemonState>) {
         // skip it so the next real tick happens 24h later.
         ticker.tick().await;
         loop {
-            ticker.tick().await;
-            run_retention_once(&state).await;
+            tokio::select! {
+                _ = ticker.tick() => run_retention_once(&state).await,
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow_and_update() {
+                        break;
+                    }
+                }
+            }
         }
-    });
+    })
 }
 
 async fn run_retention_once(state: &DaemonState) {
     let now = spotuify_core::now_ms();
-    let ops_cutoff = now - 90 * 86_400_000;
-    let progress_cutoff = now - 90 * 86_400_000;
-    let events_cutoff = now - 365 * 86_400_000;
-    match state.store().prune_operations_older_than(ops_cutoff).await {
+    let analytics = Config::load().ok().map(|config| config.analytics);
+    let cutoffs = retention_cutoffs(now, analytics.as_ref());
+    match state
+        .store()
+        .prune_operations_older_than(cutoffs.operations_ms)
+        .await
+    {
         Ok(n) if n > 0 => tracing::info!(rows = n, "pruned operations rows past retention"),
         Ok(_) => {}
         Err(err) => tracing::warn!(error = %err, "ops retention prune failed"),
     }
-    match state.store().prune_playback_progress(progress_cutoff).await {
+    match state
+        .store()
+        .prune_playback_progress(cutoffs.progress_ms)
+        .await
+    {
         Ok(n) if n > 0 => {
             tracing::info!(rows = n, "pruned playback_progress rows past retention")
         }
         Ok(_) => {}
         Err(err) => tracing::warn!(error = %err, "progress retention prune failed"),
     }
-    match state.store().prune_analytics_events(events_cutoff).await {
+    match state
+        .store()
+        .prune_analytics_events(cutoffs.events_ms)
+        .await
+    {
         Ok(n) if n > 0 => {
             tracing::info!(rows = n, "pruned analytics_events rows past retention")
         }
