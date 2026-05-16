@@ -20,7 +20,9 @@ pub mod worker;
 #[cfg(feature = "embedded-playback")]
 pub mod librespot_sink_chain;
 
-#[cfg(any(test, feature = "test-support"))]
+// Mock backend is exposed unconditionally — the daemon uses it as a
+// runtime fallback when SPOTUIFY_FAKE_SPOTIFY is set (integration
+// tests, headless CI smoke). Production code paths never construct it.
 pub mod mock;
 
 #[cfg(feature = "embedded-playback")]

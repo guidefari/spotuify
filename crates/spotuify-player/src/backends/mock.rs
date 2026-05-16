@@ -68,7 +68,7 @@ struct State {
 impl MockPlayerBackend {
     /// Construct the backend and the receiving end of its event
     /// channel. Tests drain the stream to assert event ordering.
-    pub fn new() -> (Self, Pin<Box<dyn Stream<Item = PlayerEvent> + Send>>) {
+    pub fn new() -> (Self, UnboundedReceiverStream<PlayerEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let backend = Self {
             events_tx: tx,
@@ -76,8 +76,14 @@ impl MockPlayerBackend {
             state: Mutex::new(State::default()),
             primed: Mutex::new(PrimedErrors::default()),
         };
-        let stream = Box::pin(UnboundedReceiverStream::new(rx));
-        (backend, stream)
+        (backend, UnboundedReceiverStream::new(rx))
+    }
+
+    /// Boxed variant for callers that want type-erasure (e.g. older
+    /// tests using `Pin<Box<dyn Stream>>`).
+    pub fn new_boxed() -> (Self, Pin<Box<dyn Stream<Item = PlayerEvent> + Send>>) {
+        let (backend, stream) = Self::new();
+        (backend, Box::pin(stream))
     }
 
     /// Snapshot of every recorded call so far, in invocation order.

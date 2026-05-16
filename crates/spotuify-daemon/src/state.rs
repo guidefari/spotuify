@@ -978,11 +978,17 @@ fn build_system_config() -> spotuify_system::SystemConfig {
 fn build_player_or_default(
     viz_analyzer: Option<spotuify_audio::SharedAnalyzer>,
 ) -> PlayerBuildResult {
-    // Phase 0 cleanup: librespot-only, no ConnectOnly/Spotifyd
-    // fallback. If config is unreadable we still try the factory with
-    // defaults; if the backend fails to construct the daemon errors
-    // at startup rather than silently degrading.
+    // Phase 0 cleanup: librespot-only. When `SPOTUIFY_FAKE_SPOTIFY` is
+    // set the daemon picks the in-memory mock backend so integration
+    // tests + headless CI smoke runs don't need a real librespot
+    // session. Otherwise: try embedded; panic if it can't init since
+    // there is no production fallback by design.
     let token_slot = Arc::new(RwLock::new(None::<String>));
+    if std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some() {
+        tracing::info!("SPOTUIFY_FAKE_SPOTIFY set; using MockPlayerBackend");
+        let (backend, stream) = spotuify_player::backends::mock::MockPlayerBackend::new();
+        return (Box::new(backend), stream, token_slot);
+    }
     let config = Config::load()
         .expect("spotuify config unavailable — run `spotuify config init` first");
     let (backend, stream) = player_factory::build_player(&config, token_slot.clone(), viz_analyzer)
