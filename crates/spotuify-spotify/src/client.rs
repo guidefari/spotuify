@@ -1171,11 +1171,13 @@ fn search_path(query: &str, kinds: &[MediaKind], limit: u8) -> String {
         .map(MediaKind::label)
         .collect::<Vec<_>>()
         .join(",");
-    // Spotify's /v1/search supports up to 50 results per type.
-    // Previous cap was 10, which left the catalog feeling sparse for
-    // discovery queries. Every reference TUI (ncspot, spotify-tui,
-    // spotify-player) uses 50.
-    let limit = limit.min(50);
+    // Spotify's documented per-type max is 50, but multi-type queries
+    // (e.g. type=track,episode,show,album,artist,playlist) return 400
+    // "Invalid limit" at 50. Empirically 20 (the documented default)
+    // works for any combination. Single-type queries could safely use
+    // 50; we keep one cap for simplicity until the search path is
+    // split into parallel per-type requests (SOTA pattern; follow-up).
+    let limit = limit.min(20);
     format!("/search?q={encoded}&type={types}&limit={limit}")
 }
 
@@ -2386,9 +2388,10 @@ mod tests {
     }
 
     #[test]
-    fn search_path_clamps_to_spotify_documented_max_limit() {
-        // 50 is Spotify's documented per-type maximum. Passing 50 must
-        // round-trip; passing larger (saturated u8::MAX) still clamps.
+    fn search_path_clamps_to_safe_multi_type_limit() {
+        // 20 is the documented default and works for any type
+        // combination. Higher values pass server-side validation only
+        // for single-type requests; we keep one cap.
         assert_eq!(
             search_path(
                 "jazz",
@@ -2402,11 +2405,11 @@ mod tests {
                 ],
                 50,
             ),
-            "/search?q=jazz&type=track,episode,show,album,artist,playlist&limit=50"
+            "/search?q=jazz&type=track,episode,show,album,artist,playlist&limit=20"
         );
         assert_eq!(
             search_path("jazz", &[MediaKind::Track], 200),
-            "/search?q=jazz&type=track&limit=50"
+            "/search?q=jazz&type=track&limit=20"
         );
     }
 
