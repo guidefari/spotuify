@@ -16,16 +16,14 @@
 - HTTP: reqwest.
 - Config: TOML + serde.
 - Credentials: system keyring, currently macOS Keychain.
-- Playback device: Spotify Connect via spotifyd/librespot or another visible Spotify device.
+- Playback device: Spotify Connect via embedded librespot (in-daemon) or another visible Spotify device.
 - Target database: SQLite.
 - Target search: Tantivy.
 - Target IPC: length-delimited JSON over Unix socket, copied/adapted from mxr.
 
 ## Current architecture
 
-Current code is a single binary. `src/app.rs` owns most TUI state/actions, `src/spotify.rs` owns Spotify Web API calls, `src/auth.rs` owns OAuth/keychain, `src/config.rs` owns config, and `src/spotifyd.rs` owns spotifyd startup helpers.
-
-Do not mistake current shape for the target architecture.
+The codebase is a Cargo workspace split into focused crates (`spotuify-core`, `spotuify-protocol`, `spotuify-store`, `spotuify-search`, `spotuify-spotify`, `spotuify-player`, `spotuify-sync`, `spotuify-mcp`, `spotuify-cli`, `spotuify-tui`, `spotuify-daemon`, `spotuify-system`, `spotuify-audio`, `spotuify-lyrics`, `spotuify-keychain`). The daemon owns runtime state; everything else is a client.
 
 ## Target architecture
 
@@ -126,7 +124,7 @@ A flow is not done until it reaches the user-visible outcome and reports success
 
 ### Bounded external dependencies
 
-Keychain, Spotify Web API, spotifyd, daemon IPC, and image loading must have bounded failure behavior. Never let TUI input, `doctor`, or CLI commands hang indefinitely.
+Keychain, Spotify Web API, embedded librespot, daemon IPC, and image loading must have bounded failure behavior. Never let TUI input, `doctor`, or CLI commands hang indefinitely.
 
 ## Target crate dependency rules
 
@@ -136,7 +134,7 @@ These apply once spotuify becomes a workspace:
 2. `protocol` depends only on `core`.
 3. `store` and `search` depend only on `core`.
 4. `spotify` maps Spotify Web API into core types. It does not depend on daemon, TUI, CLI, store, or search.
-5. `player` owns device activation and spotifyd/librespot orchestration.
+5. `player` owns device activation and embedded librespot (Spirc) orchestration.
 6. `sync` depends on core/store/search/provider/player and orchestrates data flow.
 7. `daemon` is the integration point.
 8. `cli` and `tui` are clients. They must not depend on daemon/store/search/sync/provider internals.

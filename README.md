@@ -1,6 +1,6 @@
 # spotuify
 
-`spotuify` is a keyboard-native Spotify TUI, CLI, and MCP server. It uses Spotify's Web API for playback control, your operating system's credential store for OAuth tokens (macOS Keychain, Linux Secret Service, Windows Credential Manager), an embedded `librespot` or supervised `spotifyd` for local playback, and `ratatui-image` for album and podcast artwork in capable terminals.
+`spotuify` is a keyboard-native Spotify TUI, CLI, and MCP server. It uses embedded `librespot` for Connect playback (sub-100ms control), your operating system's credential store for OAuth tokens (macOS Keychain, Linux Secret Service, Windows Credential Manager), Spotify's Web API for metadata + library, and `ratatui-image` for album and podcast artwork in capable terminals.
 
 The goal is simple: run `spotuify`. If credentials or OAuth are missing, setup starts automatically. Paste your Spotify app credentials, authorize in the browser, and land in a synced terminal UI without hand-editing config files.
 
@@ -10,8 +10,8 @@ The goal is simple: run `spotuify`. If credentials or OAuth are missing, setup s
 - OAuth PKCE login with tokens stored in the platform's native credential vault under service `spotuify`.
 - Owned config file at `~/.config/spotuify/spotuify.toml`.
 - Config commands for `path`, `init`, `get`, and `set`.
-- Automatic `spotifyd` startup when installed and enabled.
-- Spotify playback controls: play, pause, next, previous, seek, volume, shuffle, repeat.
+- Embedded librespot registers spotuify as a Spotify Connect device at daemon start.
+- Playback controls: play, pause, next, previous, seek, volume, shuffle, repeat.
 - Search across tracks, albums, playlists, and podcast episodes.
 - Queue viewing and add-to-queue support.
 - Playlist browsing and quick add-current-to-playlist flow.
@@ -25,9 +25,8 @@ The goal is simple: run `spotuify`. If credentials or OAuth are missing, setup s
 
 ## Requirements
 
-- A Spotify account (Premium is required for playback control and `spotifyd` / embedded librespot streaming).
+- A Spotify Premium account (required for librespot streaming).
 - A terminal with good image support for best visuals. Kitty works well; other terminals fall back through `ratatui-image` support.
-- Optional: `spotifyd` for local headless playback when not using embedded librespot.
 
 ## Install
 
@@ -272,10 +271,9 @@ client_id = ""
 client_secret = ""
 redirect_uri = "http://127.0.0.1:8888/callback"
 
-[spotifyd]
-autostart = true
-# config_path = "~/.config/spotifyd/spotifyd.conf"
-# device_name = "spotuify"
+[player]
+backend = "embedded"
+bitrate = 320
 
 [notifications]
 enabled = false
@@ -304,13 +302,11 @@ spotuify config path
 spotuify config init
 spotuify config get client_id
 spotuify config get redirect_uri
-spotuify config get spotifyd.autostart
+spotuify config get player.backend
 spotuify config set client_id "..."
 spotuify config set client_secret "..."
 spotuify config set redirect_uri "http://127.0.0.1:8888/callback"
-spotuify config set spotifyd.autostart true
-spotuify config set spotifyd.config_path "~/.config/spotifyd/spotifyd.conf"
-spotuify config set spotifyd.device_name "spotuify"
+spotuify config set player.device_name "spotuify"
 spotuify config set notifications.enabled true
 ```
 
@@ -320,9 +316,6 @@ Valid config keys:
 client_id
 client_secret
 redirect_uri
-spotifyd.config_path
-spotifyd.device_name
-spotifyd.autostart
 player.backend
 player.bitrate
 player.device_name
@@ -471,39 +464,17 @@ Enter             transfer playback to selected device
 x                 transfer playback to selected device
 ```
 
-## Spotifyd
+## Playback backend
 
-`spotuify` can start `spotifyd` automatically when all of these are true:
+`spotuify` registers itself as a Spotify Connect device through an in-process librespot session at daemon start — no separate subprocess. Premium account required (librespot streaming constraint).
 
-- `spotifyd.autostart = true`.
-- `spotifyd` is installed.
-- No `spotifyd` process is already running.
-
-Default `spotifyd` config path:
-
-```text
-~/.config/spotifyd/spotifyd.conf
-```
-
-Set a custom path:
+Prefer a specific device name visible to other Spotify clients:
 
 ```sh
-spotuify config set spotifyd.config_path "~/.config/spotifyd/spotifyd.conf"
+spotuify config set player.device_name "spotuify"
 ```
 
-Disable autostart:
-
-```sh
-spotuify config set spotifyd.autostart false
-```
-
-Prefer a specific Spotify Connect device name:
-
-```sh
-spotuify config set spotifyd.device_name "spotuify"
-```
-
-`spotuify` uses Spotify Connect device discovery. If `spotifyd` is unavailable, use any visible Spotify Connect device.
+Audio cache (disk), bitrate, normalization, and PulseAudio property hints are all on the `[player]` config section.
 
 ## What Sync Means
 
@@ -668,7 +639,7 @@ No devices visible:
 spotuify doctor
 ```
 
-Then check that at least one Spotify Connect device is active. If using `spotifyd`, verify its config and that your Spotify account has Premium.
+Then check that at least one Spotify Connect device is active. The embedded librespot device registers at daemon start; check `spotuify daemon status` for the player-ready event. Premium account required.
 
 Art does not render:
 
@@ -682,15 +653,14 @@ Windows daemon media keys:
 
 Windows media-key integration needs a UI/window handle. The headless daemon still handles CLI, TUI, and MCP playback commands, but global Windows media keys may require a foreground TUI session until the hidden-window driver is complete.
 
-`spotifyd` does not start:
+Embedded librespot fails to register:
 
 ```sh
-which spotifyd
-spotuify config get spotifyd.autostart
-spotuify config get spotifyd.config_path
+spotuify doctor
+spotuify daemon status
 ```
 
-If Homebrew installed it at `/opt/homebrew/bin/spotifyd`, `spotuify` can find it automatically.
+The daemon panics at startup when librespot can't bind an audio backend. Rebuild with one of `--features alsa-backend / pipewire-backend / rodio-backend / portaudio-backend` for your platform.
 
 ## Security Notes
 
@@ -740,7 +710,7 @@ crates/spotuify-daemon         daemon state, handlers, diagnostics, sync coordin
 crates/spotuify-cli            reusable CLI argument/output helpers
 crates/spotuify-tui            Ratatui app state, actions, and rendering
 crates/spotuify-spotify        Spotify Web API, OAuth, config, rate limits
-crates/spotuify-player         connect-only, spotifyd, and embedded librespot backends
+crates/spotuify-player         embedded librespot backend (sole supported runtime)
 crates/spotuify-store          SQLite cache, migrations, operation log
 crates/spotuify-search         local search index
 crates/spotuify-mcp            MCP stdio/HTTP server

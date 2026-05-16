@@ -6,9 +6,7 @@ For the full design record, read [docs/blueprint/README.md](docs/blueprint/READM
 
 ## Current state
 
-The codebase is currently a single Rust binary. The TUI, CLI setup commands, Spotify Web API client, auth, config, logging, and spotifyd helpers live in one package.
-
-That is an implementation waypoint, not the final architecture.
+The codebase is a Cargo workspace split into focused crates (core / protocol / store / search / spotify / player / sync / mcp / cli / tui / daemon / system / audio / lyrics / keychain). The daemon owns runtime state; everything else is a client.
 
 ## Target shape
 
@@ -18,14 +16,12 @@ TUI / CLI / scripts / agents
               v
             daemon
          /     |      \
-    SQLite  Tantivy   player runtime
+    SQLite  Tantivy   embedded librespot (Spirc)
                        |
-              Spotify Web API + Spotify Connect device
-                       |
-                 spotifyd / official Spotify app
+              Spotify Web API (metadata, library, playlists)
 ```
 
-SQLite is the local source of truth for cached Spotify metadata. Tantivy is rebuildable from SQLite. Spotify remains the remote authority for account state. spotifyd or another Spotify Connect device is the audio player.
+SQLite is the local source of truth for cached Spotify metadata. Tantivy is rebuildable from SQLite. Spotify remains the remote authority for account state. Embedded librespot is the local Spotify Connect device and the runtime control surface (play/pause/next/seek/volume/shuffle/repeat) — no spotifyd subprocess, no ConnectOnly remote-control fallback.
 
 ## IPC contract
 
@@ -53,7 +49,7 @@ The player is central. If playback is flaky, the app is broken.
 - Closing the TUI must never stop playback.
 - CLI playback commands must be fast one-shot controllers.
 - The daemon owns preferred device activation.
-- spotifyd is a long-lived Spotify Connect player, not TUI state.
+- Embedded librespot is the long-lived Spotify Connect player, hosted in the daemon process.
 - Raw Spotify `No active device` errors should become actionable spotuify errors.
 
 ## Principles

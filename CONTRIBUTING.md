@@ -105,7 +105,7 @@ Keep these intact once the workspace split happens:
 2. `protocol` depends only on `core`.
 3. `store` and `search` depend only on `core`.
 4. `spotify` maps Web API data into core types and does not depend on clients.
-5. `player` owns device activation and spotifyd/librespot orchestration.
+5. `player` owns device activation and embedded librespot (Spirc) orchestration.
 6. `sync` orchestrates provider/player/store/search.
 7. `daemon` is the integration point.
 8. `cli` and `tui` are clients; they do not depend on store/search/sync/provider internals.
