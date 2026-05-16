@@ -192,35 +192,115 @@ impl Store {
         // habit_metrics rollup is an optimisation, not a correctness
         // requirement: the live query always wins on freshness.
         let rows = sqlx::query(
-            "SELECT
-                ((started_at_ms / ?) * ?) AS bucket_start_ms,
-                SUM(audible_ms) / 60000.0 AS minutes,
-                COUNT(DISTINCT track_uri) AS unique_tracks,
-                COUNT(DISTINCT artist_uri) AS unique_artists,
-                COUNT(DISTINCT session_id) AS sessions
-             FROM listen_facts
-             WHERE started_at_ms >= ?
-             GROUP BY bucket_start_ms
-             ORDER BY bucket_start_ms ASC",
+            "WITH bucketed AS (
+                SELECT
+                    ((started_at_ms / ?) * ?) AS bucket_start_ms,
+                    started_at_ms,
+                    track_uri,
+                    artist_uri,
+                    session_id,
+                    audible_ms
+                FROM listen_facts
+                WHERE started_at_ms >= ?
+             ),
+             aggregate AS (
+                SELECT
+                    bucket_start_ms,
+                    SUM(audible_ms) / 60000.0 AS minutes,
+                    COUNT(*) AS total_listens,
+                    COUNT(DISTINCT track_uri) AS unique_tracks,
+                    COUNT(DISTINCT artist_uri) AS unique_artists,
+                    COUNT(DISTINCT session_id) AS sessions
+                FROM bucketed
+                GROUP BY bucket_start_ms
+             ),
+             first_tracks AS (
+                SELECT track_uri, MIN(started_at_ms) AS first_started_at_ms
+                FROM listen_facts
+                GROUP BY track_uri
+             ),
+             exploration AS (
+                SELECT
+                    b.bucket_start_ms,
+                    COUNT(DISTINCT b.track_uri) AS new_unique_tracks
+                FROM bucketed b
+                JOIN first_tracks ft ON ft.track_uri = b.track_uri
+                WHERE ft.first_started_at_ms >= b.bucket_start_ms
+                  AND ft.first_started_at_ms < b.bucket_start_ms + ?
+                GROUP BY b.bucket_start_ms
+             ),
+             hour_counts AS (
+                SELECT
+                    bucket_start_ms,
+                    CAST(strftime('%H', started_at_ms / 1000, 'unixepoch') AS INTEGER) AS hour,
+                    COUNT(*) AS listen_count
+                FROM bucketed
+                GROUP BY bucket_start_ms, hour
+             ),
+             top_hours AS (
+                SELECT bucket_start_ms, hour
+                FROM (
+                    SELECT
+                        bucket_start_ms,
+                        hour,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY bucket_start_ms
+                            ORDER BY listen_count DESC, hour ASC
+                        ) AS rn
+                    FROM hour_counts
+                )
+                WHERE rn = 1
+             )
+             SELECT
+                a.bucket_start_ms,
+                a.minutes,
+                a.total_listens,
+                a.unique_tracks,
+                a.unique_artists,
+                a.sessions,
+                th.hour AS top_hour_of_day,
+                COALESCE(e.new_unique_tracks, 0) AS new_unique_tracks
+             FROM aggregate a
+             LEFT JOIN exploration e ON e.bucket_start_ms = a.bucket_start_ms
+             LEFT JOIN top_hours th ON th.bucket_start_ms = a.bucket_start_ms
+             ORDER BY a.bucket_start_ms ASC",
         )
         .bind(bucket_ms)
         .bind(bucket_ms)
         .bind(since)
+        .bind(bucket_ms)
         .fetch_all(&self.reader)
         .await?;
 
         Ok(rows
             .into_iter()
-            .map(|row| HabitBucket {
-                bucket: window,
-                bucket_start_ms: row.get::<i64, _>("bucket_start_ms"),
-                listening_minutes: row.get::<f64, _>("minutes"),
-                unique_tracks: row.get::<i64, _>("unique_tracks").max(0) as u32,
-                unique_artists: row.get::<i64, _>("unique_artists").max(0) as u32,
-                sessions: row.get::<i64, _>("sessions").max(0) as u32,
-                top_hour_of_day: None,
-                exploration_ratio: 0.0,
-                repeat_ratio: 0.0,
+            .map(|row| {
+                let total_listens = row.get::<i64, _>("total_listens").max(0);
+                let unique_tracks = row.get::<i64, _>("unique_tracks").max(0);
+                let new_unique_tracks = row.get::<i64, _>("new_unique_tracks").max(0);
+                let repeat_ratio = if total_listens > 0 {
+                    (total_listens - unique_tracks).max(0) as f64 / total_listens as f64
+                } else {
+                    0.0
+                };
+                let exploration_ratio = if unique_tracks > 0 {
+                    new_unique_tracks as f64 / unique_tracks as f64
+                } else {
+                    0.0
+                };
+                HabitBucket {
+                    bucket: window,
+                    bucket_start_ms: row.get::<i64, _>("bucket_start_ms"),
+                    listening_minutes: row.get::<f64, _>("minutes"),
+                    unique_tracks: unique_tracks as u32,
+                    unique_artists: row.get::<i64, _>("unique_artists").max(0) as u32,
+                    sessions: row.get::<i64, _>("sessions").max(0) as u32,
+                    top_hour_of_day: row
+                        .get::<Option<i64>, _>("top_hour_of_day")
+                        .map(|h| h as u8),
+                    exploration_ratio,
+                    repeat_ratio,
+                }
             })
             .collect())
     }
@@ -331,10 +411,12 @@ impl Store {
     /// produces identical derived tables.
     /// Delete `playback_progress` rows older than `cutoff_ms`. Returns
     /// rows affected. Driven by the daemon retention job (default 90d).
+    /// Routes through the bulk writer so retention pruning doesn't
+    /// compete with hot-path commands.
     pub async fn prune_playback_progress(&self, cutoff_ms: i64) -> Result<u64> {
         let result = sqlx::query("DELETE FROM playback_progress WHERE sampled_at_ms < ?")
             .bind(cutoff_ms)
-            .execute(&self.writer)
+            .execute(self.bulk_writer())
             .await?;
         Ok(result.rows_affected())
     }
@@ -345,7 +427,7 @@ impl Store {
     pub async fn prune_analytics_events(&self, cutoff_ms: i64) -> Result<u64> {
         let result = sqlx::query("DELETE FROM analytics_events WHERE occurred_at_ms < ?")
             .bind(cutoff_ms)
-            .execute(&self.writer)
+            .execute(self.bulk_writer())
             .await?;
         Ok(result.rows_affected())
     }

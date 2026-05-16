@@ -62,7 +62,7 @@ impl Store {
         .bind(op.undone_by_op_id.map(|u| u.0.to_string()))
         .bind(op.redone_by_op_id.map(|r| r.0.to_string()))
         .bind(op.error_message.as_deref())
-        .execute((&self.writer))
+        .execute(&self.writer)
         .await?;
         Ok(())
     }
@@ -87,7 +87,7 @@ impl Store {
         .bind(finished_at_ms)
         .bind(error)
         .bind(operation_id.0.to_string())
-        .execute((&self.writer))
+        .execute(&self.writer)
         .await?;
         Ok(())
     }
@@ -118,7 +118,7 @@ impl Store {
         .bind(pre_state_json)
         .bind(reversal_plan_json)
         .bind(operation_id.0.to_string())
-        .execute((&self.writer))
+        .execute(&self.writer)
         .await?;
         Ok(())
     }
@@ -139,7 +139,7 @@ impl Store {
         )
         .bind(subject_uris_json)
         .bind(operation_id.0.to_string())
-        .execute((&self.writer))
+        .execute(&self.writer)
         .await?;
         Ok(())
     }
@@ -160,7 +160,7 @@ impl Store {
         )
         .bind(undo_op_id.0.to_string())
         .bind(original_id.0.to_string())
-        .execute((&self.writer))
+        .execute(&self.writer)
         .await?;
         Ok(())
     }
@@ -179,7 +179,7 @@ impl Store {
         )
         .bind(redo_op_id.0.to_string())
         .bind(original_id.0.to_string())
-        .execute((&self.writer))
+        .execute(&self.writer)
         .await?;
         Ok(())
     }
@@ -190,7 +190,7 @@ impl Store {
     pub async fn get_operation(&self, operation_id: OperationId) -> Result<Operation> {
         let row = sqlx::query("SELECT * FROM operations WHERE operation_id = ?")
             .bind(operation_id.0.to_string())
-            .fetch_optional((&self.reader))
+            .fetch_optional(&self.reader)
             .await?
             .ok_or_else(|| anyhow::anyhow!("operation {operation_id} not found"))?;
         row_to_operation(&row)
@@ -215,7 +215,7 @@ impl Store {
                 .bind(since)
                 .bind(src.label())
                 .bind(limit as i64)
-                .fetch_all((&self.reader))
+                .fetch_all(&self.reader)
                 .await?
             }
             (Some(since), None) => {
@@ -227,7 +227,7 @@ impl Store {
                 )
                 .bind(since)
                 .bind(limit as i64)
-                .fetch_all((&self.reader))
+                .fetch_all(&self.reader)
                 .await?
             }
             (None, Some(src)) => {
@@ -239,7 +239,7 @@ impl Store {
                 )
                 .bind(src.label())
                 .bind(limit as i64)
-                .fetch_all((&self.reader))
+                .fetch_all(&self.reader)
                 .await?
             }
             (None, None) => {
@@ -249,7 +249,7 @@ impl Store {
                      LIMIT ?",
                 )
                 .bind(limit as i64)
-                .fetch_all((&self.reader))
+                .fetch_all(&self.reader)
                 .await?
             }
         };
@@ -265,7 +265,7 @@ impl Store {
              ORDER BY occurred_at_ms DESC
              LIMIT 1",
         )
-        .fetch_optional((&self.reader))
+        .fetch_optional(&self.reader)
         .await?;
         match row {
             Some(r) => Ok(Some(row_to_operation(&r)?)),
@@ -290,7 +290,7 @@ impl Store {
                 )
                 .bind(since_ms)
                 .bind(src.label())
-                .fetch_all((&self.reader))
+                .fetch_all(&self.reader)
                 .await?
             }
             None => {
@@ -301,7 +301,7 @@ impl Store {
                      ORDER BY occurred_at_ms DESC",
                 )
                 .bind(since_ms)
-                .fetch_all((&self.reader))
+                .fetch_all(&self.reader)
                 .await?
             }
         };
@@ -310,10 +310,12 @@ impl Store {
 
     /// Delete operations older than `cutoff_ms`. Returns rows affected.
     /// Called by the daemon's daily retention job (default 90d).
+    /// Routes through the bulk writer so retention pruning doesn't
+    /// compete with hot-path mutations.
     pub async fn prune_operations_older_than(&self, cutoff_ms: i64) -> Result<u64> {
         let result = sqlx::query("DELETE FROM operations WHERE occurred_at_ms < ?")
             .bind(cutoff_ms)
-            .execute((&self.writer))
+            .execute(self.bulk_writer())
             .await?;
         Ok(result.rows_affected())
     }

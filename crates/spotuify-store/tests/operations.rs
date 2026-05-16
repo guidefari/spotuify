@@ -369,7 +369,11 @@ async fn find_reversible_operations_since_excludes_failed_and_pending() {
         .await
         .unwrap();
     let ids: Vec<_> = bulk.iter().map(|o| o.operation_id).collect();
-    assert_eq!(ids, vec![good], "only the recent succeeded reversible op qualifies");
+    assert_eq!(
+        ids,
+        vec![good],
+        "only the recent succeeded reversible op qualifies"
+    );
 }
 
 #[tokio::test]
@@ -378,7 +382,10 @@ async fn find_reversible_operations_since_filters_by_source() {
     let now = now_ms();
     let cli_id = OperationId::new_v7();
     let mcp_id = OperationId::new_v7();
-    for (id, source) in [(cli_id, OperationSource::Cli), (mcp_id, OperationSource::Mcp)] {
+    for (id, source) in [
+        (cli_id, OperationSource::Cli),
+        (mcp_id, OperationSource::Mcp),
+    ] {
         s.insert_pending_operation(&op(
             id,
             OperationKind::PlaylistAdd,

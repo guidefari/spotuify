@@ -64,16 +64,40 @@ async fn top_tracks_ranks_by_total_audible_ms_descending() {
     let s = store().await;
     let now = spotuify_core::now_ms();
     // Track A: two qualified listens, 60s each = 120s total audible.
-    s.insert_listen_fact(&fact("a1", "spotify:track:a", None, now, 60_000, true, None))
-        .await
-        .unwrap();
-    s.insert_listen_fact(&fact("a2", "spotify:track:a", None, now, 60_000, true, None))
-        .await
-        .unwrap();
+    s.insert_listen_fact(&fact(
+        "a1",
+        "spotify:track:a",
+        None,
+        now,
+        60_000,
+        true,
+        None,
+    ))
+    .await
+    .unwrap();
+    s.insert_listen_fact(&fact(
+        "a2",
+        "spotify:track:a",
+        None,
+        now,
+        60_000,
+        true,
+        None,
+    ))
+    .await
+    .unwrap();
     // Track B: one qualified listen, 200s total — should win.
-    s.insert_listen_fact(&fact("b1", "spotify:track:b", None, now, 200_000, true, None))
-        .await
-        .unwrap();
+    s.insert_listen_fact(&fact(
+        "b1",
+        "spotify:track:b",
+        None,
+        now,
+        200_000,
+        true,
+        None,
+    ))
+    .await
+    .unwrap();
 
     let top = s
         .top_entries(TopKind::Tracks, SinceWindow::All, 10)
@@ -92,17 +116,9 @@ async fn top_tracks_excludes_unqualified_listens() {
     let now = spotuify_core::now_ms();
     // 1 qualified + 5 unqualified for the same track. Only the
     // qualified one should drive the rank.
-    s.insert_listen_fact(&fact(
-        "q",
-        "spotify:track:x",
-        None,
-        now,
-        50_000,
-        true,
-        None,
-    ))
-    .await
-    .unwrap();
+    s.insert_listen_fact(&fact("q", "spotify:track:x", None, now, 50_000, true, None))
+        .await
+        .unwrap();
     for i in 0..5 {
         s.insert_listen_fact(&fact(
             &format!("s{i}"),
@@ -348,6 +364,64 @@ async fn habit_buckets_filters_by_since_ms() {
     );
 }
 
+#[tokio::test]
+async fn habit_buckets_include_top_hour_exploration_and_repeat_ratios() {
+    let s = store().await;
+    let day_zero = 86_400_000_i64;
+    let hour_9 = day_zero + 9 * 3_600_000;
+    let hour_20 = day_zero + 20 * 3_600_000;
+
+    s.insert_listen_fact(&fact(
+        "before",
+        "spotify:track:old",
+        Some("spotify:artist:one"),
+        day_zero - 3_600_000,
+        60_000,
+        true,
+        None,
+    ))
+    .await
+    .expect("pre-bucket fact should insert");
+
+    for (session, track, started_at_ms) in [
+        ("a", "spotify:track:new-a", hour_9),
+        ("b", "spotify:track:old", hour_9 + 60_000),
+        ("c", "spotify:track:new-b", hour_20),
+        ("d", "spotify:track:old", hour_20 + 60_000),
+    ] {
+        s.insert_listen_fact(&fact(
+            session,
+            track,
+            Some("spotify:artist:one"),
+            started_at_ms,
+            60_000,
+            true,
+            None,
+        ))
+        .await
+        .expect("bucket fact should insert");
+    }
+
+    let buckets = s
+        .habit_buckets(HabitWindow::Day, Some(day_zero))
+        .await
+        .expect("habit buckets should load");
+
+    assert_eq!(buckets.len(), 1);
+    let bucket = &buckets[0];
+    assert_eq!(bucket.top_hour_of_day, Some(9));
+    assert_eq!(bucket.unique_tracks, 3);
+    assert_eq!(bucket.unique_artists, 1);
+    assert!(
+        (bucket.exploration_ratio - (2.0 / 3.0)).abs() < 0.001,
+        "two of three unique bucket tracks are first-ever listens"
+    );
+    assert!(
+        (bucket.repeat_ratio - 0.25).abs() < 0.001,
+        "four listens, three unique tracks => one repeated listen"
+    );
+}
+
 // --- rediscovery_candidates ---------------------------------------------
 
 #[tokio::test]
@@ -368,14 +442,9 @@ async fn rediscovery_picks_only_tracks_outside_the_gap() {
     ))
     .await
     .unwrap();
-    s.upsert_track_metric(
-        "spotify:track:dormant",
-        true,
-        60_000,
-        now - 100 * day_ms,
-    )
-    .await
-    .unwrap();
+    s.upsert_track_metric("spotify:track:dormant", true, 60_000, now - 100 * day_ms)
+        .await
+        .unwrap();
 
     // Listened 5 days ago (inside any reasonable gap).
     s.insert_listen_fact(&fact(
@@ -418,7 +487,10 @@ async fn rediscovery_excludes_zero_qualified_tracks() {
     .await
     .unwrap();
     let dormant = s.rediscovery_candidates(90, 10).await.unwrap();
-    assert!(dormant.is_empty(), "tracks with qualified_count=0 must not surface");
+    assert!(
+        dormant.is_empty(),
+        "tracks with qualified_count=0 must not surface"
+    );
 }
 
 // --- retention prune -----------------------------------------------------

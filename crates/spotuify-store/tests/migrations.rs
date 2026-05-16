@@ -54,10 +54,12 @@ async fn column_default(store: &Store, table: &str, column: &str) -> Option<Stri
 }
 
 #[tokio::test]
-async fn test_cache_version_constant_is_five() {
+async fn test_cache_version_constant_is_ten() {
     // History: v3 receipts, v4 analytics derivations (Phase 10),
-    // v5 operations log (Phase 12).
-    assert_eq!(CACHE_VERSION, 5);
+    // v5 operations log (Phase 12), v6 lyrics cache (Phase 16),
+    // v7 playlist freshness, v8 saved-library sync position,
+    // v9 playlist duplicate-track preservation, v10 queue cache.
+    assert_eq!(CACHE_VERSION, 10);
 }
 
 // --- v4 analytics derivations (Phase 10) ---
@@ -260,6 +262,56 @@ async fn test_v5_migration_is_idempotent() {
     assert_eq!(ops_before, ops_after);
 }
 
+// --- v6 lyrics cache (Phase 16) ---
+
+#[tokio::test]
+async fn test_v6_creates_lyrics_cache_table() {
+    let store = fresh_store().await;
+    assert!(table_exists(&store, "lyrics_cache").await);
+    for col in [
+        "track_uri",
+        "provider",
+        "synced",
+        "lines_json",
+        "fetched_at_ms",
+        "language",
+        "source_url",
+    ] {
+        assert!(
+            column_exists(&store, "lyrics_cache", col).await,
+            "lyrics_cache.{col} must exist"
+        );
+    }
+    assert!(index_exists(&store, "idx_lyrics_cache_fetched").await);
+}
+
+#[tokio::test]
+async fn test_v6_creates_lyrics_offsets_table() {
+    let store = fresh_store().await;
+    assert!(table_exists(&store, "lyrics_offsets").await);
+    for col in ["track_uri", "offset_ms", "updated_at_ms"] {
+        assert!(
+            column_exists(&store, "lyrics_offsets", col).await,
+            "lyrics_offsets.{col} must exist"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_v6_migration_is_idempotent() {
+    let store = fresh_store().await;
+    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM lyrics_cache")
+        .fetch_one(store.reader())
+        .await
+        .unwrap();
+    store.run_migrations_idempotent_for_test().await.unwrap();
+    let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM lyrics_cache")
+        .fetch_one(store.reader())
+        .await
+        .unwrap();
+    assert_eq!(before, after);
+}
+
 // --- v4 idempotency (lives after the v5 group so the helpers above are colocated) ---
 
 #[tokio::test]
@@ -379,6 +431,44 @@ async fn test_v2_library_items_has_freshness_columns() {
     let store = fresh_store().await;
     assert!(column_exists(&store, "library_items", "freshness_class").await);
     assert!(column_exists(&store, "library_items", "sync_generation").await);
+}
+
+#[tokio::test]
+async fn test_v7_playlist_cache_tables_have_freshness_columns() {
+    let store = fresh_store().await;
+    for table in ["playlists", "playlist_items"] {
+        assert!(column_exists(&store, table, "freshness_class").await);
+        assert!(column_exists(&store, table, "sync_generation").await);
+    }
+}
+
+#[tokio::test]
+async fn test_v8_library_items_has_sync_position_column() {
+    let store = fresh_store().await;
+    assert!(column_exists(&store, "library_items", "sync_position").await);
+}
+
+#[tokio::test]
+async fn test_v10_creates_queue_cache_tables() {
+    let store = fresh_store().await;
+    assert!(table_exists(&store, "queue_snapshots").await);
+    assert!(table_exists(&store, "queue_items").await);
+    assert!(index_exists(&store, "idx_queue_snapshots_time").await);
+    assert!(index_exists(&store, "idx_queue_items_item").await);
+    for (table, columns) in [
+        (
+            "queue_snapshots",
+            &["currently_playing_uri", "fetched_at_ms", "freshness_class"][..],
+        ),
+        (
+            "queue_items",
+            &["snapshot_id", "item_uri", "position", "freshness_class"][..],
+        ),
+    ] {
+        for column in columns {
+            assert!(column_exists(&store, table, column).await);
+        }
+    }
 }
 
 #[tokio::test]
