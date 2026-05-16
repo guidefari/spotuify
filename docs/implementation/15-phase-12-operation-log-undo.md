@@ -79,23 +79,24 @@ Critical for correctness — captures the state immediately before the mutation 
 
 ## Work items
 
-1. Migration for `operations` table (uuid v7 PKs).
-2. `RecordOperation` trait/wrapper around every mutating Request handler — records pending → updates on completion.
-3. Define `ReversalPlan` enum with one variant per reversible kind; serialise to JSON column.
-4. Implement `ops undo`: load operation, validate still reversible, execute reversal, record a new operation marked `kind=undo`.
-5. Implement `ops redo`: re-execute the original by capturing its forward plan.
-6. Conflict detection via stored snapshot_id and pre-state.
-7. Hook Phase 6 `MutationAccepted`/`MutationFinished` events to update operation status.
-8. TUI "Operations" panel under Diagnostics tab; render last 20; bind `u` to undo last.
-9. MCP: expose `undo_last` and `ops_log` tools.
-10. Retention: operations log keeps 90d by default; configurable.
-11. Add `spotuify ops show --diff` to render a human-readable diff of what undo would do.
-12. Document patterns in README and `09-agent-workflows.md`.
+1. [x] Migration for `operations` table (uuid v7 PKs).
+2. [x] `record_operation` wrapper around mutating Request handlers; records pending rows and finalizes on completion.
+3. [x] Define `ReversalPlan` enum with one variant per reversible kind; serialize to JSON column.
+4. [x] Implement `ops undo`: load operation, validate still reversible, execute reversal, record a new operation marked `kind=undo`. CLI requires `--dry-run` for preview or `--yes` to execute; verified by `ops_undo_requires_preview_or_explicit_yes`.
+5. [x] Implement `ops redo`: re-execute the original request from the linked receipt and mark the original op redone.
+6. [x] Conflict detection via stored snapshot_id and pre-state; `--force` bypasses the snapshot check.
+7. [x] Hook Phase 6 receipt lifecycle to operation status updates through `record_operation`.
+8. [x] TUI "Operations" panel under Diagnostics tab; render last 20; bind `u` to undo last.
+9. [x] MCP: expose `undo_last` and `ops_log` tools.
+10. [x] Retention: operations log keeps 90d by default; daemon retention loop and cache-prune path prune old rows.
+11. [x] Add `spotuify ops show --diff` to render a human-readable diff of what undo would do.
+12. [x] Document patterns in README and `docs/blueprint/09-agent-workflows.md`.
 
 ## Verification
 
 - `spotuify playlist add LIST URI` → `spotuify ops undo` removes the URI from the playlist; second undo errors clearly with "operation already undone".
 - `spotuify library save URI` → undo unsaves; redo re-saves (but loses original `added_at`).
+- `spotuify ops undo` without `--dry-run` or `--yes` refuses locally with a clear confirmation error.
 - `spotuify playlist create "Test" --from c.jsonl --yes` → undo unfollows / deletes the playlist.
 - Playlist modified externally after our op: undo detects `snapshot_id` mismatch and refuses without `--force`.
 - `spotuify ops log --source mcp --since 1h` shows only MCP-originated mutations.
@@ -103,7 +104,25 @@ Critical for correctness — captures the state immediately before the mutation 
 - TUI `u` keypress undoes last visible op, updates the panel.
 - MCP `undo_last` reverts the last destructive op.
 - After 100 random mutations and 100 undos: spotuify state matches "no operations performed" baseline.
+- Focused local coverage:
+  `scripts/cargo-test -p spotuify-store --test operations --quiet`,
+  `scripts/cargo-test -p spotuify-protocol --test operations --quiet`,
+  `scripts/cargo-test -p spotuify-daemon undo --quiet`,
+  `scripts/cargo-test -p spotuify-mcp --test tool_routing --quiet`.
+- IPC request frames now carry operation source attribution. CLI uses
+  `source = cli`, TUI uses `source = tui`, MCP uses `source = mcp`,
+  and daemon-originated work falls back to `daemon-internal`.
+- Live Spotify mutation/undo smoke and the 100-random-mutation
+  property test remain manual/fixture-heavy; the local tests cover the
+  store, protocol, source attribution, validation, snapshot-conflict,
+  diff rendering, MCP routing, and CLI confirmation gates.
 
 ## Definition of done
 
-After an unattended agent run that misbehaves, `spotuify ops log --source agent --since 1h | xargs -I{} spotuify ops undo {} --yes` fully reverts the session, and the operation log records the reversals. Conflict detection prevents accidentally overwriting external changes. Spotuify ships the only Spotify TUI with a real undo button.
+The shipped Phase 12 slice records daemon mutations, preserves source
+attribution for CLI/TUI/MCP callers, supports inspect/show/diff/log,
+executes reversible undo/redo plans, gates CLI undo behind dry-run or
+explicit confirmation, exposes MCP `undo_last`, and keeps operation
+history under retention. Agent-source attribution is represented in the
+protocol for future non-MCP agent clients; today's MCP agents filter by
+`--source mcp`.

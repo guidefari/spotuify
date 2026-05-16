@@ -54,7 +54,11 @@ Replace the supervised spotifyd sibling process with an in-process librespot Pla
 | macOS x86_64 | portaudio | `portaudio-backend` | Same |
 | Windows x86_64 | rodio | `rodio-backend` | **Critical**: librespot's `pipe` sink writes PCM to stdout and corrupts the TUI; never select it |
 
-Backend selection happens at compile time per target (Cargo features), with `compile_error!` if `embedded-playback` is enabled but no backend is selected.
+Backend selection happens at compile time per target (Cargo features), with
+`compile_error!` if `embedded-playback` is enabled without exactly one audio
+backend. The root `spotuify` package forwards these features to the daemon and
+player crates, so `cargo build --features 'embedded-playback,rodio-backend'`
+uses the embedded sink-chain path end to end.
 
 ## Architecture
 
@@ -137,15 +141,24 @@ Critical on macOS (AirPods disconnect panics PortAudio) and Linux (PipeWire rest
 `Player::new` takes a `Fn() -> Box<dyn Sink>` closure. We chain wrappers:
 
 ```text
-sink_factory() → AnalyticsTapSink(RecoveringSink(backend_sink))
-                                ↑                  ↑
-                                │                  └── Phase 11 platform backend
-                                └── Phase 10 listen-qualified tap
-                                    Phase 17 FFT visualization tap
-                                    Phase 15 system-integration scrobble tap
+sink_factory() -> LibrespotSinkChain(backend_sink)
+                  ├── Phase 10 listen-qualified sample counter
+                  ├── Phase 17 FFT visualization tap
+                  └── RecoveringSink-style panic guard/rebuild
 ```
 
-Sink wrappers add: PCM tap for FFT, sample counter for accurate "listen qualified" duration, RMS for loudness, current-track tag for scrobble.
+Implemented in `crates/spotuify-player/src/backends/librespot_sink_chain.rs`.
+The chain taps decoded PCM before delegating the original `AudioPacket`
+to the selected librespot physical backend, so the sink path is now
+attachable from `EmbeddedBackend::sink_builder()` and constructed when
+the embedded backend registers its device. `EmbeddedBackend` now also
+stores Spirc after registration, forwards transport commands through it,
+and translates librespot player events into `PlayerEvent`s. Live Spotify
+account smoke is still separate from the local unit/clippy coverage.
+
+Sink wrappers add: PCM tap for FFT and sample counter for accurate
+"listen qualified" duration. RMS and current-track scrobble tagging are
+future extensions.
 
 ### Premium gate
 Before initializing Player/Spirc, call Web API `GET /me`. If `product != "premium"`:
@@ -226,7 +239,7 @@ Makes spotuify appear nicely in pavucontrol / mixer.
 - `[player] normalization = false` (ReplayGain)
 - `[player] audio_cache_mib = 0` (0 = disabled)
 - `[player] pulse_props = true` (Linux only)
-- `[player] event_hook = "..."` shell command run on each PlayerEvent (spotify-player's `player_event_hook_command` pattern; Unix-style extensibility for users)
+- `[analytics] hook_command = "..."` shell command run for playback/listen events; legacy `[player] event_hook` remains accepted as a fallback.
 - `spotuify reconnect` — rebuild session (manual recovery).
 - `spotuify doctor` reports: backend in use, audio backend selected, codec, bitrate, last `PlayerEvent` timestamp, Spirc state, premium status.
 

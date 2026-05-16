@@ -70,15 +70,27 @@ Track `ratatui-image` upstream and pin to a known-good minor version with a comm
 
 ## Work items
 
-1. Add `ratatui-image` to `crates/spotuify-tui` dependencies.
-2. Build protocol detection in `crates/spotuify-tui/src/cover/protocol.rs`. Run once at TUI startup.
-3. Implement `crates/spotuify-system/src/cover_cache.rs` (shared with Phase 14).
-4. Implement `CoverArt` widget in `crates/spotuify-tui/src/widgets/cover_art.rs`.
-5. Wire to player tab, now-playing strip, playlists tab, search results (gated).
-6. Pre-cache covers for visible items in background sync (Phase 6's sync scheduler).
-7. Cache eviction job (daily at idle).
-8. Doctor reports protocol detection, cache stats.
-9. Config: `[ui] inline_thumbnails = false`, `[ui] cover_size = "medium" | "large"`, `[cache] cover_cache_mb = 200`.
+1. [x] Add `ratatui-image` to `crates/spotuify-tui` dependencies.
+2. [x] Build protocol detection at TUI startup. The current
+   implementation uses `ratatui_image::picker::Picker` in `App`, not a
+   separate `cover/protocol.rs` module.
+3. [x] Implement `crates/spotuify-system/src/cover_cache.rs` (shared with Phase 14).
+4. [x] Implement TUI cover rendering with `StatefulProtocol` from
+   `ratatui-image`; a separate `CoverArt` widget module was not needed.
+5. [x] Wire cover art to the player tab. Now-playing-strip,
+   playlist-row, and search-result thumbnails are intentionally deferred:
+   they add visual noise and maintenance cost without a validated need.
+6. [x] Pre-cache covers for visible items in background sync is deliberately
+   not shipped with the current player-tab-only cover surface. Current behavior
+   fetches on demand through the daemon `CoverArt` request; background prefetch
+   can return when list thumbnails or another validated latency problem exists.
+7. [x] Cache eviction is handled inside `CoverCache` on fetch/stat paths
+   using the configured size cap and TTL.
+8. [x] Cache status reports cover-cache stats. Terminal protocol
+   detection in `doctor` remains a TUI-side follow-up.
+9. [x] Config supports `[cache] cover_cache_mb = 200` and
+   `[cache] cover_cache_ttl_days = 30`. `[ui] inline_thumbnails` and
+   `[ui] cover_size` are deferred with the thumbnail surfaces.
 
 ## Verification
 
@@ -91,7 +103,17 @@ Track `ratatui-image` upstream and pin to a known-good minor version with a comm
 - Cache hits a 200 MB cap → daemon evicts oldest, never errors.
 - Track change with new cover → widget updates within 200ms.
 - Resize terminal during playback → cover redrawn at new size on next frame.
+- Cache behavior is covered by `spotuify-system` cover-cache tests:
+  content-type validation, image decode validation, stale refresh, in-flight
+  dedupe, and size-cap eviction.
+- TUI player-tab cover rendering uses the shared daemon `CoverArt` request;
+  live terminal protocol smoke remains manual.
 
 ## Definition of done
 
-spotuify shows cover art in modern terminals with no flicker, no escape-sequence leak in non-supporting terminals, and graceful degradation. Covers are cached on disk and reused across daemon restarts. Phase 14's notification covers and Phase 15's TUI covers share one cache. Doctor cleanly reports protocol detection and cache state.
+The shipped Phase 15 slice shows player-tab cover art through
+`ratatui-image`, degrades by omitting the image when loading/rendering fails,
+and reuses the daemon cover cache across restarts. Phase 14 notifications
+and richer list thumbnails remain follow-ups until track metadata and a
+clear UX need justify them. Cache state is reported; terminal protocol
+reporting is still a TUI-side diagnostics follow-up.

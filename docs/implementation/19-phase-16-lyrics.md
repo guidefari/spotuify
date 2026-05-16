@@ -25,7 +25,7 @@ Provider selection happens per-track and is cached. If Spotify returns "not foun
 ## Deliverables
 
 ### `crates/spotuify-lyrics`
-New leaf crate:
+Leaf crate for parsing and provider adapters:
 
 ```text
 crates/spotuify-lyrics/
@@ -35,11 +35,15 @@ crates/spotuify-lyrics/
 │   ├── spotify_provider.rs   // via spotuify-player::mercury_get
 │   ├── lrclib_provider.rs
 │   ├── parser.rs          // LRC format parser (regex-free, shared between providers)
-│   ├── cache.rs           // SQLite-backed persistence
+│   ├── cache.rs           // superseded: daemon/store own SQLite persistence
 │   └── alignment.rs       // binary-search active-line lookup
 ```
 
-Depends on `spotuify-core`, `spotuify-store`, `spotuify-player` (for mercury access).
+The original plan put cache and mercury access directly in this crate.
+Current implementation keeps `spotuify-lyrics` small: it depends on
+`spotuify-core`, parses Spotify mercury payload bytes, and implements
+LRCLIB fetching. The daemon owns `PlayerBackend::mercury_get` access and
+`spotuify-store` owns `lyrics_cache` / `lyrics_offsets` persistence.
 
 ### Wire format
 
@@ -87,8 +91,8 @@ Reference: spotatui `utils.rs:106-141` is a good template; refine error handling
 
 ### LRCLIB etiquette
 - Set `User-Agent: spotuify/<version> (https://github.com/bhekanik/spotuify)`.
-- Rate-limit to 2 req/s globally with a tokio semaphore.
-- Backoff on 429.
+- Rate-limit to 2 req/s globally.
+- Backoff and retry once on 429, honoring numeric `Retry-After` seconds.
 - Send `track_name`, `artist_name`, `album_name`, `duration` (seconds) as query params.
 - Try `/api/get` first (exact match), `/api/search` second if no result.
 
@@ -113,26 +117,27 @@ Re-render only when `active` changes (avoid every-frame re-render).
 ### CLI commands
 - `spotuify lyrics [--track URI] [--format text|jsonl|lrc]`
 - `spotuify lyrics fetch <track-uri>` (force refresh)
-- `spotuify lyrics export <track-uri>` writes LRC file
-- `spotuify lyrics provider --set spotify|lrclib|auto` (default `auto`)
+- `spotuify lyrics export <track-uri> [--output FILE]` writes LRC to stdout or file
 - `spotuify lyrics offset <track-uri> +50ms` (save per-track timing tweak)
+- Provider selection is currently automatic: Spotify mercury first, LRCLIB fallback. A manual `provider --set spotify|lrclib|auto` command is deferred until there is a validated need to override automatic fallback.
 
 ### MCP integration
 - `lyrics` tool in MCP server (Phase 8) returns synced lyrics for current or specified track.
 
 ## Work items
 
-1. New `crates/spotuify-lyrics` crate.
-2. LRC parser with tests for: BOM, 2/3-digit ms, duplicate timestamps, malformed lines.
-3. SpotifyMercuryProvider using `spotuify-player::mercury_get("hm://lyrics/v1/track/{id}")`.
-4. LrclibProvider with HTTP client, etiquette wrapper.
-5. SQLite migration + cache layer.
-6. unicode-bidi integration for RTL.
-7. TUI panel widget; bind to ratatui layout in Player screen.
-8. Manual offset persistence.
-9. CLI commands.
-10. MCP tool.
-11. Doctor reports lyrics provider config, cache size.
+1. [x] New `crates/spotuify-lyrics` crate.
+2. [x] LRC parser with tests for: BOM, 2/3-digit ms, duplicate timestamps, malformed lines.
+3. [x] Spotify mercury parser plus daemon-side `mercury_get("hm://lyrics/v1/track/{id}")` fallback path.
+4. [x] LrclibProvider with HTTP client, etiquette wrapper, 2 req/s pacing, and 429 retry/backoff.
+5. [x] SQLite migration + cache layer in `spotuify-store`.
+6. [x] unicode-bidi integration for RTL.
+7. [x] TUI Lyrics screen/panel bound into ratatui layout and the action registry.
+8. [x] Manual offset persistence in `lyrics_offsets`.
+9. [x] CLI commands for show, fetch, export, and offset. Manual provider selection intentionally deferred.
+10. [x] MCP `lyrics` tool.
+11. [x] Cache status reports lyrics cache and offset counts. Provider
+    config reporting is intentionally omitted while provider selection is automatic.
 
 ## Verification
 
@@ -140,10 +145,15 @@ Re-render only when `active` changes (avoid every-frame re-render).
 - Same track on `--backend spotifyd` (no mercury): falls back to LRCLIB, still synced.
 - Arabic/Hebrew track: RTL rendering correct.
 - Track with no Spotify lyrics, no LRCLIB entry: "No lyrics available" shown without errors.
-- Offline mode (network down): cached lyrics render; missing ones show "Offline".
+- Offline/restart cache path: cached lyrics render without refetching after daemon restart; missing ones show the no-lyrics state.
 - 100 rapid track changes (test playlist): no race conditions, cache fills correctly, no orphan rows.
 - `spotuify lyrics export <uri>` produces a valid LRC file that mpv or VLC can render.
 - Manual offset `+200ms` persists across daemon restart.
+- `spotuify-lyrics` wiremock test covers exact-match 429 + `Retry-After: 0` followed by success.
+- CLI tests cover `lyrics export --output` parsing and LRC timestamp rendering.
+- Store tests cover lyrics cache/offset round-trips and migrations.
+- TUI tests cover opening the Lyrics screen through keyboard/action flow.
+- Daemon tests cover LRCLIB fallback through the real `LyricsGet` handler and cached lyrics surviving daemon restart without refetching.
 
 ## Definition of done
 

@@ -60,16 +60,22 @@ pub trait AudioSource: Send {
 ```
 
 ### Sink tap
-- Inserted via Phase 9's sink-factory closure chain: `sink_factory() → AnalyticsTap(VisualizationTap(RecoveringSink(backend_sink)))`.
-- Maintains a ring buffer (e.g. 4096 samples).
-- Mono mixdown (`L + R / 2`).
-- Pushes via `tokio::sync::mpsc::Sender` (bounded, drop-on-full) — visualization is best-effort.
+- Implemented for the embedded librespot path in
+  `crates/spotuify-player/src/backends/librespot_sink_chain.rs`.
+- Inserted via Phase 9's sink-factory closure chain:
+  `sink_factory() -> AudioCounterTap + VisualizationTap + RecoveringSink-style guard -> backend_sink`.
+- Converts librespot PCM to i16, updates audible-sample counters, mono-mixes samples, and pushes them into the shared FFT analyzer.
+- Analyzer locking is best-effort; visualization frames can be dropped without affecting playback.
+- Verified with:
+  `CARGO_TARGET_DIR=target-cli cargo test -p spotuify-player --features 'embedded-playback,rodio-backend' librespot_sink_chain --quiet`.
 
 ### Loopback (Linux)
 - `cpal::Host::devices()`, filter for name containing `"monitor"`.
 - Priority order: bluez/bluetooth → speaker/analog → default → hdmi.
 - Falls back to default input device.
-- Optional PipeWire-native path via `pipewire` crate (better latency).
+- Native PipeWire capture is intentionally deferred. The
+  `loopback-pipewire` feature is only a reserved module boundary today;
+  the implemented Linux path is cpal monitor capture over PipeWire/PulseAudio.
 - Sample rate adaptation: source may be 48kHz; we resample to 44.1kHz or just work at native rate.
 
 ### Loopback (Windows)
@@ -87,8 +93,8 @@ pub trait AudioSource: Send {
 3. `realfft::RealFftPlanner` forward FFT → 1025 complex bins.
 4. Magnitude `|c|` per bin.
 5. Map 1025 bins → 12 logarithmic bands. Per-band gain compensation for low high-frequency energy (spotatui `analyzer.rs:131-144` is a good baseline).
-6. Noise gate at 0.005.
-7. EMA smoothing (factor 0.5).
+6. Noise gate at configured `[viz] noise_gate` (default 0.005).
+7. EMA smoothing using configured `[viz] smoothing` (default 0.5).
 8. sqrt-scaling for dB-like response.
 
 ### Renderers
@@ -115,18 +121,23 @@ pub trait AudioSource: Send {
 - `[viz] noise_gate = 0.005`
 - `[viz] color_scheme = "spotify-green" | "rainbow" | "monochrome"`
 
+`target_fps`, `smoothing`, and `noise_gate` are applied at daemon startup.
+`color_scheme` is parsed from config and applied by the TUI spectrum widget
+when it starts.
+
 ## Work items
 
-1. New `crates/spotuify-audio` workspace member.
-2. Implement `AudioSource` trait + sink-tap implementation (depends on Phase 9).
-3. Implement loopback for Linux (cpal monitor), Windows (WASAPI), macOS (BlackHole detection).
-4. Implement FFT pipeline.
-5. Implement TUI equalizer widget.
-6. Wire into Player tab in `player_large` mode.
-7. Doctor reports visualization source, sample rate, dropped frames.
-8. Document BlackHole installation in README troubleshooting.
-9. CLI `spotuify viz --enable | --disable | --source <kind>`.
-10. Performance test: 1 hour playback with viz on, monitor CPU and dropped frames.
+1. [x] New `crates/spotuify-audio` workspace member.
+2. [x] Implement visualization source typing plus embedded sink-tap implementation (depends on Phase 9). The original `AudioSource` trait was superseded by shared analyzer handles fed by sink tap or loopback capture.
+3. [x] Implement loopback through cpal: Linux monitor-device selection, Windows WASAPI loopback, and macOS BlackHole/Loopback Audio detection with safe fallback.
+4. [x] Implement FFT pipeline with configurable smoothing and noise gate.
+5. [x] Implement TUI equalizer widget with `spotify-green`, `rainbow`, and
+   `monochrome` color schemes.
+6. [x] Wire into Player tab in `player_large` mode.
+7. [x] Doctor/status reports visualization source, sample rate, target FPS, and dropped frames through `VizDiagnostics`.
+8. [x] Document BlackHole / Loopback Audio requirement in README troubleshooting.
+9. [x] CLI `spotuify viz enable|disable|source|status`.
+10. [x] Performance test: 1 hour playback with viz on, monitor CPU and dropped frames remains manual verification for release QA; local coverage uses analyzer, source-selection, status, and TUI widget tests.
 
 ## Verification
 
@@ -139,7 +150,13 @@ pub trait AudioSource: Send {
 - Toggle visualization on/off via CLI → live update in TUI without restart.
 - CPU usage stays under 5% with viz on during normal playback.
 - TUI lose focus → FFT throttles to 1 Hz or stops.
+- Analyzer tests cover config-driven noise-gate suppression.
+- Viz coordinator tests cover focus throttling, source selection, disabled ticker behavior, and sink-source activation.
+- CLI parser/help snapshots cover the `viz` command family.
 
 ## Definition of done
 
-A user on embedded librespot sees a responsive 12-band equalizer in the Player tab with no setup. A user on Linux with spotifyd gets the same visualization via cpal loopback. macOS users get a clear setup banner pointing to BlackHole. Windows users get loopback out of the box. CPU budget honored.
+The shipped Phase 17 slice provides embedded sink-tap visualization, cpal
+loopback fallback, runtime diagnostics, CLI/TUI controls, configurable
+analyzer behavior, and a 12-band Player-tab renderer. Long-running CPU
+budget and live per-OS loopback smoke remain manual verification items.

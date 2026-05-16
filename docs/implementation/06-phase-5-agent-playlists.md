@@ -23,12 +23,12 @@ Let agents research a theme, resolve tracks, preview a playlist, and create it s
 
 ## Deliverables
 
-- Playlist plan JSON schema.
-- Candidate track resolution command.
-- Playlist dry-run preview.
-- Playlist commit command.
-- Mutation receipts.
-- Recipes for agents.
+- [x] Playlist plan JSON schema: `PlaylistPlan` in `crates/spotuify-protocol/src/agent_playlists.rs`.
+- [x] Candidate track resolution command: `spotuify resolve-tracks --from plan.json --format jsonl`.
+- [x] Playlist dry-run preview: `spotuify playlist create ... --dry-run`.
+- [x] Playlist commit command: `spotuify playlist create ... --yes`.
+- [x] Mutation receipts: commit path uses daemon `PlaylistCreate` and returns `PlaylistCreate { receipt }`.
+- [x] Recipes for agents: MCP tools expose plan/resolve plus normal playlist mutation tools; local heuristic remains a deterministic shell scaffold.
 
 ## Commands
 
@@ -60,9 +60,18 @@ spotuify playlist create "Name" --from candidates.jsonl --yes
 
 ## Safety requirements
 
-- No playlist creation without dry-run unless `--yes` is passed.
-- Dry-run and commit use same resolved candidate set.
-- Receipt includes playlist ID/URI and added item count.
+- [x] No playlist creation without dry-run unless `--yes` is passed.
+- [x] Dry-run and commit use the same resolved candidate set.
+- [x] Receipt includes playlist ID/URI and added item count through the daemon mutation receipt path.
+
+## Verification
+
+- `plan_schema_contains_required_agent_playlist_fields`
+- `resolution_deduplicates_tracks_prefers_playable_and_marks_unresolved`
+- `playlist_create_preview_lists_tracks_unresolved_duplicates_and_mutation`
+- `playlist_create_requires_preview_or_explicit_yes`
+- `agent_playlist_workflow_commands_parse_from_phase_five_spec`
+- MCP tool routing tests for `playlist_plan` and `playlist_resolve_tracks`.
 
 ## Definition of done
 

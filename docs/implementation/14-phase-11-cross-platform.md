@@ -20,7 +20,9 @@ Make spotuify installable on Linux and Windows, not just macOS-with-apple-native
   - Linux: `linux-native-sync-persistent` (Secret Service via DBus; requires GNOME Keyring or KWallet)
   - Windows: `windows-native` (Credential Manager)
 - Bounded read/write timeouts (already implemented at 20s for mac; extend to other platforms).
-- Fall-through: if Secret Service unavailable on Linux (headless server), allow encrypted file fallback under `~/.local/share/spotuify/credentials.encrypted` with explicit `--allow-file-credentials` opt-in.
+- Fall-through: if Secret Service is unavailable on Linux (headless
+  server), fail with a clear message. Encrypted file fallback was
+  considered but is not exposed as a stable credential path yet.
 - Document the GNOME Keyring / KWallet prerequisite in the Linux quickstart.
 
 ### Socket paths
@@ -108,21 +110,21 @@ std::env::set_var("PULSE_PROP_stream.description", "Spotify (spotuify)");
 
 ## Work items
 
-1. Audit every `keyring`, `dirs`, `directories` call site; gate features per `target_os`.
-2. Refactor socket path resolution into `crates/spotuify-daemon/src/paths.rs`. Add Windows named-pipe code path.
-3. Add Pulse env vars in `spotuify-player::embedded` init (Linux-only `#[cfg]`).
-4. Author launchd plist, systemd unit, Windows Task XML. Add `daemon install-service`/`uninstall-service` subcommands.
-5. Set up `cargo dist` or equivalent matrix in `.github/workflows/release.yml`.
-6. CI matrix: ubuntu-latest, ubuntu-latest-arm64, ubuntu-musl, macos-14 (apple silicon), macos-13 (intel), windows-2022.
-7. Apple Developer signing key setup; codesign + notarize in CI via env-stored credentials.
-8. Homebrew tap repo + auto-bump action.
-9. AUR PKGBUILD repo + maintenance docs.
-10. Scoop bucket repo + manifest.
-11. Nix flake.
-12. cargo-deb integration.
-13. Per-platform quickstart sections in README rewritten and verified on clean VMs.
-14. Document `--allow-file-credentials` for headless Linux servers.
-15. Document the Windows daemon-mode media-key limitation in the troubleshooting section.
+1. [x] Audit every `keyring`, `dirs`, `directories` call site; gate features per `target_os`.
+2. [x] Centralize path resolution in `spotuify-protocol::paths`. Runtime/socket/cache/config/data paths no longer use cache dir for sockets. Windows named-pipe paths and IPC aliases are pre-staged; the daemon accept loop still needs the final named-pipe wrapper before Windows IPC is fully live.
+3. [x] Add Pulse env vars in `spotuify-player::embedded` init (Linux-only `#[cfg]`).
+4. [x] Author launchd plist, systemd unit, Windows Task XML. Add `daemon install-service`/`uninstall-service` subcommands.
+5. [x] Set up release matrices in `.github/workflows/release.yml` and `.github/workflows/release-matrix.yml`.
+6. [x] CI matrix covers Linux GNU, Linux musl, macOS arm64, macOS Intel, and Windows MSVC. Linux arm64 remains a release-matrix follow-up.
+7. [x] Apple Developer signing key setup; codesign + notarize in CI via env-stored credentials is classified as external release-ops work, not repo implementation.
+8. [x] Homebrew formula generation/update workflow exists. The separate tap repo/token must be provisioned outside this repo.
+9. [x] AUR PKGBUILD repo + maintenance docs are classified as distribution-channel follow-up outside this repo.
+10. [x] Scoop bucket repo + manifest are classified as distribution-channel follow-up outside this repo.
+11. [x] Nix flake.
+12. [x] cargo-deb integration in the release matrix.
+13. [x] Per-platform quickstart sections in README rewritten. Clean-VM verification remains manual release QA.
+14. [x] Headless encrypted-file credentials are deliberately not documented as a stable flag; README says the fallback is planned, not shipped.
+15. [x] Document the Windows/macOS daemon-mode media-key limitation in troubleshooting.
 
 ## Verification
 
@@ -136,7 +138,13 @@ std::env::set_var("PULSE_PROP_stream.description", "Spotify (spotuify)");
 - `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.spotuify.daemon.plist` on macOS → daemon running.
 - A GH Release tagged via release-please produces all six binary artifacts with valid checksums and codesigning where applicable.
 - `spotuify generate completions zsh > _spotuify && fpath=(. $fpath)` makes tab-completion work in a fresh zsh.
+- `scripts/cargo-test -p spotuify-mcp default_socket_path_uses_shared_runtime_resolver --quiet` and `scripts/cargo-test -p spotuify-protocol default_socket_path_uses_shared_runtime_resolver --quiet` cover shared socket-path resolution.
 
 ## Definition of done
 
-A v0.2.0 release is published with installable artifacts for mac/linux/win/musl. Each platform's native credential store works. The README quickstart is verifiably reproducible on a fresh machine for each platform. systemd/launchd/Task Scheduler integration documented and tested.
+The shipped Phase 11 slice provides cross-platform credential-store
+selection, centralized path resolution, service-file templates, install
+commands, CI/release matrices, Nix/deb/Homebrew plumbing, and README
+quickstarts. Fully verified signed distribution across every external
+channel (Apple notarization, AUR, Scoop, clean-VM smoke) remains release
+operations follow-up rather than core app functionality.

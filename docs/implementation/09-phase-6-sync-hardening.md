@@ -86,19 +86,19 @@ Cross-checked against ncspot, spotify-player, and spotatui (all current as of Ma
 
 ## Work items
 
-1. Build `RateLimitedClient` in `crates/spotuify-spotify/src/rate_limit.rs`. Test against fake provider that injects 429 / Retry-After.
-2. Add `SpotifyError` enum; convert call sites to return typed errors. Remove `anyhow` from the public surface of `spotuify-spotify`.
-3. Add compat normalizer; wire to all paging/track/album/playlist endpoints; instrument with `SchemaCompat` events.
-4. Migrate `playlists` table to add `snapshot_id`; switch playlist sync to gated refetch.
-5. Add freshness columns to all cache tables; populate on writes; surface in `cache status`.
-6. Implement saved-tracks unchanged shortcut.
-7. Add `cache_version` constant + startup gate.
-8. Add two-stage receipt machinery; persist pending receipts to a new `receipts` table; recover/finalize on daemon restart.
-9. Migrate playback state to `PlayerEvent`-driven model; keep polling as a fallback path.
-10. Harden token refresh with `refresh_token` merge + proactive refresh + serialized refresh.
-11. Add new daemon events.
-12. Update TUI to render pending receipts with spinner and to bind banner state to `RateLimited`/`AuthError`/`Deprecated`.
-13. Add `spotuify cache reset --confirm` + `spotuify cache repair` for operator escape hatches.
+- [x] Build `RateLimitedClient` in `crates/spotuify-spotify/src/rate_limit.rs`. Test against fake provider that injects 429 / Retry-After. Verified with wiremock coverage for 429 retry, bounded sustained 429, and transient 5xx retry.
+- [x] Add `SpotifyError` enum; convert call sites to return typed errors. Remove `anyhow` from the public surface of `spotuify-spotify`. Verified by `SpotifyResult` on the public client/action/selection/auth/config/spotifyd surfaces, `rg -n "pub (async )?fn .*-> Result|pub .*-> anyhow::Result|use anyhow::Result|anyhow::Result" crates/spotuify-spotify/src` finding no public surface hits, `CARGO_TARGET_DIR=target-cli cargo test -p spotuify-spotify --quiet`, `CARGO_TARGET_DIR=target-cli cargo clippy -p spotuify-spotify --all-targets -- -D warnings`, and downstream `cargo check` for CLI/daemon/sync/TUI.
+- [x] Add compat normalizer; wire to all paging/track/album/playlist endpoints; instrument with `SchemaCompat` events. Verified by `compat_normalize`, decode-path normalization in `SpotifyClient::request_json`, daemon `SchemaCompatReporter` wiring, `CARGO_TARGET_DIR=target-cli cargo test -p spotuify-spotify compat_wiring --quiet`, `CARGO_TARGET_DIR=target-cli cargo test -p spotuify-spotify --test compat_normalizer --quiet`, and `CARGO_TARGET_DIR=target-cli cargo test -p spotuify-daemon schema_compat_reporter --quiet`.
+- [x] Migrate `playlists` table to add `snapshot_id`; switch playlist sync to gated refetch. Verified by store migration tests for `playlists.snapshot_id` / `playlist_items.snapshot_id_at_fetch`, sync gate unit tests, and `CARGO_TARGET_DIR=target-cli cargo test -p spotuify-sync --test refetch_gate --quiet`; the integration test covers cold-start fetch then unchanged-snapshot skip.
+- [x] Add freshness columns to all cache tables; populate on writes; surface in `cache status`.
+- [x] Implement saved-tracks unchanged shortcut. Verified by `saved_tracks_fingerprint_preserves_sync_order`, `library_sync_skips_saved_tracks_when_page_zero_is_unchanged`, and `CARGO_TARGET_DIR=target-cli cargo test -p spotuify-sync --test refetch_gate --quiet`.
+- [x] Add `cache_version` constant + startup gate. Verified by `Store::check_cache_version`, daemon startup guard in `DaemonState::new`, and `CARGO_TARGET_DIR=target-cli cargo test -p spotuify-store test_check_cache_version --quiet`.
+- [x] Add two-stage receipt machinery; persist pending receipts to a new `receipts` table; recover/finalize on daemon restart. Verified by `crates/spotuify-store/tests/receipts.rs`, `record_mutation_with_id` in the daemon handler, startup recovery in `DaemonState::new`, and `CARGO_TARGET_DIR=target-cli cargo test -p spotuify-daemon receipt_recovery --quiet`.
+- [x] Migrate playback state to `PlayerEvent`-driven model; keep polling as a fallback path. Verified by daemon PlayerEvent translation tests: playback start/pause/resume/track/end now emit `PlaybackChanged`, while high-frequency ticks remain local and existing polling stays as fallback.
+- [x] Harden token refresh with `refresh_token` merge + proactive refresh + serialized refresh. Verified by `auth::access_token_cached` single-flight mutex, refresh-token merge tests, `refresh_planner` tests, and `CARGO_TARGET_DIR=target-cli cargo test -p spotuify-spotify --test refresh_planner --quiet`.
+- [x] Add new daemon events. Verified protocol variants for `RateLimited`, `AuthError`, `MutationAccepted`, `MutationFinalized`, and `SchemaCompat`, daemon emitters for mutation/schema events, event-log lifting, and focused daemon/protocol tests.
+- [x] Update TUI to render pending receipts with spinner and to bind banner state to `RateLimited`/`AuthError`/`Deprecated`. Verified by pending-receipt/banner state tests, status-line rendering, `CARGO_TARGET_DIR=target-cli cargo test -p spotuify-tui --quiet`, and TUI clippy.
+- [x] Add `spotuify cache reset --confirm` + `spotuify cache repair` for operator escape hatches. Verified by `tests/cli_cache.rs`; reset is local so it still works when daemon startup is blocked by cache schema mismatch.
 
 ## Verification
 

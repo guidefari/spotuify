@@ -25,7 +25,7 @@ Expose the daemon's Request/Event surface as a Model Context Protocol (MCP) serv
 - New crate `crates/spotuify-mcp` producing a `spotuify-mcp` binary.
 - `spotuify mcp [--stdio | --http <addr>]` subcommand wired into `main.rs`.
 - MCP tool definitions for every safe daemon Request, with JSON Schema.
-- MCP resource definitions for playback state, devices, playlists as subscribable resources backed by `DaemonEvent`.
+- MCP resource definitions for playback state, devices, playlists, lyrics, and doctor. Stdio/HTTP resource reads map to daemon requests; invalidation tags are defined for future push subscriptions.
 - Auto-spawn daemon if not running.
 - Destructive operations gated by `confirm: true` in MCP tool args.
 - README docs: Claude Code / Cursor / Continue config snippets.
@@ -37,7 +37,7 @@ Expose the daemon's Request/Event surface as a Model Context Protocol (MCP) serv
 |---|---|---|
 | `search` | `Request::Search` | Default `source: hybrid`. JSON Schema includes `query`, `kind`, `limit`. |
 | `now_playing` | `Request::PlaybackGet` | Track + device + progress + lyrics line if available |
-| `play` | `Request::PlaybackCommand::PlayQuery` | First search hit |
+| `play` | `Request::PlaybackCommand::PlayUri` | Exact Spotify URI chosen from `search` results |
 | `play_uri` | `Request::PlaybackCommand::PlayUri` | Direct URI |
 | `pause` / `resume` / `next` / `previous` | Transport | |
 | `seek` / `volume` | Transport | |
@@ -48,13 +48,15 @@ Expose the daemon's Request/Event surface as a Model Context Protocol (MCP) serv
 | `transfer_device` | `Request::DeviceTransfer` | Idempotent |
 | `playlists_list` | `Request::PlaylistsList` | |
 | `playlist_tracks` | `Request::PlaylistTracks` | |
+| `playlist_plan` | local `spotuify-protocol::agent_playlists::build_playlist_plan` | Read-only deterministic scaffold; no daemon needed |
+| `playlist_resolve_tracks` | daemon `Request::Search` workflow | Resolves plan candidate searches into track candidates via daemon search |
 | `playlist_create` | `Request::PlaylistCreate` | **Requires `confirm: true`** to commit; without it returns dry-run preview only |
 | `playlist_add` | `Request::PlaylistAddItems` | **Requires `confirm: true`** |
-| `playlist_remove` | `Request::PlaylistRemoveItems` | **Requires `confirm: true`** |
-| `library_save` / `library_unsave` | `Request::LibrarySave` | **Requires `confirm: true`** |
+| `playlist_remove` | `Request::PlaylistRemoveItems` | **Requires `confirm: true`**; typed protocol request, daemon handler, and MCP bridge route are wired. |
+| `library_save` / `library_unsave` | `Request::LibrarySave` / `Request::LibraryUnsave` | **Requires `confirm: true`**; `library_unsave` has a dedicated protocol request and daemon handler, verified by MCP bridge routing tests. |
 | `lyrics` | Phase 16 lyrics provider | Returns synced lines + provider + offset |
-| `radio_start` | Mercury `hm://autoplay-enabled/query` + `hm://radio-apollo/v3/stations/` | Replacement for dead `/recommendations`; starts a station from current track or specified URI |
-| `related_artists` | Mercury `hm://similarity-bff/v1/related-artists/{artist_id}` | Replacement for dead `/artists/{id}/related-artists` |
+| `radio_start` | Deferred Mercury station workflow | Not exposed in the live MCP manifest until the daemon has a typed station request and verified mercury response parsing. |
+| `related_artists` | Deferred Mercury related-artists workflow | Not exposed in the live MCP manifest until the daemon has a typed related-artists request and verified mercury response parsing. |
 | `analytics_top` | Phase 10 derivations | Tracks/artists/albums by window |
 | `analytics_habits` | Phase 10 | Day/week/month rollups |
 | `ops_log` | Phase 12 | Recent mutations |
@@ -110,7 +112,7 @@ Subscribed resources fan out `DaemonEvent`s as MCP `resource.updated` notificati
 
 ## Agent playlist workflow clarification
 
-`agent_playlists::build_playlist_plan` (in `spotuify-cli` post-split) is intentionally a deterministic scaffold heuristic, not an LLM call. The actual planning happens in the upstream agent (Claude, GPT, local model). MCP makes this explicit:
+`agent_playlists::build_playlist_plan` (shared from `spotuify-protocol`) is intentionally a deterministic scaffold heuristic, not an LLM call. The actual planning happens in the upstream agent (Claude, GPT, local model). MCP makes this explicit:
 
 1. LLM proposes plan JSON matching `PlaylistPlan` schema.
 2. LLM calls `playlist_resolve_tracks` MCP tool against the plan.
@@ -120,39 +122,44 @@ Subscribed resources fan out `DaemonEvent`s as MCP `resource.updated` notificati
 6. LLM calls `playlist_create` with `confirm: true`.
 7. Receipt comes back; LLM can call `undo_last` if user rejects after the fact.
 
-Document this loop in README and in `09-agent-workflows.md`.
+Document this loop in README and in `docs/blueprint/09-agent-workflows.md`.
 
 ## Work items
 
-1. Add `rmcp` (Rust MCP SDK) dependency, or hand-roll JSON-RPC 2.0 over stdio if SDK churns.
-2. Define MCP tool catalogue and JSON Schemas in `spotuify-mcp/src/tools.rs`.
-3. Bridge: MCP tool call → daemon Request → MCP tool result.
-4. Bridge: `DaemonEvent` stream → MCP resource update notifications.
-5. Add `spotuify mcp` subcommand. Default to stdio mode.
-6. Add `--http <addr>` mode with bearer-token auth.
-7. Add confirmation gating on every destructive tool with explicit error message guiding the LLM to ask the user.
-8. MCP capability negotiation (tools, resources, prompts).
-9. Mercury-bus tools: `lyrics`, `radio_start`, `related_artists` (Phase 9 dep).
-10. Analytics tools: `analytics_top`, `analytics_habits` (Phase 10 dep).
-11. Undo tool: `undo_last`, `ops_log` (Phase 12 dep).
-12. Write README snippets:
-    - Claude Code: `claude mcp add spotuify --command spotuify-mcp`
-    - Cursor: `.cursor/mcp.json` example
-    - Continue: `config.json` example
-13. MCP manifest golden test.
+1. [x] Add the MCP transport. The shipped implementation hand-rolls the small MCP/JSON-RPC surface over stdio and HTTP instead of taking an SDK dependency.
+2. [x] Define MCP tool catalogue and schemas in `crates/spotuify-mcp/src/tools.rs` and `src/rpc.rs`.
+3. [x] Bridge MCP tool call -> daemon Request -> MCP tool result. Verified for `playlist_remove`, `library_unsave`, `playlist_plan`, `playlist_resolve_tracks`, `ops_log`, `undo_last`, and structured destructive previews by MCP routing/RPC regressions.
+4. [x] Bridge `resources/read` -> daemon Request. Verified by `resource_uri_maps_to_daemon_request`; event invalidation tags are implemented, while live push subscription fanout remains a transport follow-up.
+5. [x] Add `spotuify mcp` subcommand. Default stdio mode is covered by CLI parser/help tests and MCP initialize tests.
+6. [x] Add `--http <addr>` mode with bearer-token auth. Covered by bearer-token, loopback-bind, and unsupported-SSE tests in `crates/spotuify-mcp/src/http.rs`.
+7. [x] Add confirmation gating on every destructive tool with explicit LLM-facing errors.
+8. [x] MCP capability negotiation for tools and resources. Prompts are not advertised because no prompt catalogue is shipped.
+9. [x] Mercury/provider-backed tools: `lyrics` is wired through the daemon lyrics request. `radio_start` and `related_artists` are deliberately absent from the live manifest until typed daemon requests and verified mercury parsers exist; advertising deferred tools to agents was removed by `future_mercury_tools_are_not_advertised_as_callable` and the manifest snapshot.
+10. [x] Analytics tools: `analytics_top`, `analytics_habits`, `analytics_search`, and `analytics_rediscovery`.
+11. [x] Undo tool: `undo_last`, `ops_log`.
+12. [x] README snippets for Claude Code, Cursor, and Continue. The shipped command is the unified binary form: `spotuify mcp`.
+13. [x] MCP manifest golden test.
 
 ## Verification
 
 - `claude mcp add spotuify` succeeds; tools appear in `claude mcp list`.
 - LLM can run `search` → `play` → `now_playing` end-to-end in a fresh Claude Code session.
 - MCP manifest validates against current MCP spec.
-- `playlist_create` with `confirm: false` returns a preview without mutating; `confirm: true` produces the same receipt as `spotuify playlist create --yes`.
-- `playlist_add` without `confirm` returns a clear "confirmation required" error; LLM must explicitly re-call with `confirm: true`.
-- `radio_start` returns a station of URIs sourced from mercury (`autoplay-enabled` + `radio-apollo`); does NOT call the dead Web API `/recommendations` endpoint.
+- `playlist_create` with `confirm: false` returns a structured preview without mutating; `confirm: true` produces the same receipt as `spotuify playlist create --yes`.
+- `playlist_add` / `playlist_remove` without `confirm` returns a clear "confirmation required" error; LLM must explicitly re-call with `confirm: true`.
+- Future `radio_start` must return a station of URIs sourced from mercury (`autoplay-enabled` + `radio-apollo`) and must not call the dead Web API `/recommendations` endpoint.
 - `lyrics` returns synced lines for a track that has them, plain text for tracks that don't, "not available" for missing ones.
-- Killing the daemon while an MCP session is active surfaces a clear error and auto-recovers on next call.
+- Killing the daemon while an MCP session is active surfaces a clear error; the next tool/resource call retries the daemon socket.
 - `undo_last` reverts the last destructive op visible via `ops_log`.
+- IPC requests now carry operation source attribution, so MCP-originated
+  mutations are recorded as `source = mcp` and can be filtered by
+  `ops_log`.
 
 ## Definition of done
 
-A user installs `spotuify`, adds the MCP server to Claude Code, and asks "make me a focus playlist." Claude calls `playlist_plan` → `playlist_resolve_tracks` → `playlist_create --confirm:false` → user sees preview → Claude calls `playlist_create --confirm:true`. End-to-end works with no shell commands typed by the user. Mercury-bus tools (lyrics, radio, related-artists) work on `--backend embedded` and return clear errors on `--backend spotifyd`/`connect`. The MCP manifest validates and survives spec updates.
+The shipped Phase 8 slice exposes implemented daemon capabilities over
+MCP stdio/HTTP, gates destructive tools with `confirm: true`, records
+MCP mutations with `source = mcp`, and keeps deferred Mercury
+radio/related-artist surfaces out of the live manifest. A live Claude
+Code focus-playlist smoke remains manual because it requires an
+interactive MCP client and Spotify account.

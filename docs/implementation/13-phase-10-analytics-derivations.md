@@ -2,7 +2,7 @@
 
 ## Goal
 
-Turn the raw `analytics_events` log into first-class derived listening analytics per `blueprint/16-analytics.md`. Today the event store exists but no rollups exist, so `analytics events --limit` is the only available surface.
+Turn the raw `analytics_events` log into first-class derived listening analytics per `blueprint/16-analytics.md`. The current implementation has the event store, `listen_facts`, track rollups, top/habits/search/rediscovery/prune commands, and MCP analytics tools. Remaining work is concentrated in richer artist/album/habit rollups, provider export/import, and live external scrobble recipes.
 
 ## Evidence base
 
@@ -98,29 +98,32 @@ habit_metrics
 
 ## Work items
 
-1. Add migrations for `listen_facts`, `track_metrics`, `artist_metrics`, `album_metrics`, `habit_metrics`, `qualification_rules`.
-2. Build `SessionTracker` in `spotuify-sync` subscribing to `PlayerEvent`.
-3. Implement audible-time from sink-tap sample count (Phase 9 dep) + wall-clock fallback.
-4. Listen qualification at `playback_completed`.
-5. Rebuild logic: `analytics rebuild` drops derived tables and recomputes from `analytics_events`.
-6. Incremental rebuild: on each new qualified listen, update rollups.
-7. Daily rollup job: at local midnight (configurable), recompute `habit_metrics` for closed day.
-8. CLI wiring for all `analytics` subcommands; support all output formats.
-9. Recipes directory with sample shell-hook scrobblers.
-10. Privacy gate: detect incognito and suppress.
-11. Retention: `analytics prune` + daily job.
-12. MCP tools.
+1. [x] Add migrations for `listen_facts`, `track_metrics`, `artist_metrics`, `album_metrics`, `habit_metrics`, `qualification_rules`.
+2. [x] Build `SessionTracker` in the daemon subscribing to `PlayerEvent`.
+3. [x] Implement audible-time wall-clock fallback and embedded sink sample counter. Verified by `session_tracker_finalize` pause/session-disconnect cases and embedded sink-chain tests.
+4. [x] Listen qualification at finalization. Verified by `crates/spotuify-daemon/tests/session_tracker_finalize.rs`; includes regression coverage that cached track duration, not last playback position, drives qualification for long-track skips.
+5. [x] Rebuild logic: `analytics rebuild` recomputes derivations from `analytics_events`.
+6. [x] Incremental track rollup: on each finalized listen, update `track_metrics`.
+7. [x] Rich daily habit rollups: habits now derive `top_hour_of_day`, `exploration_ratio`, and `repeat_ratio` from `listen_facts` at read time. Verified by `habit_buckets_include_top_hour_exploration_and_repeat_ratios`.
+8. [x] CLI wiring for analytics top/habits/search/rediscovery/rebuild/prune. Export/import are intentionally deferred to the scrobble-bridge follow-up.
+9. [x] Recipes directory with sample shell-hook scrobblers. Verified `docs/recipes/scrobble-listenbrainz.sh`, `docs/recipes/scrobble-lastfm.sh`, and `docs/recipes/notify-discord-listening.sh` with `bash -n`.
+10. [x] Private-session suppression for `ListenQualified`; local `listen_facts.private_session` still persists.
+11. [x] Retention: `analytics prune` dry-run/apply is wired; daemon startup and daily background retention prune use the same configured retention windows. Verified by `retention_cutoffs_honor_configured_windows`, `cargo check -p spotuify-daemon`, and daemon clippy.
+12. [x] MCP tools for `analytics_top`, `analytics_habits`, `analytics_search`, and `analytics_rediscovery`.
 
 ## Verification
 
 - Play a track for ~60% of its length → `listen_qualified` fires, `listen_facts.qualified = true`, `track_metrics.qualified_count` increments.
 - Skip a track in <5s → `listen_facts.qualified = false`, `track_metrics.skip_count` +1, qualified_count unchanged.
+- Skip 31s into a cached 4-minute track → `listen_facts.duration_ms = 240000`, `qualified = false`; guards against using last playback position as track duration.
 - AirPods disconnect mid-track (simulated by injecting `SessionDisconnected`) → `skip_reason = session_died`, NOT counted as qualified.
 - `analytics top --kind tracks --since 30d` matches equivalent hand-written SQL within ±0 rows.
 - `analytics habits --window week` returns one row per ISO week with non-negative listening minutes.
+- `analytics habits` includes top hour, exploration ratio, and repeat ratio; tested with deterministic day-bucket data.
 - `analytics rebuild` is idempotent: running twice produces identical derived tables.
 - Private session → no listen_qualified emitted; `listen_facts.private_session = true`.
-- Shell hook: configure `[events] hook_command = scrobble-listenbrainz.sh`, play a track to qualified threshold, scrobble appears on ListenBrainz.
+- Shell hook: configure `[analytics] hook_command = scrobble-listenbrainz.sh`, play a track to qualified threshold, scrobble appears on ListenBrainz.
+- Recipe scripts syntax-check with `bash -n docs/recipes/{scrobble-listenbrainz.sh,scrobble-lastfm.sh,notify-discord-listening.sh}`.
 - MCP `analytics_top` returns same data as CLI `analytics top --format json`.
 
 ## Definition of done

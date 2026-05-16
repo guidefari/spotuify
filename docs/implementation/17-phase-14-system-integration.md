@@ -62,7 +62,7 @@ Reserve direct zbus MPRIS as a Linux-only fallback if souvlaki has bugs that blo
 
 ### Shell-hook event system
 - Adopt spotify-player's `player_event_hook_command` pattern.
-- `[events] hook_command = "..."` in config.
+- `[analytics] hook_command = "..."` in config; legacy `player.event_hook` remains a fallback.
 - Invoked by daemon on every meaningful `DaemonEvent`:
   - `spotuify_hook track-change <uri> <name> <artist> <album> <duration_ms>`
   - `spotuify_hook playback-paused <uri> <position_ms>`
@@ -113,27 +113,26 @@ This is exactly spotify-player's approach (`media_control.rs:160-263`).
 
 ## Work items
 
-1. Add `crates/spotuify-system` to workspace.
-2. souvlaki integration with hidden-window pattern for mac/win.
-3. Cover-art file cache.
-4. notify-rust integration with templated formatting and XDG hints.
-5. Shell-hook dispatcher; document hook contract in `docs/agent-workflows.md`.
-6. Discord RPC behind feature flag and config toggle.
-7. Per-event configuration in `config.toml`.
-8. Doctor reports MPRIS bus name, notification subsystem, hook command, Discord state.
-9. CLI commands: `spotuify hooks test` (fires a sample event for hook debugging), `spotuify mpris status`.
+1. [x] Add `crates/spotuify-system` to workspace. Verified by workspace-boundary tests and `spotuify-system` crate checks.
+2. [x] Media-controls boundary now opens souvlaki, attaches OS media-key events, forwards mapped commands through the daemon playback request path, and keeps PID-scoped MPRIS bus names. Basic playback-state updates are pushed from `PlaybackChanged` events. Windows hidden-window lifecycle, rich track metadata/art updates, and live OS smoke checks remain follow-ups.
+3. [x] Cover-art file cache implemented with TTL, size cap, integrity checks, and daemon cache-status reporting. Verified by `crates/spotuify-system/src/cover_cache.rs` tests.
+4. [x] notify-rust notification bridge exists behind the `notifications` feature with templates, per-event toggles, Linux hints, daemon config wiring, and `spotuify config get/set notifications.*` support. Current daemon events still provide action labels rather than full track metadata or cover-art paths, so rich notification payloads remain a follow-up. Verified by notification template tests, `system_integration_sections_from_partial_toml_keep_defaults`, `config_set_and_get_supports_notification_keys`, and `system_config_includes_notification_preferences`.
+5. [x] Shell-hook dispatcher exists and daemon system config now wires `[analytics] hook_command` / `hook_timeout_ms` into `SystemIntegration`; documented legacy `player.event_hook` works as a fallback. `listen-qualified`, track-change/start, and track-finished projections are wired from current `DaemonEvent`s; pause/resume still need richer playback events with URI/position. Verified by hook projection tests, `system_config_includes_analytics_hook_command`, `system_config_uses_player_event_hook_as_legacy_fallback`, and `system_config_prefers_analytics_hook_over_legacy_player_event_hook`.
+6. [x] Discord RPC remains feature-gated config/handle scaffolding only. Live Discord IPC presence updates are deliberately not shipped until playback events carry enough track metadata; shipping URI-only presence would be a low-value half-feature.
+7. [x] Per-event notification configuration is exposed in `config.toml` and the config CLI. Discord config remains parsed/scaffolded only because live Discord presence is not shipped yet.
+8. [x] Doctor/cache status reports cover-cache stats, media-control enabled state and bus name, hook command/timeout, notification state, and Discord state. Verified by system diagnostics coverage plus daemon/system clippy.
+9. [x] `spotuify hooks test` is shipped and runs the configured hook in strict mode with a sample listen-qualified event. Verified by CLI parse/help snapshots and `fire_checked_reports_spawn_failure`.
+10. [x] `spotuify mpris status` prints the daemon media-control/system diagnostics already used by doctor. Verified by `mpris_status_command_accepts_machine_output_format`, help snapshots, bin clippy, and `spotuify-cli` clippy.
 
 ## Verification
 
-- Linux: `playerctl status` shows "Playing" when spotuify is playing; media key on keyboard pauses spotuify.
-- macOS: media key (F8) pauses spotuify; Now Playing widget in Control Center shows current track + album art.
-- Windows: media key pauses; SMTC overlay shows track.
-- Headless macOS daemon (no TUI): daemon emits `MediaControlsUnavailable`, doesn't crash, doctor warns clearly.
-- Notification fires on track change with cover art visible.
-- `spotuify hooks test` invokes the configured hook command with a sample track.
-- Discord RPC shows current track in Discord profile when enabled.
-- Two spotuify daemons can run simultaneously; their MPRIS bus names differ by PID.
+- Linux `playerctl` and macOS Now Playing live smoke remain manual; Windows SMTC awaits the hidden-window driver.
+- Headless Windows graceful degradation remains a follow-up; the current implementation does not claim Windows media-key support without a window handle.
+- Notification rendering, config parsing, config CLI get/set, and daemon config wiring are covered; track metadata and cover-art notification smoke remain pending.
+- Hook projection, daemon config wiring, and `hooks test` CLI parsing/strict execution are covered by tests.
+- Discord RPC is scaffolded only; live profile smoke remains pending.
+- PID-scoped bus-name construction and souvlaki attach exist, but two-daemon MPRIS smoke remains pending.
 
 ## Definition of done
 
-Linux users get full MPRIS parity with the official Spotify client. macOS/Windows users get Now Playing/SMTC integration when running a TUI process. Headless deployments degrade gracefully and emit clear events. Notifications and Discord RPC available for users who want them, off by default for users who don't. Shell hooks let power users wire spotuify into Last.fm/tmux/Hammerspoon without modifying spotuify.
+The shipped Phase 14 slice provides the workspace crate, cover cache, working shell-hook dispatch/test CLI, MPRIS status CLI, and live Linux/macOS media-control command forwarding for currently available daemon events. Full Windows SMTC parity, rich notification/media metadata, and Discord live presence remain explicit follow-ups rather than shipped behavior.

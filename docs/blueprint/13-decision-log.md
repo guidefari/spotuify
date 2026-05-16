@@ -131,6 +131,8 @@ Current TUI-only actions:
 - `Mark Range` - client multi-select state
 - `Clear Marks` - client multi-select state
 - `Toggle Player Size` - client layout preference
+- `Expand Rail` - client layout preference
+- `Devices` (quick-pick overlay) - client overlay shortcut
 
 Why:
 
@@ -167,9 +169,10 @@ Implementation status (Phase 9.0–9.5 complete, 2026-05-13):
 - Backends shipped: `ConnectOnlyBackend` (Web API only, Free-tier
   capable, wiremock-tested), `SpotifydBackend` (preserves today's
   default), `MockPlayerBackend` (behind `test-support` feature),
-  `EmbeddedBackend` skeleton with librespot 0.8 cache wiring (Player
-  + Spirc integration scaffolded, awaiting live Spotify Premium
-  verification before flipping the default).
+  `EmbeddedBackend` with librespot 0.8 cache wiring, attachable sink
+  chain, Player + Spirc registration, transport forwarding, and
+  librespot event translation. Live Spotify Premium smoke is still
+  required before flipping the default.
 - Foundations for Phase 9.3 — `RecoveringSink` (catch_unwind with
   rolling panic budget), `Clock` trait + position-as-SystemTime
   derivation (NTP-step safe), worker `tokio::select!` loop

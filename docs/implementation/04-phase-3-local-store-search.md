@@ -17,14 +17,14 @@ Add SQLite cache and Tantivy search so local library/playlists/search history ar
 
 ## Implementation order
 
-1. Add SQLite connection and migrations.
-2. Persist playback/device snapshots.
-3. Persist playlists and playlist items.
-4. Persist recent tracks and search results.
-5. Add local query over SQLite only.
-6. Add Tantivy index from SQLite.
-7. Add reindex command.
-8. Add background sync scheduler.
+1. [x] Add SQLite connection and migrations.
+2. [x] Persist playback/device snapshots.
+3. [x] Persist playlists and playlist items.
+4. [x] Persist recent tracks and search results.
+5. [x] Add local query over SQLite only.
+6. [x] Add Tantivy index from SQLite.
+7. [x] Add reindex command.
+8. [x] Add background sync scheduler.
 
 ## Search schema starter
 
@@ -49,6 +49,9 @@ Fields:
 - local search works without Spotify network
 - remote search caches results
 - cache status shows row counts and freshness
+- Store migration and operation tests cover SQLite schema/persistence.
+- `spotuify-search` tests cover Tantivy indexing and stale-document replacement.
+- CLI help/parser tests cover `search --source`, `reindex`, and `cache status`.
 
 ## Definition of done
 

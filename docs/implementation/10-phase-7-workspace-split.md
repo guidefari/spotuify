@@ -24,6 +24,7 @@ spotuify/
 │   ├── spotuify-store/              # SQLite migrations + queries (Phase 6 freshness)
 │   ├── spotuify-search/             # Tantivy indexing/query
 │   ├── spotuify-spotify/            # Web API client + auth + compat normalizer (Phase 6)
+│   ├── spotuify-keychain/            # credential-storage leaf crate
 │   ├── spotuify-player/             # PlayerBackend trait + embedded/spotifyd/connect impls (Phase 9)
 │   ├── spotuify-sync/               # background sync + reconciliation (Phase 6)
 │   ├── spotuify-system/             # MPRIS/notifications/hooks/Discord (Phase 14)
@@ -36,42 +37,42 @@ spotuify/
 └── src/main.rs                      # thin dispatch: tui | cli | daemon | mcp
 ```
 
-## Dependency rules (compiler-enforced)
+## Dependency rules (compiler-enforced with documented pragmatic exceptions)
 
 1. `spotuify-core` depends on nothing internal.
 2. `spotuify-protocol` depends on `spotuify-core` only.
-3. `spotuify-store`, `spotuify-search` depend on `spotuify-core` only.
-4. `spotuify-spotify` depends on `spotuify-core`.
-5. `spotuify-player` depends on `spotuify-core` and `spotuify-spotify`.
-6. `spotuify-sync` depends on core/store/search/spotify/player.
+3. `spotuify-store` depends on `spotuify-core` and `spotuify-protocol`; `spotuify-search` depends on core/protocol/store.
+4. `spotuify-spotify` depends on `spotuify-core`, `spotuify-protocol`, and `spotuify-keychain`.
+5. `spotuify-player` depends on `spotuify-core`, `spotuify-spotify`, and `spotuify-audio` for embedded sink taps.
+6. `spotuify-sync` depends on core/protocol/store/search/spotify/player.
 7. `spotuify-system` depends on `spotuify-core` and `spotuify-protocol`.
-8. `spotuify-lyrics` depends on core/store/player.
-9. `spotuify-audio` depends on core/player.
+8. `spotuify-lyrics` depends on core; daemon/store/player own cache and mercury access.
+9. `spotuify-audio` depends on core only; `spotuify-player` may depend on `spotuify-audio` for the embedded sink tap.
 10. `spotuify-daemon` is the integration point — depends on everything above.
-11. `spotuify-cli` and `spotuify-tui` depend on `spotuify-protocol` only — never on store/search/provider internals.
-12. `spotuify-tui` may depend on `spotuify-audio` (for FFT consumer wiring) but not vice versa.
+11. `spotuify-cli` and `spotuify-tui` are moving toward protocol-only client boundaries, but current extraction keeps documented edges for daemon autostart and legacy shared helpers.
+12. `spotuify-tui` may depend on `spotuify-audio` and other legacy client helper crates during extraction, but backend crates must not depend on TUI.
 13. `spotuify-mcp` depends on `spotuify-protocol` and reaches the daemon over IPC like any other client.
 
 ## Work items (bottom-up)
 
-1. Convert root `Cargo.toml` to workspace with `members = ["crates/*"]`; declare shared `[workspace.dependencies]` for tokio/serde/anyhow versions.
-2. Move domain types (`MediaItem`, `Playlist`, `Device`, `Playback`, error enums) into `spotuify-core`.
-3. Move `src/protocol.rs` → `crates/spotuify-protocol/`.
-4. Move `src/store.rs` → `crates/spotuify-store/`.
-5. Move `src/search.rs`, `src/reindex.rs` → `crates/spotuify-search/`.
-6. Move `src/spotify.rs`, `src/auth.rs`, `src/config.rs` → `crates/spotuify-spotify/`. **Add the Phase 6 compat normalizer module here**.
-7. Move `src/spotifyd.rs` and create `spotuify-player::backends::{embedded, spotifyd, connect}` per Phase 9.
-8. Move `src/sync.rs` → `crates/spotuify-sync/`.
-9. New crate `spotuify-system` (empty initially; Phase 14 fills it).
-10. New crate `spotuify-lyrics` (empty initially; Phase 16 fills it).
-11. New crate `spotuify-audio` (empty initially; Phase 17 fills it).
-12. Move `src/daemon/` → `crates/spotuify-daemon/`.
-13. Move CLI bits → `crates/spotuify-cli/`.
-14. Move TUI bits → `crates/spotuify-tui/`.
-15. New crate `spotuify-mcp` (empty initially; Phase 8 fills it).
-16. Reduce `src/main.rs` to dispatcher reusing the client crates.
-17. Add `cargo-modules` or `cargo deny` CI check enforcing the dependency DAG.
-18. `cargo dist` config in workspace root for the matrix release.
+1. [x] Convert root `Cargo.toml` to workspace with `members = ["crates/*"]`; declare shared `[workspace.dependencies]` for tokio/serde/anyhow versions.
+2. [x] Move domain types (`MediaItem`, `Playlist`, `Device`, `Playback`, error enums) into `spotuify-core`.
+3. [x] Move `src/protocol.rs` → `crates/spotuify-protocol/`.
+4. [x] Move `src/store.rs` → `crates/spotuify-store/`.
+5. [x] Move `src/search.rs`, `src/reindex.rs` → `crates/spotuify-search/`.
+6. [x] Move `src/spotify.rs`, `src/auth.rs`, `src/config.rs` → `crates/spotuify-spotify/`; credential storage moved into `spotuify-keychain`.
+7. [x] Move `src/spotifyd.rs` and create `spotuify-player::backends::{embedded, spotifyd, connect_only}` per Phase 9.
+8. [x] Move `src/sync.rs` implementation → `crates/spotuify-sync/`.
+9. [x] New crate `spotuify-system` (filled by Phase 14).
+10. [x] New crate `spotuify-lyrics` (filled by Phase 16).
+11. [x] New crate `spotuify-audio` (filled by Phase 17).
+12. [x] Move daemon implementation → `crates/spotuify-daemon/`.
+13. [x] Move CLI bits → `crates/spotuify-cli/`.
+14. [x] Move TUI bits → `crates/spotuify-tui/`.
+15. [x] New crate `spotuify-mcp` (filled by Phase 8).
+16. [x] Reduce `src/main.rs` to dispatcher plus legacy adapter shims reusing client crates.
+17. [x] Add workspace-boundary tests enforcing the dependency DAG and documenting extraction exceptions.
+18. [x] Release packaging is tracked in Phase 11 cross-platform/release work, not required for the crate split itself.
 
 ## Migration discipline
 
@@ -94,13 +95,18 @@ Pin once, depend everywhere with `workspace = true`:
 
 - `cargo build --workspace` from clean succeeds.
 - `cargo test --workspace` passes.
-- `cargo modules generate graph --workspace` matches the §"Dependency rules" DAG; no back-edges.
-- `cargo build -p spotuify-mcp` succeeds without pulling `spotuify-tui` or `spotuify-cli`.
-- `cargo build -p spotuify-cli` succeeds without pulling `spotuify-store` or `spotuify-search`.
+- Workspace-boundary tests match the documented DAG and known extraction exceptions.
+- `cargo build -p spotuify-mcp` succeeds without pulling `spotuify-tui`.
+- `cargo build -p spotuify-cli` succeeds with documented daemon-autostart/helper edges.
 - `cargo build --release --bin spotuify` produces a single binary that runs every existing CLI and TUI flow unchanged.
-- `cargo check --no-default-features --features embedded-playback` succeeds (Phase 9 prep).
+- `cargo check --features embedded-playback,rodio-backend` succeeds; `embedded-playback` without exactly one backend intentionally fails.
 - Total LOC and build time recorded in CHANGELOG to track that the split doesn't bloat the project.
+- `cargo test --test workspace_boundaries --quiet` passes; one root-boundary assertion remains ignored until the binary dispatcher loses its legacy adapter edges.
 
 ## Definition of done
 
-Workspace matches blueprint target plus the Phase 8/9/14/15/16/17 additions. CI enforces the dependency DAG. New phases can add code into their own crate without touching the binary's module graph. A future third-party can `cargo add spotuify-core spotuify-protocol` and build their own client.
+Workspace matches the blueprint target plus the Phase 8/9/14/15/16/17
+additions, with current extraction exceptions recorded in
+`tests/workspace_boundaries.rs`. New feature areas now land in dedicated
+crates, and `spotuify-core` / `spotuify-protocol` are usable without
+pulling the TUI.

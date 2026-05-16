@@ -6,7 +6,10 @@ Make current Spotify auth/device/search/playback behavior reliable enough to bui
 
 ## Deliverables
 
-- Keep `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --locked`, and release build green.
+- Keep package-scoped `scripts/cargo-test -p <crate> --tests` and
+  `cargo clippy -p <crate> --all-targets -- -D warnings` green while
+  iterating; run full workspace tests/clippy and release builds at merge or
+  release gates.
 - `doctor` must complete with bounded timeouts.
 - `doctor` must show preferred device visibility.
 - TUI input loop must never await Spotify network calls.
@@ -15,25 +18,31 @@ Make current Spotify auth/device/search/playback behavior reliable enough to bui
 
 ## Work items
 
-1. Audit all keychain calls and keep timeout wrappers.
-2. Audit all Spotify calls from TUI input path.
-3. Add small helper command or temporary smoke command if needed for search/play verification.
-4. Improve `doctor` device diagnostics:
+1. [x] Audit all keychain calls and keep timeout wrappers.
+2. [x] Audit all Spotify calls from TUI input path. TUI actions dispatch
+   bounded async work instead of awaiting Spotify calls inside key handling.
+3. [x] Add CLI command surfaces for search/play/device/status verification.
+4. [x] Improve `doctor` device diagnostics:
    - preferred device configured
    - preferred device visible
    - active device
    - restricted devices
-5. Improve playback error messages.
+5. [x] Improve playback error messages through typed player/backend errors.
 
 ## Verification commands
 
 ```text
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --locked
-cargo build --locked --release
+cargo clippy -p <crate> --all-targets -- -D warnings
+scripts/cargo-test -p <crate> --tests
+cargo build --locked --release \
+  --features "embedded-playback system-integrations loopback-cpal <audio-backend>"
 ./target/release/spotuify doctor
 ```
+
+Current focused evidence also includes CLI parser/help coverage for
+`doctor`, `devices`, `status`, `search`, and playback commands, player
+backend timeout tests, and daemon diagnostics tests.
 
 ## Definition of done
 

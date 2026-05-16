@@ -87,9 +87,10 @@ Current required checks:
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --locked
-cargo build --locked --release
+scripts/cargo-test -p <crate> --tests
+cargo clippy -p <crate> --all-targets -- -D warnings
+cargo build --locked --release \
+  --features "embedded-playback system-integrations loopback-cpal <audio-backend>"
 ./target/release/spotuify doctor
 ```
 
