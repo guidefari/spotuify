@@ -5,6 +5,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 
 use crate::config::Config;
+use crate::error::SpotifyResult;
 
 #[derive(Clone, Debug)]
 pub enum SpotifydStatus {
@@ -14,7 +15,7 @@ pub enum SpotifydStatus {
     NotInstalled,
 }
 
-pub fn ensure_started(config: &Config) -> Result<SpotifydStatus> {
+pub fn ensure_started(config: &Config) -> SpotifyResult<SpotifydStatus> {
     if !config.spotifyd_autostart {
         return Ok(SpotifydStatus::Disabled);
     }

@@ -13,6 +13,8 @@
 
 use serde_json::{json, Value};
 
+type DefaultSpec = (&'static str, fn() -> Value);
+
 /// Tags the expected payload shape so the normalizer knows which keys to
 /// backfill. Picked per-endpoint by the caller (caller knows what response
 /// they're parsing). New hints are added as Spotify drops more keys.
@@ -28,6 +30,7 @@ pub enum NormalizeHint {
     PagingPlaylist,
     PagingArtist,
     PagingAlbum,
+    PagingEpisode,
     /// Unknown shape — no normalization performed.
     Unknown,
 }
@@ -45,7 +48,7 @@ pub fn compat_normalize(value: &mut Value, hint: NormalizeHint) -> Vec<&'static 
     };
 
     let mut patched = Vec::new();
-    let defaults: &[(&'static str, fn() -> Value)] = defaults_for(hint);
+    let defaults: &[DefaultSpec] = defaults_for(hint);
     for (key, default_fn) in defaults {
         if !map.contains_key(*key) {
             map.insert((*key).to_string(), default_fn());
@@ -61,19 +64,19 @@ pub fn compat_normalize(value: &mut Value, hint: NormalizeHint) -> Vec<&'static 
             | NormalizeHint::PagingPlaylist
             | NormalizeHint::PagingArtist
             | NormalizeHint::PagingAlbum
-    ) {
-        if patched.contains(&"total") {
-            if let Some(items) = map.get("items").and_then(Value::as_array) {
-                let n = items.len();
-                map.insert("total".to_string(), json!(n));
-            }
+            | NormalizeHint::PagingEpisode
+    ) && patched.contains(&"total")
+    {
+        if let Some(items) = map.get("items").and_then(Value::as_array) {
+            let n = items.len();
+            map.insert("total".to_string(), json!(n));
         }
     }
 
     patched
 }
 
-fn defaults_for(hint: NormalizeHint) -> &'static [(&'static str, fn() -> Value)] {
+fn defaults_for(hint: NormalizeHint) -> &'static [DefaultSpec] {
     match hint {
         NormalizeHint::Track => &[
             ("available_markets", empty_array),
@@ -111,7 +114,8 @@ fn defaults_for(hint: NormalizeHint) -> &'static [(&'static str, fn() -> Value)]
         NormalizeHint::PagingTrack
         | NormalizeHint::PagingPlaylist
         | NormalizeHint::PagingArtist
-        | NormalizeHint::PagingAlbum => &[
+        | NormalizeHint::PagingAlbum
+        | NormalizeHint::PagingEpisode => &[
             ("total", zero),
             ("limit", json_50),
             ("offset", zero),

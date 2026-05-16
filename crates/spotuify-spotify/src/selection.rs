@@ -1,26 +1,46 @@
 use std::io::{IsTerminal, Read};
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
-
+use crate::error::{SpotifyError, SpotifyResult};
 use spotuify_core::{Device, MediaItem, MediaKind, Playlist};
 
-pub fn media_item_at_index(items: Vec<MediaItem>, query: &str, index: usize) -> Result<MediaItem> {
+fn invalid(message: impl Into<String>) -> SpotifyError {
+    SpotifyError::InvalidInput {
+        message: message.into(),
+    }
+}
+
+fn client(message: impl Into<String>) -> SpotifyError {
+    SpotifyError::Client {
+        message: message.into(),
+    }
+}
+
+pub fn media_item_at_index(
+    items: Vec<MediaItem>,
+    query: &str,
+    index: usize,
+) -> SpotifyResult<MediaItem> {
     if index == 0 {
-        bail!("search index is 1-based; pass --index 1 for the first result");
+        return Err(invalid(
+            "search index is 1-based; pass --index 1 for the first result",
+        ));
     }
     items
         .into_iter()
         .nth(index - 1)
-        .ok_or_else(|| anyhow::anyhow!("no Spotify result #{index} for `{query}`"))
+        .ok_or_else(|| invalid(format!("no Spotify result #{index} for `{query}`")))
 }
 
-pub fn media_kind_from_uri(uri: &str) -> Result<MediaKind> {
+pub fn media_kind_from_uri(uri: &str) -> SpotifyResult<MediaKind> {
     if uri.starts_with("spotify:track:") {
         return Ok(MediaKind::Track);
     }
     if uri.starts_with("spotify:episode:") {
         return Ok(MediaKind::Episode);
+    }
+    if uri.starts_with("spotify:show:") {
+        return Ok(MediaKind::Show);
     }
     if uri.starts_with("spotify:album:") {
         return Ok(MediaKind::Album);
@@ -32,7 +52,9 @@ pub fn media_kind_from_uri(uri: &str) -> Result<MediaKind> {
         return Ok(MediaKind::Playlist);
     }
 
-    bail!("unsupported Spotify URI `{uri}`; expected spotify:track, episode, album, artist, or playlist")
+    Err(invalid(format!(
+        "unsupported Spotify URI `{uri}`; expected spotify:track, episode, show, album, artist, or playlist"
+    )))
 }
 
 pub fn playlist_uri(playlist_id: &str) -> String {
@@ -60,29 +82,36 @@ pub fn resolve_uri_selection(
     positional: Vec<String>,
     ids_path: Option<&Path>,
     missing_message: &str,
-) -> Result<UriSelection> {
+) -> SpotifyResult<UriSelection> {
     match (positional.is_empty(), ids_path) {
-        (false, Some(_)) => bail!("provide URI(s) or --ids, not both"),
+        (false, Some(_)) => Err(invalid("provide URI(s) or --ids, not both")),
         (false, None) => selection_from_uris(positional, false, false),
         (true, Some(path)) => {
             let ids = read_ids_path(path)?;
             if ids.is_empty() {
-                bail!("no Spotify URIs provided by --ids {}", path.display());
+                return Err(invalid(format!(
+                    "no Spotify URIs provided by --ids {}",
+                    path.display()
+                )));
             }
             selection_from_uris(ids, true, path == Path::new("-"))
         }
         (true, None) => match read_piped_ids()? {
             Some(ids) if !ids.is_empty() => selection_from_uris(ids, false, true),
-            _ => bail!("{missing_message}"),
+            _ => Err(invalid(missing_message)),
         },
     }
 }
 
-pub fn ensure_track_or_episode_uris(uris: &[String]) -> Result<()> {
+pub fn ensure_track_or_episode_uris(uris: &[String]) -> SpotifyResult<()> {
     for uri in uris {
         match media_kind_from_uri(uri)? {
             MediaKind::Track | MediaKind::Episode => {}
-            _ => bail!("playlist add only accepts track or episode URIs: {uri}"),
+            _ => {
+                return Err(invalid(format!(
+                    "playlist add only accepts track or episode URIs: {uri}"
+                )));
+            }
         }
     }
     Ok(())
@@ -92,7 +121,7 @@ fn selection_from_uris(
     uris: Vec<String>,
     used_ids_file: bool,
     used_stdin: bool,
-) -> Result<UriSelection> {
+) -> SpotifyResult<UriSelection> {
     for uri in &uris {
         media_kind_from_uri(uri)?;
     }
@@ -103,25 +132,29 @@ fn selection_from_uris(
     })
 }
 
-fn read_ids_path(path: &Path) -> Result<Vec<String>> {
+fn read_ids_path(path: &Path) -> SpotifyResult<Vec<String>> {
     let input = if path == Path::new("-") {
         let mut input = String::new();
-        std::io::stdin().read_to_string(&mut input)?;
+        std::io::stdin()
+            .read_to_string(&mut input)
+            .map_err(|err| client(format!("failed to read stdin: {err}")))?;
         input
     } else {
         std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?
+            .map_err(|err| client(format!("failed to read {}: {err}", path.display())))?
     };
     Ok(split_ids(&input))
 }
 
-fn read_piped_ids() -> Result<Option<Vec<String>>> {
+fn read_piped_ids() -> SpotifyResult<Option<Vec<String>>> {
     let mut stdin = std::io::stdin();
     if stdin.is_terminal() {
         return Ok(None);
     }
     let mut input = String::new();
-    stdin.read_to_string(&mut input)?;
+    stdin
+        .read_to_string(&mut input)
+        .map_err(|err| client(format!("failed to read stdin: {err}")))?;
     Ok(Some(split_ids(&input)))
 }
 
@@ -134,7 +167,7 @@ fn split_ids(input: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn resolve_playlist(playlists: &[Playlist], value: &str) -> Result<Playlist> {
+pub fn resolve_playlist(playlists: &[Playlist], value: &str) -> SpotifyResult<Playlist> {
     playlists
         .iter()
         .find(|playlist| {
@@ -143,23 +176,44 @@ pub fn resolve_playlist(playlists: &[Playlist], value: &str) -> Result<Playlist>
                 || playlist.name.eq_ignore_ascii_case(value)
         })
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("no playlist matching `{value}`"))
+        .ok_or_else(|| invalid(format!("no playlist matching `{value}`")))
 }
 
-pub fn resolve_device(devices: &[Device], value: &str) -> Result<Device> {
+pub fn resolve_device(devices: &[Device], value: &str) -> SpotifyResult<Device> {
     devices
         .iter()
         .find(|device| {
             device.id.as_deref() == Some(value) || device.name.eq_ignore_ascii_case(value)
         })
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("no device matching `{value}`"))
+        .ok_or_else(|| invalid(format!("no device matching `{value}`")))
 }
 
-pub fn parse_seek_target(input: &str, current_ms: u64) -> Result<u64> {
+pub fn parse_seek_target(input: &str, current_ms: u64) -> SpotifyResult<u64> {
+    match parse_seek_input(input)? {
+        SeekInput::Absolute(ms) => Ok(ms),
+        SeekInput::Relative(offset_ms) => {
+            let current = current_ms as i64;
+            Ok(current.saturating_add(offset_ms).max(0) as u64)
+        }
+    }
+}
+
+/// Phase 5 — typed parse of a user-supplied seek expression. CLI sends
+/// the result to the daemon so the daemon (not the client) resolves
+/// relative offsets against its `PlaybackClock`. Eliminates the
+/// "relative seek lands somewhere surprising" symptom caused by the
+/// client reading a stale cached progress before computing the target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeekInput {
+    Absolute(u64),
+    Relative(i64),
+}
+
+pub fn parse_seek_input(input: &str) -> SpotifyResult<SeekInput> {
     let input = input.trim();
     if input.is_empty() {
-        bail!("seek target is required");
+        return Err(invalid("seek target is required"));
     }
 
     let (sign, value) = match input.as_bytes()[0] {
@@ -169,16 +223,15 @@ pub fn parse_seek_target(input: &str, current_ms: u64) -> Result<u64> {
     };
     let duration_ms = parse_duration_ms(value)?;
     if sign == 0 {
-        return Ok(duration_ms);
+        Ok(SeekInput::Absolute(duration_ms))
+    } else {
+        Ok(SeekInput::Relative(
+            sign.saturating_mul(duration_ms as i64),
+        ))
     }
-
-    let current = current_ms as i64;
-    Ok(current
-        .saturating_add(sign.saturating_mul(duration_ms as i64))
-        .max(0) as u64)
 }
 
-fn parse_duration_ms(value: &str) -> Result<u64> {
+fn parse_duration_ms(value: &str) -> SpotifyResult<u64> {
     let (number, multiplier) = if let Some(number) = value.strip_suffix("ms") {
         (number, 1)
     } else if let Some(number) = value.strip_suffix('s') {
@@ -190,7 +243,7 @@ fn parse_duration_ms(value: &str) -> Result<u64> {
     };
     let amount = number
         .parse::<u64>()
-        .map_err(|_| anyhow::anyhow!("invalid seek duration `{value}`; try +15s or -30s"))?;
+        .map_err(|_| invalid(format!("invalid seek duration `{value}`; try +15s or -30s")))?;
     Ok(amount.saturating_mul(multiplier))
 }
 
@@ -200,9 +253,18 @@ mod tests {
 
     #[test]
     fn parse_seek_target_supports_relative_offsets() {
-        assert_eq!(parse_seek_target("+15s", 30_000).unwrap(), 45_000);
-        assert_eq!(parse_seek_target("-45s", 30_000).unwrap(), 0);
-        assert_eq!(parse_seek_target("2m", 30_000).unwrap(), 120_000);
+        assert_eq!(
+            parse_seek_target("+15s", 30_000).expect("positive relative seek should parse"),
+            45_000
+        );
+        assert_eq!(
+            parse_seek_target("-45s", 30_000).expect("negative relative seek should parse"),
+            0
+        );
+        assert_eq!(
+            parse_seek_target("2m", 30_000).expect("absolute minute seek should parse"),
+            120_000
+        );
     }
 
     #[test]
@@ -210,7 +272,9 @@ mod tests {
         let items = vec![media("spotify:track:1"), media("spotify:track:2")];
 
         assert_eq!(
-            media_item_at_index(items, "q", 2).unwrap().uri,
+            media_item_at_index(items, "q", 2)
+                .expect("second item should be selectable")
+                .uri,
             "spotify:track:2"
         );
     }
@@ -225,7 +289,7 @@ mod tests {
             None,
             "missing",
         )
-        .unwrap();
+        .expect("multiple positional Spotify URIs should resolve");
 
         assert_eq!(selection.uris.len(), 2);
         assert!(selection.requires_confirmation());
@@ -234,7 +298,7 @@ mod tests {
     #[test]
     fn playlist_uri_validation_rejects_non_track_or_episode() {
         let err = ensure_track_or_episode_uris(&["spotify:album:1".to_string()])
-            .unwrap_err()
+            .expect_err("album URI should be rejected for playlist add")
             .to_string();
 
         assert!(err.contains("playlist add only accepts track or episode URIs"));

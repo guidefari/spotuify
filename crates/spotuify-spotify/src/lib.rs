@@ -22,4 +22,4 @@ pub mod spotifyd;
 
 pub use client::SpotifyClient;
 
-pub use error::{AuthErrorKind, SpotifyError};
+pub use error::{AuthErrorKind, SpotifyError, SpotifyResult};

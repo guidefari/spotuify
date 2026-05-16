@@ -3,7 +3,7 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result as AnyResult};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use rand::distributions::Alphanumeric;
@@ -14,7 +14,9 @@ use sha2::{Digest, Sha256};
 use spotuify_keychain as keychain;
 use tokio::sync::Mutex;
 
+use crate::client::user_agent_string;
 use crate::config::Config;
+use crate::error::SpotifyResult;
 use url::form_urlencoded;
 
 const KEYCHAIN_SERVICE: &str = "spotuify";
@@ -24,6 +26,7 @@ const SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-read-currently-playing",
     "user-read-recently-played",
+    "user-read-playback-position",
     "user-modify-playback-state",
     "user-read-private",
     "playlist-read-private",
@@ -32,6 +35,12 @@ const SCOPES: &[&str] = &[
     "playlist-modify-public",
     "user-library-read",
     "user-library-modify",
+    "user-follow-read",
+    "user-follow-modify",
+    // Embedded librespot playback uses the Web Playback SDK
+    // streaming scope + app-remote-control to drive transport.
+    "streaming",
+    "app-remote-control",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -43,6 +52,28 @@ pub struct StoredToken {
     pub token_type: String,
 }
 
+pub fn missing_required_scopes(token: &StoredToken) -> Vec<&'static str> {
+    let granted = token.scope.split_whitespace().collect::<Vec<_>>();
+    SCOPES
+        .iter()
+        .copied()
+        .filter(|scope| !granted.contains(scope))
+        .collect()
+}
+
+/// Pure check used by the daemon to decide whether to proactively
+/// surface a "re-auth required" banner at startup.
+///
+/// Returns `true` only when a token exists *and* it is missing one or
+/// more scopes that the current `SCOPES` constant requires. `None`
+/// (not logged in yet) and a fully-scoped token both return `false` —
+/// neither case warrants a banner.
+pub fn token_needs_scope_reauth(token: Option<&StoredToken>) -> bool {
+    token
+        .map(|t| !missing_required_scopes(t).is_empty())
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: String,
@@ -52,7 +83,7 @@ struct TokenResponse {
     scope: Option<String>,
 }
 
-pub async fn login(config: &Config) -> Result<()> {
+pub async fn login(config: &Config) -> SpotifyResult<()> {
     let verifier = random_string(96);
     let challenge = pkce_challenge(&verifier);
     let state = random_string(32);
@@ -75,11 +106,11 @@ pub async fn login(config: &Config) -> Result<()> {
     Ok(())
 }
 
-pub fn logout() -> Result<()> {
-    delete_token_bounded()
+pub fn logout() -> SpotifyResult<()> {
+    Ok(delete_token_bounded()?)
 }
 
-fn delete_token() -> Result<()> {
+fn delete_token() -> AnyResult<()> {
     match keychain::delete_password(KEYCHAIN_SERVICE, KEYCHAIN_USER) {
         Ok(()) => println!("Removed Spotify token from system keychain."),
         Err(err) if err.is_no_entry() => println!("No Spotify token was stored."),
@@ -88,27 +119,36 @@ fn delete_token() -> Result<()> {
     Ok(())
 }
 
-pub fn token_status() -> Result<Option<String>> {
+pub fn token_status() -> SpotifyResult<Option<String>> {
     let Some(token) = load_token_bounded()? else {
         return Ok(None);
     };
 
-    let now = unix_now();
-    let status = if token.expires_at > now {
+    Ok(Some(token_status_message(&token, unix_now())))
+}
+
+fn token_status_message(token: &StoredToken, now: u64) -> String {
+    let mut status = if token.expires_at > now {
         let mins = (token.expires_at - now) / 60;
         format!("present, access token expires in {mins}m")
     } else {
         "present, access token expired; refresh token available".to_string()
     };
 
-    Ok(Some(status))
+    let missing = missing_required_scopes(token);
+    if !missing.is_empty() {
+        status.push_str("; missing scopes: ");
+        status.push_str(&missing.join(", "));
+        status.push_str("; run `spotuify login`");
+    }
+    status
 }
 
 pub async fn access_token_cached(
     config: &Config,
     http: &Client,
     cache: &Arc<Mutex<Option<StoredToken>>>,
-) -> Result<String> {
+) -> SpotifyResult<String> {
     // Single-flight token acquisition keeps cold concurrent daemon requests from
     // triggering multiple macOS Keychain prompts.
     let mut cached = cache.lock().await;
@@ -138,7 +178,34 @@ pub async fn access_token_cached(
     Ok(token.access_token)
 }
 
-fn load_token() -> Result<Option<StoredToken>> {
+pub async fn refresh_access_token_cached(
+    config: &Config,
+    http: &Client,
+    cache: &Arc<Mutex<Option<StoredToken>>>,
+) -> SpotifyResult<String> {
+    let mut cached = cache.lock().await;
+    let token = match cached.clone() {
+        Some(token) => token,
+        None => {
+            load_token_bounded()?.ok_or_else(|| anyhow!("not logged in; run `spotuify login`"))?
+        }
+    };
+    tracing::info!("refreshing Spotify access token after 401");
+    let token = refresh_token(config, http, &token).await?;
+    save_token_bounded(&token)?;
+    *cached = Some(token.clone());
+    Ok(token.access_token)
+}
+
+/// Snapshot the stored Spotify token from the system keychain so
+/// callers (e.g. the daemon's startup check) can inspect its scopes
+/// without going through the refresh path. Returns `Ok(None)` when the
+/// user isn't logged in yet.
+pub fn stored_token_snapshot() -> SpotifyResult<Option<StoredToken>> {
+    Ok(load_token_bounded()?)
+}
+
+fn load_token() -> AnyResult<Option<StoredToken>> {
     match keychain::get_password(KEYCHAIN_SERVICE, KEYCHAIN_USER) {
         Ok(raw) => serde_json::from_str(&raw)
             .map(Some)
@@ -148,7 +215,7 @@ fn load_token() -> Result<Option<StoredToken>> {
     }
 }
 
-fn load_token_bounded() -> Result<Option<StoredToken>> {
+fn load_token_bounded() -> AnyResult<Option<StoredToken>> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(load_token());
@@ -156,13 +223,13 @@ fn load_token_bounded() -> Result<Option<StoredToken>> {
     recv_keychain_result(rx, "read keychain token")
 }
 
-fn save_token(token: &StoredToken) -> Result<()> {
+fn save_token(token: &StoredToken) -> AnyResult<()> {
     let raw = serde_json::to_string(token).context("failed to encode token")?;
     keychain::set_password(KEYCHAIN_SERVICE, KEYCHAIN_USER, &raw)
         .map_err(|err| anyhow!("failed to save token to keychain: {err}"))
 }
 
-fn save_token_bounded(token: &StoredToken) -> Result<()> {
+fn save_token_bounded(token: &StoredToken) -> AnyResult<()> {
     let token = token.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -171,7 +238,7 @@ fn save_token_bounded(token: &StoredToken) -> Result<()> {
     recv_keychain_result(rx, "save keychain token")
 }
 
-fn delete_token_bounded() -> Result<()> {
+fn delete_token_bounded() -> AnyResult<()> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(delete_token());
@@ -179,7 +246,10 @@ fn delete_token_bounded() -> Result<()> {
     recv_keychain_result(rx, "delete keychain token")
 }
 
-fn recv_keychain_result<T>(rx: std::sync::mpsc::Receiver<Result<T>>, action: &str) -> Result<T> {
+fn recv_keychain_result<T>(
+    rx: std::sync::mpsc::Receiver<AnyResult<T>>,
+    action: &str,
+) -> AnyResult<T> {
     match rx.recv_timeout(KEYCHAIN_TIMEOUT) {
         Ok(result) => result,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -191,7 +261,7 @@ fn recv_keychain_result<T>(rx: std::sync::mpsc::Receiver<Result<T>>, action: &st
     }
 }
 
-async fn exchange_code(config: &Config, code: &str, verifier: &str) -> Result<StoredToken> {
+async fn exchange_code(config: &Config, code: &str, verifier: &str) -> AnyResult<StoredToken> {
     let mut params = vec![
         ("grant_type", "authorization_code".to_string()),
         ("code", code.to_string()),
@@ -201,6 +271,7 @@ async fn exchange_code(config: &Config, code: &str, verifier: &str) -> Result<St
     ];
 
     let response = Client::builder()
+        .user_agent(user_agent_string())
         .connect_timeout(Duration::from_secs(4))
         .read_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(8))
@@ -240,7 +311,7 @@ async fn refresh_token(
     config: &Config,
     http: &Client,
     existing: &StoredToken,
-) -> Result<StoredToken> {
+) -> AnyResult<StoredToken> {
     let params = vec![
         ("grant_type", "refresh_token".to_string()),
         ("refresh_token", existing.refresh_token.clone()),
@@ -263,18 +334,22 @@ async fn refresh_token(
 
     let token: TokenResponse =
         serde_json::from_str(&body).context("failed to decode refresh response")?;
-    Ok(StoredToken {
+    Ok(merge_refresh_response(existing, token, unix_now()))
+}
+
+fn merge_refresh_response(existing: &StoredToken, token: TokenResponse, now: u64) -> StoredToken {
+    StoredToken {
         access_token: token.access_token,
         refresh_token: token
             .refresh_token
             .unwrap_or_else(|| existing.refresh_token.clone()),
-        expires_at: unix_now() + token.expires_in,
+        expires_at: now + token.expires_in,
         scope: token.scope.unwrap_or_else(|| existing.scope.clone()),
         token_type: token.token_type,
-    })
+    }
 }
 
-fn authorization_url(config: &Config, challenge: &str, state: &str) -> Result<String> {
+fn authorization_url(config: &Config, challenge: &str, state: &str) -> AnyResult<String> {
     let scope = SCOPES.join(" ");
     let mut serializer = form_urlencoded::Serializer::new(String::new());
     serializer
@@ -291,7 +366,7 @@ fn authorization_url(config: &Config, challenge: &str, state: &str) -> Result<St
     ))
 }
 
-fn bind_redirect_listener(redirect_uri: &str) -> Result<TcpListener> {
+fn bind_redirect_listener(redirect_uri: &str) -> AnyResult<TcpListener> {
     let url = url::Url::parse(redirect_uri).context("redirect URI is invalid")?;
     let host = url
         .host_str()
@@ -302,7 +377,7 @@ fn bind_redirect_listener(redirect_uri: &str) -> Result<TcpListener> {
     TcpListener::bind((host, port)).with_context(|| format!("failed to bind {host}:{port}"))
 }
 
-fn wait_for_code(listener: TcpListener, expected_state: &str) -> Result<String> {
+fn wait_for_code(listener: TcpListener, expected_state: &str) -> AnyResult<String> {
     listener
         .set_nonblocking(false)
         .context("failed to configure redirect listener")?;
@@ -372,4 +447,100 @@ fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{authorization_url, merge_refresh_response, StoredToken, TokenResponse};
+    use crate::config::Config;
+
+    fn config() -> Config {
+        Config {
+            client_id: "client-id".to_string(),
+            client_secret: None,
+            redirect_uri: "http://127.0.0.1:8888/callback".to_string(),
+            config_path: "spotuify.toml".into(),
+            spotifyd_config_path: "spotifyd.conf".into(),
+            spotifyd_device_name: None,
+            spotifyd_autostart: false,
+            player: crate::config::PlayerConfig::default(),
+            cache: crate::config::CacheConfig::default(),
+            analytics: crate::config::AnalyticsConfig::default(),
+            notifications: crate::config::NotificationsConfig::default(),
+            discord: crate::config::DiscordConfig::default(),
+            viz: crate::config::VizConfig::default(),
+        }
+    }
+
+    fn existing_token() -> StoredToken {
+        StoredToken {
+            access_token: "old-access".to_string(),
+            refresh_token: "old-refresh".to_string(),
+            expires_at: 10,
+            scope: "user-read-playback-state".to_string(),
+            token_type: "Bearer".to_string(),
+        }
+    }
+
+    #[test]
+    fn refresh_response_without_refresh_token_preserves_existing_refresh_token() {
+        let token = merge_refresh_response(
+            &existing_token(),
+            TokenResponse {
+                access_token: "new-access".to_string(),
+                refresh_token: None,
+                expires_in: 3_600,
+                scope: None,
+                token_type: "Bearer".to_string(),
+            },
+            100,
+        );
+
+        assert_eq!(token.access_token, "new-access");
+        assert_eq!(token.refresh_token, "old-refresh");
+        assert_eq!(token.scope, "user-read-playback-state");
+        assert_eq!(token.expires_at, 3_700);
+    }
+
+    #[test]
+    fn refresh_response_with_refresh_token_replaces_old_refresh_token() {
+        let token = merge_refresh_response(
+            &existing_token(),
+            TokenResponse {
+                access_token: "new-access".to_string(),
+                refresh_token: Some("new-refresh".to_string()),
+                expires_in: 3_600,
+                scope: Some("playlist-read-private".to_string()),
+                token_type: "Bearer".to_string(),
+            },
+            100,
+        );
+
+        assert_eq!(token.refresh_token, "new-refresh");
+        assert_eq!(token.scope, "playlist-read-private");
+    }
+
+    #[test]
+    fn authorization_url_requests_follow_read_and_modify_scopes() {
+        let url = authorization_url(&config(), "challenge", "state").expect("auth url");
+        let parsed = url::Url::parse(&url).expect("valid url");
+        let scope = parsed
+            .query_pairs()
+            .find_map(|(key, value)| (key == "scope").then(|| value.into_owned()))
+            .expect("scope query parameter");
+        let scopes = scope.split_whitespace().collect::<Vec<_>>();
+
+        assert!(scopes.contains(&"user-follow-read"), "{scopes:?}");
+        assert!(scopes.contains(&"user-follow-modify"), "{scopes:?}");
+    }
+
+    #[test]
+    fn token_status_tells_user_to_relogin_when_existing_token_lacks_new_scopes() {
+        let message = super::token_status_message(&existing_token(), 1);
+
+        assert!(message.contains("missing scopes: user-read-currently-playing"));
+        assert!(message.contains("user-follow-read"));
+        assert!(message.contains("user-follow-modify"));
+        assert!(message.contains("run `spotuify login`"));
+    }
 }

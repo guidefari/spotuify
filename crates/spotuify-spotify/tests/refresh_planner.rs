@@ -60,14 +60,16 @@ fn next_refresh_in_returns_none_when_refresh_due() {
 #[test]
 fn next_refresh_in_computes_target_minus_headroom() {
     // expires_at = now + 200s, headroom = 60s -> refresh in 140s.
-    let d = next_refresh_in(1_700_000_000, 1_700_000_200, PROACTIVE_HEADROOM).unwrap();
+    let d = next_refresh_in(1_700_000_000, 1_700_000_200, PROACTIVE_HEADROOM)
+        .expect("token outside headroom should schedule refresh");
     assert_eq!(d, Duration::from_secs(140));
 }
 
 #[test]
 fn next_refresh_in_handles_long_lived_token() {
     // Spotify access tokens are 1h; headroom 60s -> ~3540s.
-    let d = next_refresh_in(1_700_000_000, 1_700_003_600, PROACTIVE_HEADROOM).unwrap();
+    let d = next_refresh_in(1_700_000_000, 1_700_003_600, PROACTIVE_HEADROOM)
+        .expect("long-lived token should schedule refresh");
     assert_eq!(d, Duration::from_secs(3540));
 }
 

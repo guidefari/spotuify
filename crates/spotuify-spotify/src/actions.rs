@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
 use tokio::time;
 
 use crate::config::Config;
+use crate::error::{SpotifyError, SpotifyResult};
 use crate::spotifyd;
 use crate::SpotifyClient;
 use spotuify_core::{action_finished_event, now_ms, Device, MediaItem, Playback, Playlist, Queue};
@@ -65,7 +65,7 @@ pub struct CommandResult {
     pub request_refresh: bool,
 }
 
-pub async fn status(client: &mut SpotifyClient) -> Result<Playback> {
+pub async fn status(client: &mut SpotifyClient) -> SpotifyResult<Playback> {
     let playback = client.playback().await?;
     record_action(
         client,
@@ -77,7 +77,7 @@ pub async fn status(client: &mut SpotifyClient) -> Result<Playback> {
     Ok(playback)
 }
 
-pub async fn devices(client: &mut SpotifyClient) -> Result<Vec<Device>> {
+pub async fn devices(client: &mut SpotifyClient) -> SpotifyResult<Vec<Device>> {
     let devices = client.devices().await?;
     record_action(
         client,
@@ -89,7 +89,7 @@ pub async fn devices(client: &mut SpotifyClient) -> Result<Vec<Device>> {
     Ok(devices)
 }
 
-pub async fn queue(client: &mut SpotifyClient) -> Result<Queue> {
+pub async fn queue(client: &mut SpotifyClient) -> SpotifyResult<Queue> {
     let queue = client.queue().await?;
     record_action(
         client,
@@ -104,7 +104,7 @@ pub async fn queue(client: &mut SpotifyClient) -> Result<Queue> {
     Ok(queue)
 }
 
-pub async fn playlists(client: &mut SpotifyClient) -> Result<Vec<Playlist>> {
+pub async fn playlists(client: &mut SpotifyClient) -> SpotifyResult<Vec<Playlist>> {
     let playlists = client.playlists().await?;
     record_action(
         client,
@@ -116,7 +116,7 @@ pub async fn playlists(client: &mut SpotifyClient) -> Result<Vec<Playlist>> {
     Ok(playlists)
 }
 
-pub async fn play_item(client: &mut SpotifyClient, item: &MediaItem) -> Result<()> {
+pub async fn play_item(client: &mut SpotifyClient, item: &MediaItem) -> SpotifyResult<()> {
     ensure_playback_target(client).await?;
     client.play_uri(&item.uri, &item.kind).await?;
     record_action(
@@ -129,7 +129,7 @@ pub async fn play_item(client: &mut SpotifyClient, item: &MediaItem) -> Result<(
     Ok(())
 }
 
-pub async fn play_uri(client: &mut SpotifyClient, uri: &str) -> Result<()> {
+pub async fn play_uri(client: &mut SpotifyClient, uri: &str) -> SpotifyResult<()> {
     let kind = media_kind_from_uri(uri)?;
     ensure_playback_target(client).await?;
     client.play_uri(uri, &kind).await?;
@@ -143,20 +143,20 @@ pub async fn play_uri(client: &mut SpotifyClient, uri: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn pause(client: &mut SpotifyClient) -> Result<()> {
+pub async fn pause(client: &mut SpotifyClient) -> SpotifyResult<()> {
     client.play_pause(true).await?;
     record_action(client, "pause", None, serde_json::json!({})).await;
     Ok(())
 }
 
-pub async fn resume(client: &mut SpotifyClient) -> Result<()> {
+pub async fn resume(client: &mut SpotifyClient) -> SpotifyResult<()> {
     ensure_playback_target(client).await?;
     client.play_pause(false).await?;
     record_action(client, "resume", None, serde_json::json!({})).await;
     Ok(())
 }
 
-pub async fn toggle_playback(client: &mut SpotifyClient) -> Result<bool> {
+pub async fn toggle_playback(client: &mut SpotifyClient) -> SpotifyResult<bool> {
     let playback = client.playback().await?;
     if playback.is_playing {
         pause(client).await?;
@@ -181,19 +181,22 @@ pub async fn toggle_playback(client: &mut SpotifyClient) -> Result<bool> {
     }
 }
 
-pub async fn next(client: &mut SpotifyClient) -> Result<()> {
+pub async fn next(client: &mut SpotifyClient) -> SpotifyResult<()> {
     client.next().await?;
     record_action(client, "next", None, serde_json::json!({})).await;
     Ok(())
 }
 
-pub async fn previous(client: &mut SpotifyClient) -> Result<()> {
+pub async fn previous(client: &mut SpotifyClient) -> SpotifyResult<()> {
     client.previous().await?;
     record_action(client, "previous", None, serde_json::json!({})).await;
     Ok(())
 }
 
-pub async fn execute(client: &mut SpotifyClient, command: CommandKind) -> Result<CommandResult> {
+pub async fn execute(
+    client: &mut SpotifyClient,
+    command: CommandKind,
+) -> SpotifyResult<CommandResult> {
     let mut result = CommandResult::default();
     match command {
         CommandKind::Pause => {
@@ -274,7 +277,9 @@ pub async fn execute(client: &mut SpotifyClient, command: CommandKind) -> Result
         }
         CommandKind::Repeat { state } => {
             if !matches!(state.as_str(), "off" | "context" | "track") {
-                anyhow::bail!("repeat must be off, context, or track");
+                return Err(SpotifyError::InvalidInput {
+                    message: "repeat must be off, context, or track".to_string(),
+                });
             }
             client.repeat(&state).await?;
             record_action(client, "repeat", None, serde_json::json!({"state": state})).await;
@@ -306,7 +311,9 @@ pub async fn execute(client: &mut SpotifyClient, command: CommandKind) -> Result
             let id = device
                 .id
                 .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("selected device has no transferable id"))?;
+                .ok_or_else(|| SpotifyError::InvalidInput {
+                    message: "selected device has no transferable id".to_string(),
+                })?;
             client.transfer(id, play).await?;
             record_action(
                 client,
@@ -345,7 +352,9 @@ pub async fn execute(client: &mut SpotifyClient, command: CommandKind) -> Result
                 .playback()
                 .await?
                 .item
-                .ok_or_else(|| anyhow::anyhow!("nothing is playing"))?;
+                .ok_or_else(|| SpotifyError::InvalidInput {
+                    message: "nothing is playing".to_string(),
+                })?;
             client.save_item(&item).await?;
             record_action(
                 client,
@@ -399,7 +408,7 @@ async fn record_action(
         .await;
 }
 
-async fn ensure_playback_target(client: &mut SpotifyClient) -> Result<()> {
+async fn ensure_playback_target(client: &mut SpotifyClient) -> SpotifyResult<()> {
     if let Ok(playback) = client.playback().await {
         if playback
             .device
@@ -416,18 +425,20 @@ async fn ensure_playback_target(client: &mut SpotifyClient) -> Result<()> {
 
     let mut last_devices = Vec::new();
     for attempt in 0..4 {
-        let devices = client
-            .devices()
-            .await
-            .context("no active Spotify device found; failed to fetch devices")?;
+        let devices = client.devices().await?;
         if let Some(device) = preferred_device(client.config(), &devices) {
-            let id = device.id.clone().with_context(|| {
-                format!("Spotify device {} has no transferable id", device.name)
-            })?;
+            let id = device
+                .id
+                .clone()
+                .ok_or_else(|| SpotifyError::InvalidInput {
+                    message: format!("Spotify device {} has no transferable id", device.name),
+                })?;
             client
                 .transfer(&id, false)
                 .await
-                .with_context(|| format!("failed to activate Spotify device {}", device.name))?;
+                .map_err(|err| SpotifyError::Client {
+                    message: format!("failed to activate Spotify device {}: {err}", device.name),
+                })?;
             return Ok(());
         }
         last_devices = devices;
@@ -436,15 +447,31 @@ async fn ensure_playback_target(client: &mut SpotifyClient) -> Result<()> {
         }
     }
 
-    bail!("{}", playback_target_error(client.config(), &last_devices))
+    Err(SpotifyError::Client {
+        message: playback_target_error(client.config(), &last_devices),
+    })
 }
 
 pub fn preferred_device(config: &Config, devices: &[Device]) -> Option<Device> {
     let unrestricted = devices.iter().filter(|device| !device.is_restricted);
+    // 1. Active device — already chosen by the user via another client.
     if let Some(device) = unrestricted.clone().find(|device| device.is_active) {
         return Some(device.clone());
     }
-    if let Some(name) = &config.spotifyd_device_name {
+    // The user may have configured either the new librespot/embedded
+    // device name (`player.device_name`) OR the legacy spotifyd name
+    // (`spotifyd.device_name`). Try both — the embedded backend
+    // registers under the former; spotifyd uses the latter.
+    let names: Vec<&str> = [
+        config.player.device_name.as_deref(),
+        config.spotifyd_device_name.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|n| !n.is_empty())
+    .collect();
+    // 2. Exact name match against either configured preferred name.
+    for name in &names {
         if let Some(device) = unrestricted
             .clone()
             .find(|device| device.name.eq_ignore_ascii_case(name))
@@ -452,17 +479,41 @@ pub fn preferred_device(config: &Config, devices: &[Device]) -> Option<Device> {
             return Some(device.clone());
         }
     }
-    if let Some(device) = unrestricted
-        .clone()
-        .find(|device| device.name.to_ascii_lowercase().contains("spotifyd"))
-    {
+    // 3. Any device whose name contains "spotifyd" or "librespot" —
+    //    convention markers for our own virtual backends.
+    if let Some(device) = unrestricted.clone().find(|device| {
+        let dn = device.name.to_ascii_lowercase();
+        dn.contains("spotifyd") || dn.contains("librespot")
+    }) {
         return Some(device.clone());
     }
-    let candidates = unrestricted.collect::<Vec<_>>();
-    if candidates.len() == 1 {
-        return Some(candidates[0].clone());
+    // 4. Fall back to *some* unrestricted device so play actions don't
+    //    fail outright. Prefer a name-substring overlap with one of the
+    //    configured preferred names — for example, configured
+    //    `spotuify-hume` matches a real `Hume` after the librespot
+    //    refactor renamed the registration target. Otherwise pick the
+    //    first by stable id ordering.
+    let mut candidates: Vec<&Device> = unrestricted.collect();
+    candidates.sort_by(|a, b| a.id.cmp(&b.id));
+    for name in &names {
+        let needle = name.to_ascii_lowercase();
+        let stripped = needle
+            .trim_start_matches("spotuify-")
+            .trim_start_matches("spotifyd-")
+            .trim_start_matches("librespot-");
+        let needle_token = if stripped.is_empty() {
+            needle.as_str()
+        } else {
+            stripped
+        };
+        if let Some(device) = candidates.iter().find(|device| {
+            let dn = device.name.to_ascii_lowercase();
+            dn.contains(needle_token) || needle_token.contains(&dn)
+        }) {
+            return Some((*device).clone());
+        }
     }
-    None
+    candidates.first().map(|device| (*device).clone())
 }
 
 pub fn playback_target_error(config: &Config, devices: &[Device]) -> String {
@@ -500,7 +551,11 @@ mod tests {
             spotifyd_device_name: preferred.map(str::to_string),
             spotifyd_autostart: true,
             player: crate::config::PlayerConfig::default(),
+            cache: crate::config::CacheConfig::default(),
             analytics: crate::config::AnalyticsConfig::default(),
+            notifications: crate::config::NotificationsConfig::default(),
+            discord: crate::config::DiscordConfig::default(),
+            viz: crate::config::VizConfig::default(),
         }
     }
 
@@ -525,7 +580,7 @@ mod tests {
 
         assert_eq!(
             preferred_device(&config(Some("spotuify-hume")), &devices)
-                .unwrap()
+                .expect("preferred device should resolve to active unrestricted device")
                 .name,
             "phone"
         );
@@ -540,10 +595,58 @@ mod tests {
 
         assert_eq!(
             preferred_device(&config(Some("spotuify-hume")), &devices)
-                .unwrap()
+                .expect("preferred device should skip restricted active devices")
                 .name,
             "spotuify-hume"
         );
+    }
+
+    #[test]
+    fn preferred_device_fuzzy_matches_when_preferred_name_doesnt_exist() {
+        // User-reported case: their config asks for `spotuify-hume` but
+        // the visible device is `Hume`. The `spotuify-` prefix is the
+        // librespot virtual-device convention; strip it and the rest
+        // matches.
+        let devices = [
+            device("Hume", false, false),
+            device("Office Echo", false, false),
+            device("Lounge", false, false),
+        ];
+
+        let chosen = preferred_device(&config(Some("spotuify-hume")), &devices)
+            .expect("fuzzy fallback should match Hume");
+        assert_eq!(chosen.name, "Hume");
+    }
+
+    #[test]
+    fn preferred_device_falls_back_to_first_unrestricted_device_when_no_match() {
+        // No preferred-name match, no spotifyd device, no fuzzy hit:
+        // we still pick *something* so play doesn't fail outright.
+        let devices = [
+            device("Phone", false, false),
+            device("Laptop", false, false),
+        ];
+        let chosen = preferred_device(&config(Some("unrelated-name")), &devices)
+            .expect("first-by-id fallback should always produce a device");
+        // Stable sort by id → "id-Laptop" < "id-Phone" alphabetically.
+        assert_eq!(chosen.name, "Laptop");
+    }
+
+    #[test]
+    fn preferred_device_skips_restricted_devices_in_fallback() {
+        let devices = [
+            device("Cast TV", false, true), // restricted, must be skipped
+            device("Phone", false, false),
+        ];
+        let chosen = preferred_device(&config(None), &devices)
+            .expect("fallback should ignore restricted devices");
+        assert_eq!(chosen.name, "Phone");
+    }
+
+    #[test]
+    fn preferred_device_returns_none_only_when_zero_unrestricted_devices() {
+        let devices = [device("Cast TV", false, true)];
+        assert!(preferred_device(&config(None), &devices).is_none());
     }
 
     #[test]

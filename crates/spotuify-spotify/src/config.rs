@@ -5,6 +5,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use spotuify_core::BackendKind;
 
+use crate::error::{SpotifyError, SpotifyResult};
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub client_id: String,
@@ -15,7 +17,103 @@ pub struct Config {
     pub spotifyd_device_name: Option<String>,
     pub spotifyd_autostart: bool,
     pub player: PlayerConfig,
+    pub cache: CacheConfig,
     pub analytics: AnalyticsConfig,
+    pub notifications: NotificationsConfig,
+    pub discord: DiscordConfig,
+    /// Phase 17 — visualization config. Default-off; users opt in via
+    /// `[viz] enabled = true`.
+    pub viz: VizConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct NotificationsSection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    on_track_change: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    on_pause: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    on_resume: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    on_skip: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    on_error: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotificationsConfig {
+    pub enabled: bool,
+    pub summary: String,
+    pub body: String,
+    pub on_track_change: bool,
+    pub on_pause: bool,
+    pub on_resume: bool,
+    pub on_skip: bool,
+    pub on_error: bool,
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            summary: "{track}".to_string(),
+            body: "{artist} - {album}".to_string(),
+            on_track_change: true,
+            on_pause: false,
+            on_resume: false,
+            on_skip: false,
+            on_error: true,
+        }
+    }
+}
+
+impl NotificationsConfig {
+    pub(crate) fn from_file(file: &FileConfig) -> Self {
+        let section = file.notifications.clone().unwrap_or_default();
+        let defaults = Self::default();
+        Self {
+            enabled: section.enabled.unwrap_or(defaults.enabled),
+            summary: blank_to_none(section.summary).unwrap_or(defaults.summary),
+            body: blank_to_none(section.body).unwrap_or(defaults.body),
+            on_track_change: section.on_track_change.unwrap_or(defaults.on_track_change),
+            on_pause: section.on_pause.unwrap_or(defaults.on_pause),
+            on_resume: section.on_resume.unwrap_or(defaults.on_resume),
+            on_skip: section.on_skip.unwrap_or(defaults.on_skip),
+            on_error: section.on_error.unwrap_or(defaults.on_error),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct DiscordSection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    application_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiscordConfig {
+    pub enabled: bool,
+    pub application_id: Option<String>,
+}
+
+impl DiscordConfig {
+    pub(crate) fn from_file(file: &FileConfig) -> Self {
+        let section = file.discord.clone().unwrap_or_default();
+        Self {
+            enabled: section.enabled.unwrap_or(false),
+            application_id: blank_to_none(section.application_id),
+        }
+    }
 }
 
 /// TOML-side representation of the `[analytics]` section. All fields
@@ -65,6 +163,44 @@ pub struct AnalyticsConfig {
     /// Phase 11 headless-Linux opt-in: when true and Secret Service
     /// is unavailable, fall back to an age-encrypted credentials file.
     pub allow_file_credentials: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct CacheSection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cover_cache_mb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cover_cache_ttl_days: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CacheConfig {
+    pub cover_cache_mb: u64,
+    pub cover_cache_ttl_days: u64,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            cover_cache_mb: 200,
+            cover_cache_ttl_days: 30,
+        }
+    }
+}
+
+impl CacheConfig {
+    pub(crate) fn from_file(file: &FileConfig) -> Self {
+        let section = file.cache.clone().unwrap_or_default();
+        let defaults = Self::default();
+        Self {
+            cover_cache_mb: section.cover_cache_mb.unwrap_or(defaults.cover_cache_mb),
+            cover_cache_ttl_days: section
+                .cover_cache_ttl_days
+                .filter(|days| *days > 0)
+                .unwrap_or(defaults.cover_cache_ttl_days),
+        }
+    }
 }
 
 impl Default for AnalyticsConfig {
@@ -126,7 +262,104 @@ pub(crate) struct FileConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     player: Option<PlayerSection>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    cache: Option<CacheSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     analytics: Option<AnalyticsSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notifications: Option<NotificationsSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discord: Option<DiscordSection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    viz: Option<VizSection>,
+}
+
+/// Phase 17 — TOML representation of the `[viz]` section. All fields
+/// optional; `VizConfig::from_file` fills defaults.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct VizSection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_fps: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    smoothing: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    noise_gate: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    color_scheme: Option<String>,
+}
+
+/// Phase 17 — fully-resolved `[viz]` config.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VizConfig {
+    pub enabled: bool,
+    /// One of "auto", "sink", "loopback", "none". Validated; unknown
+    /// strings fall back to "auto".
+    pub source: String,
+    /// Target FPS for the FFT ticker. Clamped to [1, 60]. Default 30.
+    pub target_fps: u8,
+    /// EMA smoothing factor 0.0..=0.95. Default 0.5.
+    pub smoothing: f32,
+    /// Noise gate threshold 0.0..=1.0. Default 0.005.
+    pub noise_gate: f32,
+    /// One of "spotify-green", "rainbow", "monochrome". Default
+    /// "spotify-green".
+    pub color_scheme: String,
+}
+
+impl Default for VizConfig {
+    fn default() -> Self {
+        Self {
+            // Visualizer is part of the player identity; ship it ON.
+            // Users on a Connect-only backend won't see bars move
+            // (no PCM samples) but the spectrum area still draws a
+            // flat baseline so the layout doesn't shift. Disable
+            // explicitly with `[viz] enabled = false`.
+            enabled: true,
+            source: "auto".to_string(),
+            target_fps: 30,
+            smoothing: 0.5,
+            noise_gate: 0.005,
+            color_scheme: "spotify-green".to_string(),
+        }
+    }
+}
+
+impl VizConfig {
+    pub(crate) fn from_file(file: &FileConfig) -> Self {
+        let section = file.viz.clone().unwrap_or_default();
+        let mut cfg = Self::default();
+        if let Some(v) = section.enabled {
+            cfg.enabled = v;
+        }
+        if let Some(s) = section.source.filter(|s| !s.trim().is_empty()) {
+            let lower = s.trim().to_ascii_lowercase();
+            cfg.source = match lower.as_str() {
+                "auto" | "sink" | "loopback" | "none" => lower,
+                _ => "auto".to_string(),
+            };
+        }
+        if let Some(fps) = section.target_fps {
+            cfg.target_fps = fps.clamp(1, 60);
+        }
+        if let Some(sm) = section.smoothing {
+            cfg.smoothing = sm.clamp(0.0, 0.95);
+        }
+        if let Some(g) = section.noise_gate {
+            cfg.noise_gate = g.clamp(0.0, 1.0);
+        }
+        if let Some(c) = section.color_scheme.filter(|s| !s.trim().is_empty()) {
+            let lower = c.trim().to_ascii_lowercase();
+            cfg.color_scheme = match lower.as_str() {
+                "spotify-green" | "rainbow" | "monochrome" => lower,
+                _ => "spotify-green".to_string(),
+            };
+        }
+        cfg
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -263,7 +496,11 @@ impl Default for FileConfig {
                 autostart: Some(true),
             }),
             player: None,
+            cache: None,
             analytics: None,
+            notifications: None,
+            discord: None,
+            viz: None,
         }
     }
 }
@@ -284,10 +521,22 @@ pub enum ConfigKey {
     PlayerAudioCacheMib,
     PlayerPulseProps,
     PlayerEventHook,
+    AnalyticsHookCommand,
+    AnalyticsHookTimeoutMs,
+    CacheCoverCacheMb,
+    CacheCoverCacheTtlDays,
+    NotificationsEnabled,
+    NotificationsSummary,
+    NotificationsBody,
+    NotificationsOnTrackChange,
+    NotificationsOnPause,
+    NotificationsOnResume,
+    NotificationsOnSkip,
+    NotificationsOnError,
 }
 
 impl ConfigKey {
-    pub fn parse(value: &str) -> Result<Self> {
+    pub fn parse(value: &str) -> SpotifyResult<Self> {
         match value {
             "client_id" | "client-id" => Ok(Self::ClientId),
             "client_secret" | "client-secret" => Ok(Self::ClientSecret),
@@ -302,10 +551,32 @@ impl ConfigKey {
             "player.audio_cache_mib" | "player.audio-cache-mib" => Ok(Self::PlayerAudioCacheMib),
             "player.pulse_props" | "player.pulse-props" => Ok(Self::PlayerPulseProps),
             "player.event_hook" | "player.event-hook" => Ok(Self::PlayerEventHook),
-            _ => bail!(
-                "unknown config key `{value}`; expected one of: {}",
-                Self::valid_keys().join(", ")
-            ),
+            "analytics.hook_command" | "analytics.hook-command" => Ok(Self::AnalyticsHookCommand),
+            "analytics.hook_timeout_ms" | "analytics.hook-timeout-ms" => {
+                Ok(Self::AnalyticsHookTimeoutMs)
+            }
+            "cache.cover_cache_mb" | "cache.cover-cache-mb" => Ok(Self::CacheCoverCacheMb),
+            "cache.cover_cache_ttl_days" | "cache.cover-cache-ttl-days" => {
+                Ok(Self::CacheCoverCacheTtlDays)
+            }
+            "notifications.enabled" => Ok(Self::NotificationsEnabled),
+            "notifications.summary" => Ok(Self::NotificationsSummary),
+            "notifications.body" => Ok(Self::NotificationsBody),
+            "notifications.on_track_change" | "notifications.on-track-change" => {
+                Ok(Self::NotificationsOnTrackChange)
+            }
+            "notifications.on_pause" | "notifications.on-pause" => Ok(Self::NotificationsOnPause),
+            "notifications.on_resume" | "notifications.on-resume" => {
+                Ok(Self::NotificationsOnResume)
+            }
+            "notifications.on_skip" | "notifications.on-skip" => Ok(Self::NotificationsOnSkip),
+            "notifications.on_error" | "notifications.on-error" => Ok(Self::NotificationsOnError),
+            _ => Err(SpotifyError::InvalidInput {
+                message: format!(
+                    "unknown config key `{value}`; expected one of: {}",
+                    Self::valid_keys().join(", ")
+                ),
+            }),
         }
     }
 
@@ -324,12 +595,24 @@ impl ConfigKey {
             "player.audio_cache_mib",
             "player.pulse_props",
             "player.event_hook",
+            "analytics.hook_command",
+            "analytics.hook_timeout_ms",
+            "cache.cover_cache_mb",
+            "cache.cover_cache_ttl_days",
+            "notifications.enabled",
+            "notifications.summary",
+            "notifications.body",
+            "notifications.on_track_change",
+            "notifications.on_pause",
+            "notifications.on_resume",
+            "notifications.on_skip",
+            "notifications.on_error",
         ]
     }
 }
 
 impl Config {
-    pub fn load() -> Result<Self> {
+    pub fn load() -> SpotifyResult<Self> {
         let config_path = config_path()?;
         ensure_config_exists(&config_path)?;
         // Phase 13 (P13-G) — every load is a chance to drop the
@@ -343,7 +626,11 @@ impl Config {
         PlayerConfig::validate(&file)
             .with_context(|| format!("invalid [player] section in {}", config_path.display()))?;
         let player = PlayerConfig::from_file(&file);
+        let cache = CacheConfig::from_file(&file);
         let analytics = AnalyticsConfig::from_file(&file);
+        let notifications = NotificationsConfig::from_file(&file);
+        let discord = DiscordConfig::from_file(&file);
+        let viz = VizConfig::from_file(&file);
 
         let client_id = std::env::var("SPOTUIFY_CLIENT_ID")
             .ok()
@@ -384,7 +671,11 @@ impl Config {
             spotifyd_device_name,
             spotifyd_autostart,
             player,
+            cache,
             analytics,
+            notifications,
+            discord,
+            viz,
         })
     }
 
@@ -408,18 +699,18 @@ impl Config {
     }
 }
 
-pub fn config_path() -> Result<PathBuf> {
+pub fn config_path() -> SpotifyResult<PathBuf> {
     if let Some(path) = std::env::var_os("SPOTUIFY_CONFIG") {
         return Ok(PathBuf::from(path));
     }
 
-    dirs::config_dir()
+    Ok(dirs::config_dir()
         .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
         .map(|dir| dir.join("spotuify/spotuify.toml"))
-        .ok_or_else(|| anyhow!("could not resolve config directory"))
+        .ok_or_else(|| anyhow!("could not resolve config directory"))?)
 }
 
-pub fn init_config() -> Result<PathBuf> {
+pub fn init_config() -> SpotifyResult<PathBuf> {
     let path = config_path()?;
     if !path.exists() {
         write_template(&path)?;
@@ -427,7 +718,7 @@ pub fn init_config() -> Result<PathBuf> {
     Ok(path)
 }
 
-pub fn get_config_value(key: ConfigKey) -> Result<Option<String>> {
+pub fn get_config_value(key: ConfigKey) -> SpotifyResult<Option<String>> {
     let path = config_path()?;
     let file = if path.exists() {
         read_config_file(&path)?
@@ -436,6 +727,9 @@ pub fn get_config_value(key: ConfigKey) -> Result<Option<String>> {
     };
 
     let resolved = PlayerConfig::from_file(&file);
+    let resolved_cache = CacheConfig::from_file(&file);
+    let resolved_analytics = AnalyticsConfig::from_file(&file);
+    let resolved_notifications = NotificationsConfig::from_file(&file);
 
     Ok(match key {
         ConfigKey::ClientId => blank_to_none(file.client_id),
@@ -465,10 +759,24 @@ pub fn get_config_value(key: ConfigKey) -> Result<Option<String>> {
         ConfigKey::PlayerAudioCacheMib => Some(resolved.audio_cache_mib.to_string()),
         ConfigKey::PlayerPulseProps => Some(resolved.pulse_props.to_string()),
         ConfigKey::PlayerEventHook => resolved.event_hook,
+        ConfigKey::AnalyticsHookCommand => resolved_analytics.hook_command,
+        ConfigKey::AnalyticsHookTimeoutMs => Some(resolved_analytics.hook_timeout_ms.to_string()),
+        ConfigKey::CacheCoverCacheMb => Some(resolved_cache.cover_cache_mb.to_string()),
+        ConfigKey::CacheCoverCacheTtlDays => Some(resolved_cache.cover_cache_ttl_days.to_string()),
+        ConfigKey::NotificationsEnabled => Some(resolved_notifications.enabled.to_string()),
+        ConfigKey::NotificationsSummary => Some(resolved_notifications.summary),
+        ConfigKey::NotificationsBody => Some(resolved_notifications.body),
+        ConfigKey::NotificationsOnTrackChange => {
+            Some(resolved_notifications.on_track_change.to_string())
+        }
+        ConfigKey::NotificationsOnPause => Some(resolved_notifications.on_pause.to_string()),
+        ConfigKey::NotificationsOnResume => Some(resolved_notifications.on_resume.to_string()),
+        ConfigKey::NotificationsOnSkip => Some(resolved_notifications.on_skip.to_string()),
+        ConfigKey::NotificationsOnError => Some(resolved_notifications.on_error.to_string()),
     })
 }
 
-pub fn set_config_value(key: ConfigKey, value: &str) -> Result<PathBuf> {
+pub fn set_config_value(key: ConfigKey, value: &str) -> SpotifyResult<PathBuf> {
     let path = init_config()?;
     let mut file = read_config_file(&path)?;
 
@@ -495,7 +803,9 @@ pub fn set_config_value(key: ConfigKey, value: &str) -> Result<PathBuf> {
                 format!("expected an integer for player.bitrate, got `{value}`")
             })?;
             if !matches!(parsed, 96 | 160 | 320) {
-                bail!("player.bitrate must be one of 96, 160, 320 (got `{parsed}`)");
+                return Err(SpotifyError::InvalidInput {
+                    message: format!("player.bitrate must be one of 96, 160, 320 (got `{parsed}`)"),
+                });
             }
             player_section_mut(&mut file).bitrate = Some(parsed);
         }
@@ -516,6 +826,61 @@ pub fn set_config_value(key: ConfigKey, value: &str) -> Result<PathBuf> {
         }
         ConfigKey::PlayerEventHook => {
             player_section_mut(&mut file).event_hook = blank_to_none(Some(value.to_string()));
+        }
+        ConfigKey::AnalyticsHookCommand => {
+            analytics_section_mut(&mut file).hook_command = blank_to_none(Some(value.to_string()));
+        }
+        ConfigKey::AnalyticsHookTimeoutMs => {
+            let parsed: u64 = value.trim().parse().with_context(|| {
+                format!("expected a positive integer for analytics.hook_timeout_ms, got `{value}`")
+            })?;
+            if parsed == 0 {
+                return Err(SpotifyError::InvalidInput {
+                    message: "analytics.hook_timeout_ms must be greater than 0".to_string(),
+                });
+            }
+            analytics_section_mut(&mut file).hook_timeout_ms = Some(parsed);
+        }
+        ConfigKey::CacheCoverCacheMb => {
+            let parsed: u64 = value.trim().parse().with_context(|| {
+                format!("expected a non-negative integer for cache.cover_cache_mb, got `{value}`")
+            })?;
+            cache_section_mut(&mut file).cover_cache_mb = Some(parsed);
+        }
+        ConfigKey::CacheCoverCacheTtlDays => {
+            let parsed: u64 = value.trim().parse().with_context(|| {
+                format!("expected a positive integer for cache.cover_cache_ttl_days, got `{value}`")
+            })?;
+            if parsed == 0 {
+                return Err(SpotifyError::InvalidInput {
+                    message: "cache.cover_cache_ttl_days must be greater than 0".to_string(),
+                });
+            }
+            cache_section_mut(&mut file).cover_cache_ttl_days = Some(parsed);
+        }
+        ConfigKey::NotificationsEnabled => {
+            notifications_section_mut(&mut file).enabled = Some(parse_bool(value)?);
+        }
+        ConfigKey::NotificationsSummary => {
+            notifications_section_mut(&mut file).summary = blank_to_none(Some(value.to_string()));
+        }
+        ConfigKey::NotificationsBody => {
+            notifications_section_mut(&mut file).body = blank_to_none(Some(value.to_string()));
+        }
+        ConfigKey::NotificationsOnTrackChange => {
+            notifications_section_mut(&mut file).on_track_change = Some(parse_bool(value)?);
+        }
+        ConfigKey::NotificationsOnPause => {
+            notifications_section_mut(&mut file).on_pause = Some(parse_bool(value)?);
+        }
+        ConfigKey::NotificationsOnResume => {
+            notifications_section_mut(&mut file).on_resume = Some(parse_bool(value)?);
+        }
+        ConfigKey::NotificationsOnSkip => {
+            notifications_section_mut(&mut file).on_skip = Some(parse_bool(value)?);
+        }
+        ConfigKey::NotificationsOnError => {
+            notifications_section_mut(&mut file).on_error = Some(parse_bool(value)?);
         }
     }
 
@@ -543,8 +908,8 @@ fn read_config_file(path: &Path) -> Result<FileConfig> {
     // deserialisation. Round-trips through `toml::Value` so the override
     // applies to whichever section/field the user named without
     // touching the file on disk.
-    let mut value: toml::Value = toml::from_str(&contents)
-        .with_context(|| format!("could not parse {}", path.display()))?;
+    let mut value: toml::Value =
+        toml::from_str(&contents).with_context(|| format!("could not parse {}", path.display()))?;
     apply_dotpath_overrides(&mut value);
     let merged = toml::to_string(&value)
         .with_context(|| format!("re-emit failed for {}", path.display()))?;
@@ -589,9 +954,9 @@ fn apply_single_override(root: &mut toml::Value, raw: &str) -> Result<()> {
     for (i, key) in parts.iter().enumerate() {
         if i == parts.len() - 1 {
             // Last segment: insert.
-            let table = cursor.as_table_mut().ok_or_else(|| {
-                anyhow::anyhow!("cannot set `{path}`: parent is not a table")
-            })?;
+            let table = cursor
+                .as_table_mut()
+                .ok_or_else(|| anyhow::anyhow!("cannot set `{path}`: parent is not a table"))?;
             table.insert(key.to_string(), rhs);
             return Ok(());
         }
@@ -666,6 +1031,19 @@ fn player_section_mut(file: &mut FileConfig) -> &mut PlayerSection {
     file.player.get_or_insert_with(PlayerSection::default)
 }
 
+fn cache_section_mut(file: &mut FileConfig) -> &mut CacheSection {
+    file.cache.get_or_insert_with(CacheSection::default)
+}
+
+fn analytics_section_mut(file: &mut FileConfig) -> &mut AnalyticsSection {
+    file.analytics.get_or_insert_with(AnalyticsSection::default)
+}
+
+fn notifications_section_mut(file: &mut FileConfig) -> &mut NotificationsSection {
+    file.notifications
+        .get_or_insert_with(NotificationsSection::default)
+}
+
 fn default_redirect_uri() -> String {
     "http://127.0.0.1:8888/callback".to_string()
 }
@@ -733,13 +1111,56 @@ normalization = false
 audio_cache_mib = 0
 # Set PULSE_PROP_* env vars so spotuify appears nicely in pavucontrol (Linux only).
 pulse_props = true
-# Optional shell command run on each PlayerEvent (Unix-style extensibility).
+# Legacy alias for analytics.hook_command.
 # event_hook = "/usr/local/bin/notify"
+
+[cache]
+# Shared cover-art cache cap and stale-while-revalidate TTL.
+cover_cache_mb = 200
+cover_cache_ttl_days = 30
+
+[analytics]
+# Optional shell hook for listen-qualified / playback lifecycle events.
+# hook_command = "/usr/local/bin/spotuify-hook"
+hook_timeout_ms = 5000
+
+[notifications]
+# Desktop notifications are opt-in.
+enabled = false
+summary = "{track}"
+body = "{artist} - {album}"
+on_track_change = true
+on_pause = false
+on_resume = false
+on_skip = false
+on_error = true
 "#;
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_single_override, expand_home, parse_bool};
+    use super::{
+        apply_single_override, expand_home, get_config_value, parse_bool, set_config_value, Config,
+        ConfigKey,
+    };
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
+    }
+
+    #[test]
+    fn viz_config_default_ships_visualizer_enabled_so_users_see_it_without_opting_in() {
+        let viz = super::VizConfig::default();
+        assert!(
+            viz.enabled,
+            "VizConfig::default must ship visualizer on — it's the player's identity"
+        );
+    }
 
     #[test]
     fn keeps_absolute_paths() {
@@ -751,31 +1172,44 @@ mod tests {
 
     #[test]
     fn parses_bool_config_values() {
-        assert!(parse_bool("on").unwrap());
-        assert!(!parse_bool("false").unwrap());
+        assert!(parse_bool("on").expect("on should parse as true"));
+        assert!(!parse_bool("false").expect("false should parse as false"));
         assert!(parse_bool("later").is_err());
     }
 
     #[test]
     fn dotpath_override_overwrites_existing_player_bitrate() {
-        let mut value: toml::Value = toml::from_str("[player]\nbitrate = 320\n").unwrap();
-        apply_single_override(&mut value, "player.bitrate=96").unwrap();
-        assert_eq!(value["player"]["bitrate"].as_integer().unwrap(), 96);
+        let mut value: toml::Value =
+            toml::from_str("[player]\nbitrate = 320\n").expect("test TOML should parse");
+        apply_single_override(&mut value, "player.bitrate=96")
+            .expect("bitrate override should apply");
+        assert_eq!(
+            value["player"]["bitrate"]
+                .as_integer()
+                .expect("bitrate should be integer"),
+            96
+        );
     }
 
     #[test]
     fn dotpath_override_creates_missing_section() {
-        let mut value: toml::Value = toml::from_str("").unwrap();
-        apply_single_override(&mut value, "notifications.enabled=true").unwrap();
-        assert!(value["notifications"]["enabled"].as_bool().unwrap());
+        let mut value: toml::Value = toml::from_str("").expect("empty TOML should parse");
+        apply_single_override(&mut value, "notifications.enabled=true")
+            .expect("missing section override should apply");
+        assert!(value["notifications"]["enabled"]
+            .as_bool()
+            .expect("enabled should be bool"));
     }
 
     #[test]
     fn dotpath_override_supports_quoted_strings() {
-        let mut value: toml::Value = toml::from_str("").unwrap();
-        apply_single_override(&mut value, "spotifyd.device_name=\"my-laptop\"").unwrap();
+        let mut value: toml::Value = toml::from_str("").expect("empty TOML should parse");
+        apply_single_override(&mut value, "spotifyd.device_name=\"my-laptop\"")
+            .expect("quoted string override should apply");
         assert_eq!(
-            value["spotifyd"]["device_name"].as_str().unwrap(),
+            value["spotifyd"]["device_name"]
+                .as_str()
+                .expect("device_name should be string"),
             "my-laptop"
         );
     }
@@ -784,14 +1218,124 @@ mod tests {
     fn dotpath_override_rejects_malformed_input() {
         // Missing `=` → bail. The CLI logs a warning and skips the
         // override rather than failing the whole config load.
-        let mut value: toml::Value = toml::from_str("").unwrap();
+        let mut value: toml::Value = toml::from_str("").expect("empty TOML should parse");
         assert!(apply_single_override(&mut value, "no-equals-sign").is_err());
     }
 
     #[test]
     fn dotpath_override_rejects_empty_key() {
-        let mut value: toml::Value = toml::from_str("").unwrap();
+        let mut value: toml::Value = toml::from_str("").expect("empty TOML should parse");
         assert!(apply_single_override(&mut value, "=42").is_err());
+    }
+
+    #[test]
+    fn config_load_applies_dotpath_override_without_writing_config_file() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = temp.path().join("spotuify.toml");
+        let original = r#"
+client_id = "client"
+client_secret = "secret"
+
+[player]
+bitrate = 320
+"#;
+        std::fs::write(&config_path, original).expect("write config");
+
+        let old_config = std::env::var_os("SPOTUIFY_CONFIG");
+        let old_overrides = std::env::var_os("SPOTUIFY_CONFIG_OVERRIDES");
+        std::env::set_var("SPOTUIFY_CONFIG", &config_path);
+        std::env::set_var("SPOTUIFY_CONFIG_OVERRIDES", "player.bitrate=96");
+
+        let config = Config::load().expect("config should load with override");
+
+        restore_env("SPOTUIFY_CONFIG", old_config);
+        restore_env("SPOTUIFY_CONFIG_OVERRIDES", old_overrides);
+
+        assert_eq!(config.player.bitrate, 96);
+        assert_eq!(
+            std::fs::read_to_string(&config_path).expect("read config"),
+            original
+        );
+    }
+
+    #[test]
+    fn config_set_and_get_supports_preferred_analytics_hook_keys() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = temp.path().join("spotuify.toml");
+
+        let old_config = std::env::var_os("SPOTUIFY_CONFIG");
+        std::env::set_var("SPOTUIFY_CONFIG", &config_path);
+
+        set_config_value(ConfigKey::AnalyticsHookCommand, "hook.sh")
+            .expect("analytics hook should write");
+        set_config_value(ConfigKey::AnalyticsHookTimeoutMs, "1234")
+            .expect("analytics hook timeout should write");
+
+        let hook =
+            get_config_value(ConfigKey::AnalyticsHookCommand).expect("analytics hook should read");
+        let timeout = get_config_value(ConfigKey::AnalyticsHookTimeoutMs)
+            .expect("analytics hook timeout should read");
+
+        restore_env("SPOTUIFY_CONFIG", old_config);
+
+        assert_eq!(hook.as_deref(), Some("hook.sh"));
+        assert_eq!(timeout.as_deref(), Some("1234"));
+    }
+
+    #[test]
+    fn config_set_and_get_supports_notification_keys() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = temp.path().join("spotuify.toml");
+
+        let old_config = std::env::var_os("SPOTUIFY_CONFIG");
+        std::env::set_var("SPOTUIFY_CONFIG", &config_path);
+
+        set_config_value(ConfigKey::NotificationsEnabled, "true")
+            .expect("notification enabled should write");
+        set_config_value(ConfigKey::NotificationsSummary, "{track}")
+            .expect("notification summary should write");
+        set_config_value(ConfigKey::NotificationsOnPause, "on")
+            .expect("notification pause toggle should write");
+
+        let enabled =
+            get_config_value(ConfigKey::NotificationsEnabled).expect("enabled should read");
+        let summary =
+            get_config_value(ConfigKey::NotificationsSummary).expect("summary should read");
+        let pause = get_config_value(ConfigKey::NotificationsOnPause).expect("pause should read");
+
+        restore_env("SPOTUIFY_CONFIG", old_config);
+
+        assert_eq!(enabled.as_deref(), Some("true"));
+        assert_eq!(summary.as_deref(), Some("{track}"));
+        assert_eq!(pause.as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn init_config_writes_gitignore_next_to_template() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = temp.path().join("spotuify").join("spotuify.toml");
+        let old_config = std::env::var_os("SPOTUIFY_CONFIG");
+        std::env::set_var("SPOTUIFY_CONFIG", &config_path);
+
+        let path = super::init_config().expect("init config should create template");
+
+        restore_env("SPOTUIFY_CONFIG", old_config);
+
+        assert_eq!(path, config_path);
+        let gitignore = std::fs::read_to_string(
+            config_path
+                .parent()
+                .expect("config path should have parent")
+                .join(".gitignore"),
+        )
+        .expect(".gitignore should be written");
+        assert!(gitignore.contains("*.json"));
+        assert!(gitignore.contains("credentials.*"));
+        assert!(gitignore.contains("*.encrypted"));
     }
 }
 
@@ -804,18 +1348,25 @@ mod tests {
 // ConfigKey parse + setter path covers every new key.
 #[cfg(test)]
 mod player_config {
-    use super::{AnalyticsConfig, ConfigKey, FileConfig, PlayerConfig};
+    use super::{
+        AnalyticsConfig, ConfigKey, DiscordConfig, FileConfig, NotificationsConfig, PlayerConfig,
+    };
     use spotuify_core::BackendKind;
+
+    fn parse_file(toml: &str) -> FileConfig {
+        toml::from_str(toml).expect("test TOML should parse")
+    }
 
     #[test]
     fn empty_toml_yields_explicit_defaults() {
-        let file: FileConfig = toml::from_str("").unwrap();
+        let file = parse_file("");
         let player = PlayerConfig::from_file(&file);
 
         assert_eq!(
             player.backend,
-            BackendKind::Spotifyd,
-            "default backend preserves pre-phase-9 behaviour"
+            BackendKind::Embedded,
+            "Phase 9 flipped the default backend; player_factory falls \
+             back to spotifyd automatically when embedded fails preflight"
         );
         assert_eq!(player.bitrate, 320, "default bitrate is the highest tier");
         assert_eq!(
@@ -840,7 +1391,7 @@ audio_cache_mib = 256
 pulse_props = false
 event_hook = "/usr/local/bin/notify"
 "#;
-        let file: FileConfig = toml::from_str(toml).unwrap();
+        let file = parse_file(toml);
         let player = PlayerConfig::from_file(&file);
 
         assert_eq!(player.backend, BackendKind::Embedded);
@@ -860,7 +1411,7 @@ event_hook = "/usr/local/bin/notify"
 [player]
 bitrate = 200
 "#;
-        let file: FileConfig = toml::from_str(toml).unwrap();
+        let file = parse_file(toml);
         let err = PlayerConfig::validate(&file).expect_err("bitrate=200 must error");
         assert!(err.to_string().contains("200"), "err: {err}");
         assert!(err.to_string().contains("bitrate"), "err: {err}");
@@ -875,7 +1426,7 @@ bitrate = 200
 [player]
 backend = "embeded"
 "#;
-        let file: FileConfig = toml::from_str(toml).unwrap();
+        let file = parse_file(toml);
         let err = PlayerConfig::validate(&file).expect_err("typo must error");
         assert!(
             err.to_string().contains("embeded"),
@@ -902,53 +1453,77 @@ backend = "embeded"
             redirect_uri: None,
             spotifyd: None,
             player: Some(original.clone().into()),
+            cache: None,
             analytics: None,
+            notifications: None,
+            discord: None,
+            viz: None,
         })
-        .unwrap();
-        let parsed: FileConfig = toml::from_str(&serialized).unwrap();
+        .expect("player config should serialize");
+        let parsed = parse_file(&serialized);
         let round_tripped = PlayerConfig::from_file(&parsed);
 
         assert_eq!(round_tripped, original);
     }
 
     #[test]
-    fn config_key_parses_every_player_key() {
+    fn config_key_parses_every_player_and_hook_key() {
         assert_eq!(
-            ConfigKey::parse("player.backend").unwrap(),
+            ConfigKey::parse("player.backend").expect("player.backend should parse"),
             ConfigKey::PlayerBackend
         );
         assert_eq!(
-            ConfigKey::parse("player.bitrate").unwrap(),
+            ConfigKey::parse("player.bitrate").expect("player.bitrate should parse"),
             ConfigKey::PlayerBitrate
         );
         assert_eq!(
-            ConfigKey::parse("player.device_name").unwrap(),
+            ConfigKey::parse("player.device_name").expect("player.device_name should parse"),
             ConfigKey::PlayerDeviceName
         );
         assert_eq!(
-            ConfigKey::parse("player.device-name").unwrap(),
+            ConfigKey::parse("player.device-name").expect("player.device-name should parse"),
             ConfigKey::PlayerDeviceName
         );
         assert_eq!(
-            ConfigKey::parse("player.normalization").unwrap(),
+            ConfigKey::parse("player.normalization").expect("player.normalization should parse"),
             ConfigKey::PlayerNormalization
         );
         assert_eq!(
-            ConfigKey::parse("player.audio_cache_mib").unwrap(),
+            ConfigKey::parse("player.audio_cache_mib")
+                .expect("player.audio_cache_mib should parse"),
             ConfigKey::PlayerAudioCacheMib
         );
         assert_eq!(
-            ConfigKey::parse("player.pulse_props").unwrap(),
+            ConfigKey::parse("player.pulse_props").expect("player.pulse_props should parse"),
             ConfigKey::PlayerPulseProps
         );
         assert_eq!(
-            ConfigKey::parse("player.event_hook").unwrap(),
+            ConfigKey::parse("player.event_hook").expect("player.event_hook should parse"),
             ConfigKey::PlayerEventHook
+        );
+        assert_eq!(
+            ConfigKey::parse("analytics.hook_command")
+                .expect("analytics.hook_command should parse"),
+            ConfigKey::AnalyticsHookCommand
+        );
+        assert_eq!(
+            ConfigKey::parse("analytics.hook-timeout-ms")
+                .expect("analytics.hook-timeout-ms should parse"),
+            ConfigKey::AnalyticsHookTimeoutMs
+        );
+        assert_eq!(
+            ConfigKey::parse("notifications.enabled").expect("notifications.enabled should parse"),
+            ConfigKey::NotificationsEnabled
+        );
+        assert_eq!(
+            ConfigKey::parse("notifications.on-track-change")
+                .expect("notifications.on-track-change should parse"),
+            ConfigKey::NotificationsOnTrackChange
         );
     }
 
     #[test]
-    fn config_key_valid_keys_lists_every_player_field() {
+    fn config_key_valid_keys_lists_every_player_and_hook_field() {
         // Adversarial: the error message in ConfigKey::parse is the
         // only discoverability surface for users. Locking the listing
         // catches the bug where someone adds a key but forgets the
@@ -962,6 +1537,16 @@ backend = "embeded"
             "player.audio_cache_mib",
             "player.pulse_props",
             "player.event_hook",
+            "analytics.hook_command",
+            "analytics.hook_timeout_ms",
+            "notifications.enabled",
+            "notifications.summary",
+            "notifications.body",
+            "notifications.on_track_change",
+            "notifications.on_pause",
+            "notifications.on_resume",
+            "notifications.on_skip",
+            "notifications.on_error",
         ] {
             assert!(
                 valid.contains(key),
@@ -990,7 +1575,7 @@ backend = "embeded"
 store_raw_queries = false
 hook_command = "scrobble.sh"
 "#;
-        let file: FileConfig = toml::from_str(toml).unwrap();
+        let file = parse_file(toml);
         let cfg = AnalyticsConfig::from_file(&file);
         assert!(!cfg.store_raw_queries);
         assert_eq!(cfg.hook_command.as_deref(), Some("scrobble.sh"));
@@ -1002,8 +1587,31 @@ hook_command = "scrobble.sh"
     #[test]
     fn analytics_daily_rollup_hour_out_of_range_falls_back_to_default() {
         let toml = "[analytics]\ndaily_rollup_hour = 25\n";
-        let file: FileConfig = toml::from_str(toml).unwrap();
+        let file = parse_file(toml);
         let cfg = AnalyticsConfig::from_file(&file);
         assert_eq!(cfg.daily_rollup_hour, 3);
+    }
+
+    #[test]
+    fn system_integration_sections_from_partial_toml_keep_defaults() {
+        let toml = r#"
+[notifications]
+enabled = true
+summary = "{track}"
+
+[discord]
+enabled = true
+application_id = "123456"
+"#;
+        let file = parse_file(toml);
+        let notifications = NotificationsConfig::from_file(&file);
+        let discord = DiscordConfig::from_file(&file);
+
+        assert!(notifications.enabled);
+        assert_eq!(notifications.summary, "{track}");
+        assert_eq!(notifications.body, "{artist} - {album}");
+        assert!(notifications.on_track_change);
+        assert!(discord.enabled);
+        assert_eq!(discord.application_id.as_deref(), Some("123456"));
     }
 }

@@ -47,6 +47,13 @@ pub enum Priority {
 /// give up after 3 tries.
 pub const MAX_TRANSIENT_RETRIES: u32 = 3;
 
+/// Bounded 429 retry count inside one user-visible request.
+///
+/// Backoff state is persisted so later calls still honor Spotify's
+/// `Retry-After`, but a single CLI/TUI action must not sleep forever
+/// behind a sustained upstream rate limit.
+pub const MAX_RATE_LIMIT_RETRIES: u32 = 3;
+
 /// Exponential backoff base. Each attempt multiplies by 2 with ±25%
 /// jitter applied multiplicatively.
 pub const BACKOFF_BASE_MS: u64 = 250;
@@ -209,6 +216,7 @@ impl BackoffState {
 /// integration with the daemon Spotify client is wired in a follow-up
 /// (the existing `src/spotify.rs` retains its string-bail flow until
 /// migrated; new code paths use this client).
+#[derive(Clone)]
 pub struct RateLimitedClient {
     pub(crate) inner: reqwest::Client,
     pub(crate) backoff: Arc<RwLock<BackoffState>>,
@@ -257,5 +265,143 @@ impl RateLimitedClient {
 
     pub fn inner(&self) -> &reqwest::Client {
         &self.inner
+    }
+
+    /// Execute a request with Spotify-aware retry/backoff policy.
+    ///
+    /// `build` is called once per attempt so bodies do not need to rely
+    /// on `RequestBuilder::try_clone`. The returned response is always a
+    /// success/304 response; non-success outcomes are surfaced as typed
+    /// [`SpotifyError`] values.
+    pub async fn send_with_retry<F>(
+        &self,
+        priority: Priority,
+        scope: &str,
+        mut build: F,
+    ) -> Result<reqwest::Response, SpotifyError>
+    where
+        F: FnMut() -> reqwest::RequestBuilder,
+    {
+        let _permit = match priority {
+            Priority::PlaybackControl => None,
+            Priority::Foreground => Some(self.acquire(&self.foreground_sem, scope).await?),
+            Priority::BackgroundSync => Some(self.acquire(&self.background_sem, scope).await?),
+        };
+
+        let mut attempt = 0_u32;
+        let mut rate_limit_attempt = 0_u32;
+        loop {
+            self.sleep_until_eligible(scope).await;
+
+            let response = match build().send().await {
+                Ok(response) => response,
+                Err(_err) if attempt + 1 < MAX_TRANSIENT_RETRIES => {
+                    let delay = {
+                        let mut rng = rand::thread_rng();
+                        jittered_backoff(attempt, &mut rng)
+                    };
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                    continue;
+                }
+                Err(err) => {
+                    return Err(SpotifyError::Network {
+                        endpoint: scope.to_string(),
+                        message: err.to_string(),
+                    });
+                }
+            };
+
+            let status = response.status().as_u16();
+            if (200..300).contains(&status) || status == 304 {
+                self.clear_backoff(scope);
+                return Ok(response);
+            }
+
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            let body = response.text().await.unwrap_or_default();
+            let now = Utc::now();
+            let action = {
+                let mut rng = rand::thread_rng();
+                decide_retry(
+                    attempt,
+                    status,
+                    retry_after.as_deref(),
+                    scope,
+                    &body,
+                    now,
+                    &mut rng,
+                )
+            };
+            match action {
+                RetryAction::Success => unreachable!("success handled before body read"),
+                RetryAction::Retry { delay } => {
+                    if status == 429 {
+                        self.record_rate_limit(scope, now.timestamp_millis(), delay);
+                        rate_limit_attempt += 1;
+                        if rate_limit_attempt >= MAX_RATE_LIMIT_RETRIES {
+                            return Err(classify_response(
+                                status,
+                                retry_after.as_deref(),
+                                scope,
+                                &body,
+                                now,
+                            ));
+                        }
+                    } else {
+                        attempt += 1;
+                    }
+                    tokio::time::sleep(delay).await;
+                }
+                RetryAction::GiveUp(err) => return Err(err),
+            }
+        }
+    }
+
+    async fn acquire<'a>(
+        &self,
+        sem: &'a tokio::sync::Semaphore,
+        scope: &str,
+    ) -> Result<tokio::sync::SemaphorePermit<'a>, SpotifyError> {
+        sem.acquire().await.map_err(|err| SpotifyError::Network {
+            endpoint: scope.to_string(),
+            message: err.to_string(),
+        })
+    }
+
+    async fn sleep_until_eligible(&self, scope: &str) {
+        let wait_ms = self
+            .backoff
+            .read()
+            .wait_ms(scope, Utc::now().timestamp_millis());
+        if wait_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(wait_ms as u64)).await;
+        }
+    }
+
+    fn record_rate_limit(&self, scope: &str, now_ms: i64, retry_after: Duration) {
+        {
+            self.backoff
+                .write()
+                .record_rate_limit(scope, now_ms, retry_after);
+        }
+        self.persist_backoff();
+    }
+
+    fn clear_backoff(&self, scope: &str) {
+        {
+            self.backoff.write().clear(scope);
+        }
+        self.persist_backoff();
+    }
+
+    fn persist_backoff(&self) {
+        if let Some(path) = &self.bucket_path {
+            let _ = self.backoff.read().save(path);
+        }
     }
 }

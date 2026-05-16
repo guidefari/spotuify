@@ -24,10 +24,17 @@ pub enum AuthErrorKind {
     ExpiredRefresh,
     InvalidGrant,
     Forbidden,
+    /// Stored token was issued before some currently-required scopes
+    /// were added. Recovery: `spotuify logout && spotuify login`.
+    /// Emitted proactively at daemon startup so the TUI can prompt the
+    /// user without waiting for the first 403.
+    ScopeReauthRequired,
 }
 
 /// Phase 6 typed error for Spotify Web API operations.
-#[derive(Debug, thiserror::Error)]
+pub type SpotifyResult<T> = std::result::Result<T, SpotifyError>;
+
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum SpotifyError {
     #[error("rate limited (scope {scope}); retry after {retry_after:?}")]
     RateLimited {
@@ -38,7 +45,7 @@ pub enum SpotifyError {
     AuthExpired,
     #[error("auth revoked; re-login required")]
     AuthRevoked,
-    #[error("forbidden: scope {scope} required")]
+    #[error("forbidden: Spotify token missing the {scope} permission")]
     Forbidden { scope: String },
     #[error("not found")]
     NotFound,
@@ -55,6 +62,10 @@ pub enum SpotifyError {
         message: String,
         body: String,
     },
+    #[error("invalid Spotify request: {message}")]
+    InvalidInput { message: String },
+    #[error("Spotify client error: {message}")]
+    Client { message: String },
 }
 
 /// Default Retry-After value when Spotify omits the header on a 429.
@@ -90,9 +101,29 @@ impl SpotifyError {
             Self::RateLimited { .. } => K::RateLimited,
             Self::AuthExpired | Self::AuthRevoked => K::Auth,
             Self::Forbidden { .. } => K::Auth,
-            Self::NotFound | Self::Deprecated { .. } => K::Provider,
+            Self::NotFound | Self::Deprecated { .. } | Self::InvalidInput { .. } => K::Provider,
             Self::Network { .. } => K::Network,
-            Self::Decode { .. } | Self::Api { .. } => K::Provider,
+            Self::Decode { .. } | Self::Api { .. } | Self::Client { .. } => K::Provider,
+        }
+    }
+}
+
+impl From<anyhow::Error> for SpotifyError {
+    fn from(err: anyhow::Error) -> Self {
+        if let Some(error) = err.downcast_ref::<SpotifyError>() {
+            return error.clone();
+        }
+        Self::Client {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<serde_json::Error> for SpotifyError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::Decode {
+            endpoint: "local-json".to_string(),
+            message: err.to_string(),
         }
     }
 }
@@ -142,10 +173,50 @@ pub fn classify_response(
             scope: endpoint.to_string(),
         },
         401 => SpotifyError::AuthExpired,
-        403 => SpotifyError::Forbidden {
-            scope: parse_required_scope(body).unwrap_or_else(|| endpoint.to_string()),
-        },
-        404 => SpotifyError::NotFound,
+        403 => {
+            // Only emit `Forbidden { scope }` when Spotify's message
+            // actually names a missing scope. Otherwise surface
+            // Spotify's body verbatim — many 403s are *not* scope
+            // failures (e.g. "Player command failed: Restriction
+            // violated", "Premium required", device-not-available)
+            // and labelling them as scope issues sends the user on
+            // a re-auth chase that fixes nothing.
+            if let Some(scope) = parse_required_scope(body) {
+                SpotifyError::Forbidden { scope }
+            } else {
+                let message = spotify_error_message(body);
+                let message = if message.is_empty() {
+                    "Spotify refused the request (403)".to_string()
+                } else {
+                    message
+                };
+                SpotifyError::Api {
+                    status: 403,
+                    endpoint: endpoint.to_string(),
+                    message,
+                    body: body.to_string(),
+                }
+            }
+        }
+        // A bare 404 (e.g. GET on a deleted track) collapses to the
+        // tiny `NotFound` variant since there's nothing useful to say.
+        // But Spotify's *playback* 404s come with a structured body
+        // explaining what failed (`"Player command failed: No active
+        // device found"`, `"Player command failed: Restriction violated"`,
+        // etc.). Route those to `Api` so the message reaches the user.
+        404 => {
+            let message = spotify_error_message(body);
+            if message.is_empty() || message.eq_ignore_ascii_case("not found") {
+                SpotifyError::NotFound
+            } else {
+                SpotifyError::Api {
+                    status: 404,
+                    endpoint: endpoint.to_string(),
+                    message,
+                    body: body.to_string(),
+                }
+            }
+        }
         410 => SpotifyError::Deprecated {
             endpoint: deprecated_label(endpoint),
         },

@@ -11,9 +11,11 @@ use chrono::{TimeZone, Utc};
 use rand::SeedableRng;
 use spotuify_spotify::error::SpotifyError;
 use spotuify_spotify::rate_limit::{
-    decide_retry, jittered_backoff, BackoffState, RetryAction, BACKOFF_BASE_MS, BACKOFF_CEILING_MS,
-    MAX_TRANSIENT_RETRIES,
+    decide_retry, jittered_backoff, BackoffState, Priority, RateLimitedClient, RetryAction,
+    BACKOFF_BASE_MS, BACKOFF_CEILING_MS, MAX_RATE_LIMIT_RETRIES, MAX_TRANSIENT_RETRIES,
 };
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn now() -> chrono::DateTime<chrono::Utc> {
     Utc.with_ymd_and_hms(2026, 5, 13, 12, 0, 0).unwrap()
@@ -21,6 +23,29 @@ fn now() -> chrono::DateTime<chrono::Utc> {
 
 fn seeded_rng() -> rand::rngs::StdRng {
     rand::rngs::StdRng::seed_from_u64(42)
+}
+
+fn expect_retry(action: RetryAction) -> Result<Duration, RetryAction> {
+    match action {
+        RetryAction::Retry { delay } => Ok(delay),
+        other => Err(other),
+    }
+}
+
+fn expect_give_up(action: RetryAction) -> Result<SpotifyError, RetryAction> {
+    match action {
+        RetryAction::GiveUp(err) => Ok(err),
+        other => Err(other),
+    }
+}
+
+fn expect_api_give_up(action: RetryAction) -> Result<(u16, String), RetryAction> {
+    match action {
+        RetryAction::GiveUp(SpotifyError::Api {
+            status, message, ..
+        }) => Ok((status, message)),
+        other => Err(other),
+    }
 }
 
 #[test]
@@ -41,40 +66,40 @@ fn test_304_yields_success_not_modified() {
 fn test_429_yields_retry_with_header_value() {
     let mut rng = seeded_rng();
     let action = decide_retry(0, 429, Some("5"), "GET /me", "", now(), &mut rng);
-    match action {
-        RetryAction::Retry { delay } => assert_eq!(delay, Duration::from_secs(5)),
-        other => panic!("expected Retry, got {other:?}"),
-    }
+    assert_eq!(
+        expect_retry(action).expect("429 with header should retry"),
+        Duration::from_secs(5)
+    );
 }
 
 #[test]
 fn test_429_without_retry_after_defaults_to_60s() {
     let mut rng = seeded_rng();
     let action = decide_retry(0, 429, None, "GET /me", "", now(), &mut rng);
-    match action {
-        RetryAction::Retry { delay } => assert_eq!(delay, Duration::from_secs(60)),
-        other => panic!("expected Retry, got {other:?}"),
-    }
+    assert_eq!(
+        expect_retry(action).expect("429 without header should retry"),
+        Duration::from_secs(60)
+    );
 }
 
 #[test]
 fn test_429_clamps_to_ceiling_one_hour() {
     let mut rng = seeded_rng();
     let action = decide_retry(0, 429, Some("999999"), "GET /me", "", now(), &mut rng);
-    match action {
-        RetryAction::Retry { delay } => assert_eq!(delay, Duration::from_secs(3600)),
-        other => panic!("expected Retry, got {other:?}"),
-    }
+    assert_eq!(
+        expect_retry(action).expect("429 with excessive header should retry"),
+        Duration::from_secs(3600)
+    );
 }
 
 #[test]
 fn test_401_yields_give_up_auth_expired_not_retry() {
     let mut rng = seeded_rng();
     let action = decide_retry(0, 401, None, "GET /me", "", now(), &mut rng);
-    match action {
-        RetryAction::GiveUp(SpotifyError::AuthExpired) => {}
-        other => panic!("expected GiveUp(AuthExpired), got {other:?}"),
-    }
+    assert!(matches!(
+        expect_give_up(action).expect("401 should give up"),
+        SpotifyError::AuthExpired
+    ));
 }
 
 #[test]
@@ -82,16 +107,12 @@ fn test_5xx_first_attempts_retry_with_exponential_backoff() {
     let mut rng = seeded_rng();
     // attempt 0 = first attempt just made; retry should fire (becoming attempt 1)
     let action = decide_retry(0, 502, None, "GET /me", "", now(), &mut rng);
-    match action {
-        RetryAction::Retry { delay } => {
-            // base is 250ms, jitter ±25%
-            assert!(
-                delay.as_millis() >= 180 && delay.as_millis() <= 320,
-                "first-attempt delay {delay:?} should be ~250ms ± 25%"
-            );
-        }
-        other => panic!("expected Retry, got {other:?}"),
-    }
+    let delay = expect_retry(action).expect("first 5xx should retry");
+    // base is 250ms, jitter ±25%
+    assert!(
+        delay.as_millis() >= 180 && delay.as_millis() <= 320,
+        "first-attempt delay {delay:?} should be ~250ms ± 25%"
+    );
 }
 
 #[test]
@@ -99,15 +120,11 @@ fn test_5xx_second_retry_doubles_backoff_base() {
     let mut rng = seeded_rng();
     // attempt 1 (already retried once); delay should ~= 500ms ± 25%
     let action = decide_retry(1, 503, None, "GET /me", "", now(), &mut rng);
-    match action {
-        RetryAction::Retry { delay } => {
-            assert!(
-                delay.as_millis() >= 370 && delay.as_millis() <= 640,
-                "second-retry delay {delay:?} should be ~500ms ± 25%"
-            );
-        }
-        other => panic!("expected Retry, got {other:?}"),
-    }
+    let delay = expect_retry(action).expect("second 5xx should retry");
+    assert!(
+        delay.as_millis() >= 370 && delay.as_millis() <= 640,
+        "second-retry delay {delay:?} should be ~500ms ± 25%"
+    );
 }
 
 #[test]
@@ -122,25 +139,20 @@ fn test_5xx_after_max_attempts_yields_give_up_api_error() {
         now(),
         &mut rng,
     );
-    match action {
-        RetryAction::GiveUp(SpotifyError::Api {
-            status, message, ..
-        }) => {
-            assert_eq!(status, 500);
-            assert_eq!(message, "server error");
-        }
-        other => panic!("expected GiveUp(Api), got {other:?}"),
-    }
+    let (status, message) =
+        expect_api_give_up(action).expect("max 5xx should give up with API error");
+    assert_eq!(status, 500);
+    assert_eq!(message, "server error");
 }
 
 #[test]
 fn test_404_yields_give_up_not_found_no_retry() {
     let mut rng = seeded_rng();
     let action = decide_retry(0, 404, None, "GET /playlists/x", "", now(), &mut rng);
-    match action {
-        RetryAction::GiveUp(SpotifyError::NotFound) => {}
-        other => panic!("expected GiveUp(NotFound), got {other:?}"),
-    }
+    assert!(matches!(
+        expect_give_up(action).expect("404 should give up"),
+        SpotifyError::NotFound
+    ));
 }
 
 #[test]
@@ -213,19 +225,117 @@ fn test_clear_resets_eligibility_for_scope() {
 
 #[test]
 fn test_backoff_state_persists_across_save_and_load() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let tmp = tempfile::NamedTempFile::new().expect("temp file should be created");
     let path = tmp.path().to_path_buf();
     drop(tmp);
 
     let mut state = BackoffState::default();
     state.record_rate_limit("scope-a", 1_000_000, Duration::from_secs(30));
-    state.save(&path).unwrap();
+    state.save(&path).expect("backoff state should save");
 
     let loaded = BackoffState::load(&path);
     assert_eq!(loaded.wait_ms("scope-a", 1_000_000), 30_000);
     assert_eq!(loaded.wait_ms("scope-a", 1_030_001), 0);
 
     let _ = std::fs::remove_file(&path);
+}
+
+// --- HTTP wrapper integration ---
+
+#[tokio::test]
+async fn client_retries_429_then_returns_success_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/me"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/me"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "fake-user"
+        })))
+        .mount(&server)
+        .await;
+
+    let client = RateLimitedClient::new(reqwest::Client::new(), None, 1, 1);
+    let response = client
+        .send_with_retry(Priority::Foreground, "GET /me", || {
+            client.inner().get(format!("{}/me", server.uri()))
+        })
+        .await
+        .expect("429 with retry-after 0 should retry once and succeed");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        response.text().await.expect("body should read"),
+        r#"{"id":"fake-user"}"#
+    );
+}
+
+#[tokio::test]
+async fn client_bounds_sustained_429_and_persists_backoff() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/me"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+        .mount(&server)
+        .await;
+    let tmp = tempfile::NamedTempFile::new().expect("temp file");
+    let path = tmp.path().to_path_buf();
+    drop(tmp);
+
+    let client = RateLimitedClient::new(reqwest::Client::new(), Some(path.clone()), 1, 1);
+    let err = client
+        .send_with_retry(Priority::Foreground, "GET /me", || {
+            client.inner().get(format!("{}/me", server.uri()))
+        })
+        .await
+        .expect_err("sustained 429 should surface a typed rate-limit error");
+
+    assert!(matches!(err, SpotifyError::RateLimited { .. }));
+    assert!(
+        client
+            .backoff_snapshot()
+            .scopes
+            .get("GET /me")
+            .and_then(|scope| scope.last_rate_limited_at_ms)
+            .is_some(),
+        "429 should be persisted for diagnostics/restart backoff"
+    );
+    assert!(
+        server.received_requests().await.expect("requests").len()
+            >= MAX_RATE_LIMIT_RETRIES as usize
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn client_retries_transient_5xx_then_succeeds() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/me"))
+        .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/me"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    let client = RateLimitedClient::new(reqwest::Client::new(), None, 1, 1);
+    let response = client
+        .send_with_retry(Priority::BackgroundSync, "GET /me", || {
+            client.inner().get(format!("{}/me", server.uri()))
+        })
+        .await
+        .expect("first 503 should retry");
+
+    assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
 }
 
 #[test]

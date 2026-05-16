@@ -19,27 +19,52 @@ fn now() -> chrono::DateTime<chrono::Utc> {
     Utc.with_ymd_and_hms(2026, 5, 13, 12, 0, 0).unwrap()
 }
 
+fn expect_rate_limited(err: SpotifyError) -> Result<(Duration, String), SpotifyError> {
+    match err {
+        SpotifyError::RateLimited { retry_after, scope } => Ok((retry_after, scope)),
+        other => Err(other),
+    }
+}
+
+fn expect_forbidden_scope(err: SpotifyError) -> Result<String, SpotifyError> {
+    match err {
+        SpotifyError::Forbidden { scope } => Ok(scope),
+        other => Err(other),
+    }
+}
+
+fn expect_deprecated_endpoint(err: SpotifyError) -> Result<&'static str, SpotifyError> {
+    match err {
+        SpotifyError::Deprecated { endpoint } => Ok(endpoint),
+        other => Err(other),
+    }
+}
+
+fn expect_api_error(err: SpotifyError) -> Result<(u16, String, String), SpotifyError> {
+    match err {
+        SpotifyError::Api {
+            status,
+            endpoint,
+            message,
+            ..
+        } => Ok((status, endpoint, message)),
+        other => Err(other),
+    }
+}
+
 #[test]
 fn test_429_with_retry_after_yields_rate_limited() {
     let err = classify_response(429, Some("7"), "GET /me/player", "", now());
-    match err {
-        SpotifyError::RateLimited { retry_after, scope } => {
-            assert_eq!(retry_after, Duration::from_secs(7));
-            assert_eq!(scope, "GET /me/player");
-        }
-        other => panic!("expected RateLimited, got {other:?}"),
-    }
+    let (retry_after, scope) = expect_rate_limited(err).expect("response should be rate limited");
+    assert_eq!(retry_after, Duration::from_secs(7));
+    assert_eq!(scope, "GET /me/player");
 }
 
 #[test]
 fn test_429_without_retry_after_defaults_to_60s_per_rfc9110() {
     let err = classify_response(429, None, "GET /me/player/recently-played", "", now());
-    match err {
-        SpotifyError::RateLimited { retry_after, .. } => {
-            assert_eq!(retry_after, Duration::from_secs(DEFAULT_RETRY_AFTER_SECS));
-        }
-        other => panic!("expected RateLimited, got {other:?}"),
-    }
+    let (retry_after, _) = expect_rate_limited(err).expect("response should be rate limited");
+    assert_eq!(retry_after, Duration::from_secs(DEFAULT_RETRY_AFTER_SECS));
 }
 
 #[test]
@@ -50,37 +75,25 @@ fn test_429_with_http_date_retry_after_parses_correctly() {
         .unwrap()
         .to_rfc2822();
     let err = classify_response(429, Some(&when), "GET /playlists/x", "", now());
-    match err {
-        SpotifyError::RateLimited { retry_after, .. } => {
-            assert!(
-                (retry_after.as_secs() as i64 - 30).abs() <= 1,
-                "expected ~30s, got {retry_after:?}"
-            );
-        }
-        other => panic!("expected RateLimited, got {other:?}"),
-    }
+    let (retry_after, _) = expect_rate_limited(err).expect("response should be rate limited");
+    assert!(
+        (retry_after.as_secs() as i64 - 30).abs() <= 1,
+        "expected ~30s, got {retry_after:?}"
+    );
 }
 
 #[test]
 fn test_429_with_excessive_retry_after_clamps_to_ceiling() {
     let err = classify_response(429, Some("999999"), "GET /me/player", "", now());
-    match err {
-        SpotifyError::RateLimited { retry_after, .. } => {
-            assert_eq!(retry_after, Duration::from_secs(MAX_RETRY_AFTER_SECS));
-        }
-        other => panic!("expected RateLimited, got {other:?}"),
-    }
+    let (retry_after, _) = expect_rate_limited(err).expect("response should be rate limited");
+    assert_eq!(retry_after, Duration::from_secs(MAX_RETRY_AFTER_SECS));
 }
 
 #[test]
 fn test_429_with_malformed_retry_after_falls_back_to_default() {
     let err = classify_response(429, Some("¯\\_(ツ)_/¯"), "GET /me/player", "", now());
-    match err {
-        SpotifyError::RateLimited { retry_after, .. } => {
-            assert_eq!(retry_after, Duration::from_secs(DEFAULT_RETRY_AFTER_SECS));
-        }
-        other => panic!("expected RateLimited, got {other:?}"),
-    }
+    let (retry_after, _) = expect_rate_limited(err).expect("response should be rate limited");
+    assert_eq!(retry_after, Duration::from_secs(DEFAULT_RETRY_AFTER_SECS));
 }
 
 #[test]
@@ -94,27 +107,25 @@ fn test_401_yields_auth_expired() {
 fn test_403_yields_forbidden_with_scope_when_message_mentions_scope() {
     let body = r#"{"error":{"status":403,"message":"Insufficient client scope"}}"#;
     let err = classify_response(403, None, "PUT /me/player", body, now());
-    match err {
-        SpotifyError::Forbidden { scope } => {
-            assert!(
-                scope.to_lowercase().contains("scope"),
-                "got scope {scope:?}"
-            );
-        }
-        other => panic!("expected Forbidden, got {other:?}"),
-    }
+    let scope = expect_forbidden_scope(err).expect("response should be forbidden");
+    assert!(
+        scope.to_lowercase().contains("scope"),
+        "got scope {scope:?}"
+    );
 }
 
 #[test]
-fn test_403_without_scope_message_falls_back_to_endpoint_label() {
+fn test_403_without_scope_message_surfaces_spotify_body() {
+    // A 403 that *isn't* a scope failure (e.g. "Premium required",
+    // "Restriction violated", "Player command failed") should NOT
+    // be relabelled as a scope problem — that sent users on a
+    // re-auth chase that fixed nothing. Surface Spotify's actual
+    // message via the `Api` variant instead.
     let body = r#"{"error":{"status":403,"message":"Premium required"}}"#;
     let err = classify_response(403, None, "PUT /me/player", body, now());
-    match err {
-        SpotifyError::Forbidden { scope } => {
-            assert_eq!(scope, "PUT /me/player");
-        }
-        other => panic!("expected Forbidden, got {other:?}"),
-    }
+    let (status, _, message) = expect_api_error(err).expect("non-scope 403 should be API error");
+    assert_eq!(status, 403);
+    assert_eq!(message, "Premium required");
 }
 
 #[test]
@@ -126,42 +137,29 @@ fn test_404_yields_not_found() {
 #[test]
 fn test_410_for_deprecated_endpoint_yields_deprecated_variant() {
     let err = classify_response(410, None, "GET /recommendations", "", now());
-    match err {
-        SpotifyError::Deprecated { endpoint } => {
-            assert_eq!(endpoint, "recommendations");
-        }
-        other => panic!("expected Deprecated, got {other:?}"),
-    }
+    assert_eq!(
+        expect_deprecated_endpoint(err).expect("response should be deprecated"),
+        "recommendations"
+    );
 }
 
 #[test]
 fn test_410_for_audio_features_yields_deprecated_audio_features() {
     let err = classify_response(410, None, "GET /audio-features/abc", "", now());
-    match err {
-        SpotifyError::Deprecated { endpoint } => {
-            assert_eq!(endpoint, "audio-features");
-        }
-        other => panic!("expected Deprecated, got {other:?}"),
-    }
+    assert_eq!(
+        expect_deprecated_endpoint(err).expect("response should be deprecated"),
+        "audio-features"
+    );
 }
 
 #[test]
 fn test_500_yields_api_error_with_status() {
     let body = r#"{"error":{"status":500,"message":"server error"}}"#;
     let err = classify_response(500, None, "GET /playlists/x", body, now());
-    match err {
-        SpotifyError::Api {
-            status,
-            endpoint,
-            message,
-            ..
-        } => {
-            assert_eq!(status, 500);
-            assert_eq!(endpoint, "GET /playlists/x");
-            assert_eq!(message, "server error");
-        }
-        other => panic!("expected Api, got {other:?}"),
-    }
+    let (status, endpoint, message) = expect_api_error(err).expect("response should be API error");
+    assert_eq!(status, 500);
+    assert_eq!(endpoint, "GET /playlists/x");
+    assert_eq!(message, "server error");
 }
 
 #[test]
