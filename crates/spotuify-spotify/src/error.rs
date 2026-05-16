@@ -55,7 +55,7 @@ pub enum SpotifyError {
     Network { endpoint: String, message: String },
     #[error("decode failure on {endpoint}: {message}")]
     Decode { endpoint: String, message: String },
-    #[error("Spotify API {status} on {endpoint}: {message}")]
+    #[error("Spotify API {status} on {endpoint}: {message} (body: {body})")]
     Api {
         status: u16,
         endpoint: String,

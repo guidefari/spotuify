@@ -318,12 +318,25 @@ impl RateLimitedClient {
                 return Ok(response);
             }
 
+            // Capture the actual URL reqwest sent (query params and
+            // all) BEFORE consuming response.text() — the URL field
+            // is gone after that consumes self. Useful when Spotify
+            // says "Invalid limit" but we want to see whether the
+            // problem is actually the type or the encoding.
+            let full_url = response.url().to_string();
             let retry_after = response
                 .headers()
                 .get("retry-after")
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_string);
             let body = response.text().await.unwrap_or_default();
+            tracing::warn!(
+                scope,
+                status,
+                url = %full_url,
+                body = %body,
+                "Spotify request failed (rate_limit layer)"
+            );
             let now = Utc::now();
             let action = {
                 let mut rng = rand::thread_rng();

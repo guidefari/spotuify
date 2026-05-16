@@ -1308,7 +1308,7 @@ async fn handle_json_response<T: DeserializeOwned>(
         }
         let message = spotify_error_message(&body);
         tracing::warn!(method = %method, path, status = %status, body = %trim_body(&body), "Spotify request failed");
-        bail!("Spotify {method} {path} failed ({status}): {message}");
+        bail!("Spotify {method} {path} failed ({status}): {message} [body: {}]", trim_body(&body));
     }
     let body = response
         .text()
