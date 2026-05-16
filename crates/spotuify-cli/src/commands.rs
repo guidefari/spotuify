@@ -91,8 +91,9 @@ pub async fn ipc_resolve_tracks(from: &Path, format: OutputFormat) -> Result<()>
         let items = match daemon_request(Request::Search {
             query: query.clone(),
             scope: SearchScopeData::Track,
-            source: SearchSourceData::Hybrid,
-            limit: 10,
+            // Plan resolution = catalog discovery, not library lookup.
+            source: SearchSourceData::Spotify,
+            limit: 50,
         })
         .await?
         {
@@ -110,7 +111,10 @@ pub async fn ipc_play_query(
     scope: SearchScopeData,
     format: OutputFormat,
 ) -> Result<()> {
-    ipc_search(query, scope, SearchSourceData::Hybrid, 10, true, 1, format).await
+    // `spotuify play <query>` is a "find anywhere and play" command
+    // — catalog discovery, not library lookup. Limit=10 keeps the
+    // search slim since we only consume the top result.
+    ipc_search(query, scope, SearchSourceData::Spotify, 10, true, 1, format).await
 }
 
 pub async fn ipc_reindex(format: OutputFormat) -> Result<()> {
@@ -390,8 +394,8 @@ async fn ipc_queue_add(
             let items = match daemon_request(Request::Search {
                 query: query.clone(),
                 scope: SearchScopeData::Track,
-                source: SearchSourceData::Hybrid,
-                limit: 10,
+                source: SearchSourceData::Spotify,
+                limit: 50,
             })
             .await?
             {

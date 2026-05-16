@@ -2663,8 +2663,13 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
             request_data(Request::Search {
                 query: query.clone(),
                 scope: SearchScopeData::All,
-                source: spotuify_protocol::SearchSourceData::Hybrid,
-                limit: 10,
+                // Search tab is a catalog-discovery surface — go
+                // straight to Spotify rather than preferring the
+                // local Tantivy cache. Library tab still serves
+                // local matches; this is just where you go to find
+                // new music.
+                source: spotuify_protocol::SearchSourceData::Spotify,
+                limit: 50,
             }),
         )
         .await

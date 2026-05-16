@@ -90,8 +90,9 @@ async fn resolve_playlist_tracks(
             Request::Search {
                 query: query.clone(),
                 scope: SearchScopeData::Track,
-                source: SearchSourceData::Hybrid,
-                limit: 10,
+                // Agent plan resolution = catalog discovery.
+                source: SearchSourceData::Spotify,
+                limit: 50,
             },
         )
         .await?
