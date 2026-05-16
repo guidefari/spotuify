@@ -5,6 +5,7 @@
 //! only on `spotuify-core` for domain types. It must never import storage,
 //! search, HTTP, or any other concern.
 
+pub mod agent_playlists;
 pub mod analytics;
 pub mod event_log;
 pub mod ipc_client;
@@ -13,6 +14,10 @@ pub mod operations;
 pub mod output;
 pub mod paths;
 
+pub use agent_playlists::{
+    CandidateIssue, CandidateStatus, PlaylistCreateMetadata, PlaylistCreatePreview,
+    PlaylistMutationPreview, PlaylistPlan, PlaylistTrackSelection, ResolvedTrackCandidate,
+};
 pub use analytics::{
     ExportTarget, RebuildReport, RediscoveryCandidate, SearchHistoryEntry, SearchMode, SinceWindow,
     TopEntry, TopKind,
@@ -30,13 +35,15 @@ use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
-use spotuify_core::{Device, MediaItem, Playback, Playlist, Queue};
+use spotuify_core::{Device, MediaItem, Playback, Playlist, Queue, SyncedLyrics};
 
 pub const IPC_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcMessage {
     pub id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<OperationSource>,
     pub payload: IpcPayload,
 }
 
@@ -53,6 +60,11 @@ pub enum IpcPayload {
 #[serde(tag = "cmd", rename_all = "kebab-case")]
 pub enum Request {
     Ping,
+    /// Opt this IPC connection into daemon event broadcasts.
+    ///
+    /// One-shot request clients should not receive unsolicited events;
+    /// event-stream clients send this once before waiting on `next_event`.
+    SubscribeEvents,
     Shutdown,
     GetDaemonStatus,
     GetDoctorReport,
@@ -85,6 +97,9 @@ pub enum Request {
     Image {
         url: String,
     },
+    CoverArt {
+        url: String,
+    },
     QueueGet,
     QueueAdd {
         uri: String,
@@ -93,7 +108,19 @@ pub enum Request {
     PlaylistTracks {
         playlist: String,
     },
+    /// Fetch an artist's own releases (albums + singles).
+    ArtistAlbums {
+        artist: String,
+    },
+    /// Fetch the track listing of a given album.
+    AlbumTracks {
+        album: String,
+    },
     PlaylistAddItems {
+        playlist: String,
+        uris: Vec<String>,
+    },
+    PlaylistRemoveItems {
         playlist: String,
         uris: Vec<String>,
     },
@@ -105,6 +132,19 @@ pub enum Request {
     LibrarySave {
         uri: Option<String>,
         current: bool,
+    },
+    LibraryUnsave {
+        uri: String,
+    },
+    LyricsGet {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track_uri: Option<String>,
+        #[serde(default)]
+        force_refresh: bool,
+    },
+    LyricsOffsetSet {
+        track_uri: String,
+        offset_ms: i64,
     },
 
     // --- Phase 10: analytics derivations ---
@@ -181,6 +221,162 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         older_than_ms: Option<i64>,
     },
+
+    // --- Phase 17: audio visualization ---
+    /// Enable or disable the spectrum visualizer. When false the
+    /// daemon stops the FFT ticker and ceases broadcasting
+    /// `SpectrumFrame` events.
+    SetVizEnabled {
+        enabled: bool,
+    },
+    /// Select the visualization source. `Auto` lets the daemon pick
+    /// based on the active backend.
+    SetVizSource {
+        kind: VizSourceKindData,
+    },
+    /// Snapshot the visualizer's current configuration + active source
+    /// + diagnostics. Used by the CLI `viz status` command.
+    GetVizStatus,
+    /// TUI focus hint — the daemon throttles FFT to 1 Hz when focused
+    /// is false to keep CPU off background terminals.
+    SetVizFocus {
+        focused: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum IpcCategory {
+    CoreMusic,
+    SpotuifyPlatform,
+    AdminMaintenance,
+    ClientSpecific,
+}
+
+impl IpcCategory {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CoreMusic => "core-music",
+            Self::SpotuifyPlatform => "spotuify-platform",
+            Self::AdminMaintenance => "admin-maintenance",
+            Self::ClientSpecific => "client-specific",
+        }
+    }
+}
+
+impl Request {
+    pub fn category(&self) -> IpcCategory {
+        match self {
+            Self::Ping
+            | Self::SubscribeEvents
+            | Self::Shutdown
+            | Self::GetDaemonStatus
+            | Self::GetDoctorReport
+            | Self::LogsTail { .. }
+            | Self::Sync { .. }
+            | Self::Reconnect => IpcCategory::AdminMaintenance,
+            Self::CacheStatus
+            | Self::Reindex
+            | Self::AnalyticsRebuild { .. }
+            | Self::AnalyticsTop { .. }
+            | Self::AnalyticsHabits { .. }
+            | Self::AnalyticsSearch { .. }
+            | Self::AnalyticsRediscovery { .. }
+            | Self::AnalyticsExport { .. }
+            | Self::AnalyticsImport { .. }
+            | Self::AnalyticsPrune { .. }
+            | Self::OpsLog { .. }
+            | Self::OpsShow { .. }
+            | Self::OpsUndo { .. }
+            | Self::OpsRedo { .. }
+            | Self::SearchCachePrune { .. } => IpcCategory::SpotuifyPlatform,
+            Self::SetVizEnabled { .. }
+            | Self::SetVizSource { .. }
+            | Self::GetVizStatus
+            | Self::SetVizFocus { .. } => IpcCategory::ClientSpecific,
+            Self::PlaybackGet
+            | Self::PlaybackCommand { .. }
+            | Self::DevicesList
+            | Self::DeviceTransfer { .. }
+            | Self::Search { .. }
+            | Self::LibraryList { .. }
+            | Self::RecentlyPlayed
+            | Self::Image { .. }
+            | Self::CoverArt { .. }
+            | Self::QueueGet
+            | Self::QueueAdd { .. }
+            | Self::PlaylistsList
+            | Self::PlaylistTracks { .. }
+            | Self::ArtistAlbums { .. }
+            | Self::AlbumTracks { .. }
+            | Self::PlaylistAddItems { .. }
+            | Self::PlaylistRemoveItems { .. }
+            | Self::PlaylistCreate { .. }
+            | Self::LibrarySave { .. }
+            | Self::LibraryUnsave { .. }
+            | Self::LyricsGet { .. }
+            | Self::LyricsOffsetSet { .. }
+            | Self::Reload => IpcCategory::CoreMusic,
+        }
+    }
+
+    /// Stable short tag used in IPC observability spans and JSON logs.
+    /// Matches the serde `rename_all = "kebab-case"` variant tag so log
+    /// readers can pivot freely between wire payloads and tracing events.
+    pub fn kind_label(&self) -> &'static str {
+        match self {
+            Self::Ping => "ping",
+            Self::SubscribeEvents => "subscribe-events",
+            Self::Shutdown => "shutdown",
+            Self::GetDaemonStatus => "get-daemon-status",
+            Self::GetDoctorReport => "get-doctor-report",
+            Self::PlaybackGet => "playback-get",
+            Self::PlaybackCommand { .. } => "playback-command",
+            Self::DevicesList => "devices-list",
+            Self::DeviceTransfer { .. } => "device-transfer",
+            Self::Search { .. } => "search",
+            Self::Reindex => "reindex",
+            Self::CacheStatus => "cache-status",
+            Self::LibraryList { .. } => "library-list",
+            Self::LogsTail { .. } => "logs-tail",
+            Self::Sync { .. } => "sync",
+            Self::RecentlyPlayed => "recently-played",
+            Self::Image { .. } => "image",
+            Self::CoverArt { .. } => "cover-art",
+            Self::QueueGet => "queue-get",
+            Self::QueueAdd { .. } => "queue-add",
+            Self::PlaylistsList => "playlists-list",
+            Self::PlaylistTracks { .. } => "playlist-tracks",
+            Self::ArtistAlbums { .. } => "artist-albums",
+            Self::AlbumTracks { .. } => "album-tracks",
+            Self::PlaylistAddItems { .. } => "playlist-add-items",
+            Self::PlaylistRemoveItems { .. } => "playlist-remove-items",
+            Self::PlaylistCreate { .. } => "playlist-create",
+            Self::LibrarySave { .. } => "library-save",
+            Self::LibraryUnsave { .. } => "library-unsave",
+            Self::LyricsGet { .. } => "lyrics-get",
+            Self::LyricsOffsetSet { .. } => "lyrics-offset-set",
+            Self::AnalyticsRebuild { .. } => "analytics-rebuild",
+            Self::AnalyticsTop { .. } => "analytics-top",
+            Self::AnalyticsHabits { .. } => "analytics-habits",
+            Self::AnalyticsSearch { .. } => "analytics-search",
+            Self::AnalyticsRediscovery { .. } => "analytics-rediscovery",
+            Self::AnalyticsExport { .. } => "analytics-export",
+            Self::AnalyticsImport { .. } => "analytics-import",
+            Self::AnalyticsPrune { .. } => "analytics-prune",
+            Self::OpsLog { .. } => "ops-log",
+            Self::OpsShow { .. } => "ops-show",
+            Self::OpsUndo { .. } => "ops-undo",
+            Self::OpsRedo { .. } => "ops-redo",
+            Self::Reload => "reload",
+            Self::Reconnect => "reconnect",
+            Self::SearchCachePrune { .. } => "search-cache-prune",
+            Self::SetVizEnabled { .. } => "set-viz-enabled",
+            Self::SetVizSource { .. } => "set-viz-source",
+            Self::GetVizStatus => "get-viz-status",
+            Self::SetVizFocus { .. } => "set-viz-focus",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -193,9 +389,34 @@ pub enum PlaybackCommand {
     Previous,
     PlayUri { uri: String },
     Seek { position_ms: u64 },
+    /// Relative seek — daemon resolves the absolute target against its
+    /// `PlaybackClock`, so CLI scripts and the TUI can issue `+15s` / `-30s`
+    /// without first reading a (possibly stale) cached playback snapshot.
+    /// Negative offsets clamp at 0; positive clamps to track duration when known.
+    SeekRelative { offset_ms: i64 },
     Volume { volume_percent: u8 },
     Shuffle { state: bool },
     Repeat { state: String },
+}
+
+impl PlaybackCommand {
+    /// Stable short tag used in spans and metrics. Mirrors the serde
+    /// `rename_all = "kebab-case"` variant tag.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+            Self::Toggle => "toggle",
+            Self::Next => "next",
+            Self::Previous => "previous",
+            Self::PlayUri { .. } => "play-uri",
+            Self::Seek { .. } => "seek",
+            Self::SeekRelative { .. } => "seek-relative",
+            Self::Volume { .. } => "volume",
+            Self::Shuffle { .. } => "shuffle",
+            Self::Repeat { .. } => "repeat",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,6 +425,7 @@ pub enum SearchScopeData {
     All,
     Track,
     Episode,
+    Show,
     Album,
     Artist,
     Playlist,
@@ -215,6 +437,7 @@ impl SearchScopeData {
             Self::All => "all",
             Self::Track => "track",
             Self::Episode => "episode",
+            Self::Show => "show",
             Self::Album => "album",
             Self::Artist => "artist",
             Self::Playlist => "playlist",
@@ -245,6 +468,7 @@ impl SearchSourceData {
 pub enum SyncTargetData {
     All,
     Playback,
+    Queue,
     Devices,
     Playlists,
     Recent,
@@ -256,6 +480,7 @@ impl SyncTargetData {
         match self {
             Self::All => "all",
             Self::Playback => "playback",
+            Self::Queue => "queue",
             Self::Devices => "devices",
             Self::Playlists => "playlists",
             Self::Recent => "recent",
@@ -308,7 +533,7 @@ pub enum IpcErrorKind {
 }
 
 impl IpcErrorKind {
-    fn as_code(self) -> &'static str {
+    pub fn as_code(self) -> &'static str {
         match self {
             Self::Auth => "auth",
             Self::InvalidRequest => "invalid_request",
@@ -377,6 +602,12 @@ pub enum ResponseData {
     Image {
         bytes: Vec<u8>,
     },
+    CoverArt {
+        path: String,
+        cache_hit: bool,
+        bytes: u64,
+        fetched_at_ms: Option<i64>,
+    },
     Queue {
         queue: Queue,
     },
@@ -394,6 +625,14 @@ pub enum ResponseData {
     },
     PlaylistCreate {
         receipt: PlaylistCreateReceipt,
+    },
+    Lyrics {
+        lyrics: Option<SyncedLyrics>,
+        offset_ms: i64,
+    },
+    LyricsOffset {
+        track_uri: String,
+        offset_ms: i64,
     },
 
     // --- Phase 10: analytics responses ---
@@ -444,6 +683,13 @@ pub enum ResponseData {
         pruned_runs: u64,
         pruned_results: u64,
     },
+
+    // --- Phase 17 — visualization responses ---
+    /// Snapshot of the viz coordinator's current state. Returned by
+    /// `Request::GetVizStatus`.
+    VizStatus {
+        diagnostics: VizDiagnostics,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -468,9 +714,15 @@ pub struct PlaylistCreateReceipt {
 pub struct CacheStatus {
     pub database_path: String,
     pub index_path: String,
+    #[serde(default)]
+    pub cover_cache_path: String,
     pub media_items: u32,
     pub devices: u32,
     pub playback_snapshots: u32,
+    #[serde(default)]
+    pub queue_snapshots: u32,
+    #[serde(default)]
+    pub queue_items: u32,
     pub playlists: u32,
     pub playlist_items: u32,
     pub recent_items: u32,
@@ -478,9 +730,50 @@ pub struct CacheStatus {
     pub search_runs: u32,
     pub search_results: u32,
     pub sync_events: u32,
+    #[serde(default)]
+    pub lyrics_cache: u32,
+    #[serde(default)]
+    pub lyrics_offsets: u32,
+    #[serde(default)]
+    pub cover_cache_files: u32,
+    #[serde(default)]
+    pub cover_cache_bytes: u64,
+    #[serde(default)]
+    pub cover_cache_oldest_entry_ms: Option<i64>,
+    #[serde(default)]
+    pub cover_cache_ttl_secs: u64,
+    #[serde(default)]
+    pub cover_cache_max_bytes: u64,
     pub index_documents: u64,
     pub last_sync_at_ms: Option<i64>,
     pub last_search_at_ms: Option<i64>,
+    #[serde(default)]
+    pub freshness: CacheFreshnessStatus,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CacheFreshnessStatus {
+    pub media_items: FreshnessCounts,
+    pub devices: FreshnessCounts,
+    pub playback_snapshots: FreshnessCounts,
+    #[serde(default)]
+    pub queue_snapshots: FreshnessCounts,
+    #[serde(default)]
+    pub queue_items: FreshnessCounts,
+    pub playlists: FreshnessCounts,
+    pub playlist_items: FreshnessCounts,
+    pub recent_items: FreshnessCounts,
+    pub library_items: FreshnessCounts,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FreshnessCounts {
+    pub fresh: u32,
+    pub stale_but_usable: u32,
+    pub refreshing: u32,
+    pub failed_refresh: u32,
+    pub unknown: u32,
+    pub max_sync_generation: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -493,6 +786,10 @@ pub struct ReindexStats {
 pub struct CacheSyncSummary {
     pub target: SyncTargetData,
     pub playback_snapshots: u32,
+    #[serde(default)]
+    pub queue_snapshots: u32,
+    #[serde(default)]
+    pub queue_items: u32,
     pub devices: u32,
     pub playlists: u32,
     pub playlist_items: u32,
@@ -501,19 +798,38 @@ pub struct CacheSyncSummary {
     pub media_items: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+// Note: DaemonEvent no longer derives `Eq` because `SpectrumFrame`
+// carries `f32` payloads (FFT band magnitudes). `PartialEq` is retained
+// for tests that need approximate comparisons; no internal callers
+// require strict `Eq`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "event", rename_all = "kebab-case")]
 pub enum DaemonEvent {
     ShutdownRequested,
     PlaybackChanged {
         action: String,
+        /// Phase 3 (push model) — daemon embeds the freshly-computed
+        /// `PlaybackClock` snapshot so subscribers (TUI, MCP) can apply
+        /// directly without a follow-up `PlaybackGet` round-trip. Old
+        /// clients ignore the field and fall back to the cache-first
+        /// fetch path — graceful degrade.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        playback: Option<Playback>,
     },
     QueueChanged {
         action: String,
         uris: Vec<String>,
+        /// Phase 3 — daemon embeds the just-persisted queue when known.
+        /// Old clients ignore.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queue: Option<Queue>,
     },
     DevicesChanged {
         action: String,
+        /// Phase 3 — daemon embeds the just-persisted device list when
+        /// known. Old clients ignore.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        devices: Option<Vec<Device>>,
     },
     PlaylistsChanged {
         action: String,
@@ -657,6 +973,174 @@ pub enum DaemonEvent {
     /// Phase 13 (P13-I) — emitted after `Request::Reload` or `Reconnect`
     /// so TUI clients know to refresh their cached config view.
     ConfigReloaded,
+
+    /// Phase 17 — real-time spectrum frame for the visualizer.
+    ///
+    /// Broadcast at the configured `target_fps` (default 30 Hz) while
+    /// playback is active and the visualizer is enabled. `bands` is
+    /// always length 12 (NUM_BANDS) with values normalized 0.0..=1.0.
+    /// `peak` is the overall peak band magnitude. `timestamp_ms` is
+    /// a monotonic capture time for client-side jitter compensation.
+    SpectrumFrame {
+        bands: Vec<f32>,
+        peak: f32,
+        timestamp_ms: u64,
+    },
+
+    /// Phase 17 — emitted when the visualizer's active source changes
+    /// (config change, backend swap, loopback device hot-plug). TUI
+    /// clients refresh hint bars + doctor reports. `active` is the
+    /// rich `VizActiveSource` so loopback variants (cpal vs pipewire)
+    /// are visible in the UI.
+    VizSourceChanged {
+        active: VizActiveSource,
+        configured: VizSourceKindData,
+        /// Phase 7 — human-readable setup hint surfaced verbatim in the
+        /// TUI when the active source is `None` ("install BlackHole",
+        /// "switch to embedded backend", etc).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hint: Option<String>,
+        /// Phase 7 — backend kind at the moment of the change. The TUI
+        /// uses it to phrase the hint correctly.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        backend_kind: Option<spotuify_core::BackendKind>,
+    },
+}
+
+/// Phase 17 — wire-format viz source kind. Mirrors
+/// `spotuify_audio::VizSourceKind` so the protocol crate stays free of
+/// audio-implementation dependencies.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VizSourceKindData {
+    #[default]
+    Auto,
+    Sink,
+    Loopback,
+    None,
+}
+
+impl VizSourceKindData {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "sink" => Self::Sink,
+            "loopback" => Self::Loopback,
+            "none" | "off" | "disabled" => Self::None,
+            _ => Self::Auto,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Sink => "sink",
+            Self::Loopback => "loopback",
+            Self::None => "none",
+        }
+    }
+}
+
+#[cfg(test)]
+mod request_category_tests {
+    use super::{IpcCategory, PlaybackCommand, Request, SearchScopeData, SearchSourceData};
+
+    #[test]
+    fn request_categories_keep_music_platform_admin_and_client_state_separate() {
+        assert_eq!(Request::PlaybackGet.category(), IpcCategory::CoreMusic);
+        assert_eq!(
+            Request::Search {
+                query: "bowie".to_string(),
+                scope: SearchScopeData::All,
+                source: SearchSourceData::Hybrid,
+                limit: 10,
+            }
+            .category(),
+            IpcCategory::CoreMusic
+        );
+        assert_eq!(
+            Request::PlaybackCommand {
+                command: PlaybackCommand::Pause,
+            }
+            .category(),
+            IpcCategory::CoreMusic
+        );
+        assert_eq!(
+            Request::CacheStatus.category(),
+            IpcCategory::SpotuifyPlatform
+        );
+        assert_eq!(
+            Request::SubscribeEvents.category(),
+            IpcCategory::AdminMaintenance
+        );
+        assert_eq!(
+            Request::SetVizFocus { focused: true }.category(),
+            IpcCategory::ClientSpecific
+        );
+    }
+}
+
+/// Phase 17 — concrete active source as reported by doctor + viz status.
+/// Distinguishes which loopback implementation is in use.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VizActiveSource {
+    Sink,
+    LoopbackCpal,
+    LoopbackPipewire,
+    #[default]
+    None,
+}
+
+/// Phase 17 — diagnostics surfaced by `Request::GetVizStatus` and embedded
+/// in `DoctorReport.viz`. Provides everything the CLI/TUI/doctor need to
+/// explain what the visualizer is doing right now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VizDiagnostics {
+    pub enabled: bool,
+    pub configured_source: VizSourceKindData,
+    pub active_source: VizActiveSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loopback_device_name: Option<String>,
+    pub dropped_frames_5min: u64,
+    pub target_fps: u8,
+    /// Optional human-readable setup hint (e.g. macOS BlackHole install).
+    /// Surfaced verbatim in `doctor` output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    /// Phase 0 (observability) — `true` when the daemon currently has
+    /// playback active. Lets the TUI distinguish "flat spectrum because
+    /// nothing is playing" from "flat spectrum because no PCM source".
+    #[serde(default)]
+    pub playing: bool,
+    /// Phase 0 — milliseconds since the analyzer last produced a frame.
+    /// `None` when never produced. > 2000 typically means the source
+    /// stalled (loopback device disappeared, embedded sink went silent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_frame_age_ms: Option<u64>,
+    /// Phase 0 — active playback backend at diagnostics time. Lets the
+    /// TUI form the correct hint ("switch to embedded for sink tap").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_kind: Option<spotuify_core::BackendKind>,
+}
+
+impl Default for VizDiagnostics {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            configured_source: VizSourceKindData::Auto,
+            active_source: VizActiveSource::None,
+            sample_rate: None,
+            loopback_device_name: None,
+            dropped_frames_5min: 0,
+            target_fps: 30,
+            hint: None,
+            playing: false,
+            last_frame_age_ms: None,
+            backend_kind: None,
+        }
+    }
 }
 
 /// Auth error categories. Mirrors `spotuify_spotify::error::AuthErrorKind`
@@ -668,6 +1152,9 @@ pub enum AuthErrorKind {
     ExpiredRefresh,
     InvalidGrant,
     Forbidden,
+    /// Stored token lacks one or more required scopes. Emitted at daemon
+    /// startup so the TUI can prompt re-auth proactively.
+    ScopeReauthRequired,
 }
 
 /// Phase 6.6 mutation receipt — two-stage lifecycle.
@@ -847,6 +1334,29 @@ pub struct DoctorReport {
     pub device_diagnostics: Option<DeviceDiagnostics>,
     pub recommended_next_steps: Vec<String>,
     pub findings: Vec<DoctorFinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<SystemDiagnostics>,
+    /// Phase 17 — audio visualization diagnostics. None when viz is
+    /// off (default); Some(_) when it has been enabled at any point
+    /// in the current daemon lifetime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viz: Option<VizDiagnostics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SystemDiagnostics {
+    pub media_controls_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_controls_bus_name: Option<String>,
+    pub hooks_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_timeout_ms: Option<u64>,
+    pub notifications_enabled: bool,
+    pub discord_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discord_application_id: Option<String>,
 }
 
 pub struct IpcCodec {
@@ -896,24 +1406,115 @@ impl Encoder<IpcMessage> for IpcCodec {
 
 #[cfg(test)]
 mod tests {
-    use super::{IpcMessage, IpcPayload, Request};
+    use super::{
+        IpcCategory, IpcMessage, IpcPayload, PlaybackCommand, Request, Response, ResponseData,
+    };
+
+    #[test]
+    fn request_kind_labels_are_kebab_case_and_match_serde_tag() {
+        // Phase 0 — the IPC span uses `kind_label()` as its `request_kind`
+        // field. Every variant must return a kebab-case string that matches
+        // the serde `cmd` tag, so log readers can pivot freely between
+        // tracing JSON and wire payloads.
+        let kinds = [
+            (Request::Ping, "ping"),
+            (Request::PlaybackGet, "playback-get"),
+            (
+                Request::PlaybackCommand {
+                    command: PlaybackCommand::Pause,
+                },
+                "playback-command",
+            ),
+            (Request::QueueGet, "queue-get"),
+            (Request::GetVizStatus, "get-viz-status"),
+            (Request::SubscribeEvents, "subscribe-events"),
+        ];
+        for (req, expected) in kinds {
+            assert_eq!(req.kind_label(), expected, "kind_label for {req:?}");
+        }
+    }
+
+    #[test]
+    fn playback_command_labels_match_serde_tag() {
+        let cases = [
+            (PlaybackCommand::Pause, "pause"),
+            (PlaybackCommand::Resume, "resume"),
+            (PlaybackCommand::Toggle, "toggle"),
+            (PlaybackCommand::Next, "next"),
+            (PlaybackCommand::Previous, "previous"),
+            (
+                PlaybackCommand::Seek { position_ms: 0 },
+                "seek",
+            ),
+            (
+                PlaybackCommand::SeekRelative { offset_ms: 0 },
+                "seek-relative",
+            ),
+        ];
+        for (cmd, expected) in cases {
+            assert_eq!(cmd.label(), expected, "label for {cmd:?}");
+        }
+    }
+
+    #[test]
+    fn ipc_category_labels_are_stable() {
+        assert_eq!(IpcCategory::CoreMusic.label(), "core-music");
+        assert_eq!(IpcCategory::SpotuifyPlatform.label(), "spotuify-platform");
+        assert_eq!(IpcCategory::AdminMaintenance.label(), "admin-maintenance");
+        assert_eq!(IpcCategory::ClientSpecific.label(), "client-specific");
+    }
+
+    #[test]
+    fn request_category_links_to_kind_label_for_telemetry() {
+        // The IPC span records both `request_kind` AND `category` so a
+        // log dashboard can group by category. Spot-check that the two
+        // labelings stay in sync.
+        let pause = Request::PlaybackCommand {
+            command: PlaybackCommand::Pause,
+        };
+        assert_eq!(pause.kind_label(), "playback-command");
+        assert_eq!(pause.category(), IpcCategory::CoreMusic);
+    }
+
+    #[test]
+    fn seek_relative_round_trips_through_serde() {
+        let raw = serde_json::to_string(&Request::PlaybackCommand {
+            command: PlaybackCommand::SeekRelative { offset_ms: -30_000 },
+        })
+        .unwrap();
+        assert!(raw.contains("\"cmd\":\"playback-command\""));
+        // PlaybackCommand uses kebab-case with externally-tagged variants
+        // for payload-carrying variants ({"seek-relative":{"offset_ms":..}}).
+        // The exact serde shape isn't part of the public contract; the
+        // round-trip is.
+        let parsed: Request = serde_json::from_str(&raw).unwrap();
+        assert!(matches!(
+            parsed,
+            Request::PlaybackCommand {
+                command: PlaybackCommand::SeekRelative { offset_ms: -30_000 }
+            }
+        ));
+    }
 
     #[test]
     fn request_wire_shape_is_kebab_case_and_tagged() {
         let raw = serde_json::to_string(&IpcMessage {
             id: 7,
+            source: None,
             payload: IpcPayload::Request(Request::GetDaemonStatus),
         })
         .unwrap();
 
         assert!(raw.contains("\"type\":\"Request\""));
         assert!(raw.contains("\"cmd\":\"get-daemon-status\""));
+        assert!(!raw.contains("\"source\""));
     }
 
     #[test]
     fn music_request_wire_shape_is_kebab_case_and_typed() {
         let raw = serde_json::to_string(&IpcMessage {
             id: 8,
+            source: Some(super::OperationSource::Cli),
             payload: IpcPayload::Request(Request::Search {
                 query: "luther vandross".to_string(),
                 scope: super::SearchScopeData::Track,
@@ -924,12 +1525,14 @@ mod tests {
         .unwrap();
 
         assert!(raw.contains("\"cmd\":\"search\""));
+        assert!(raw.contains("\"source\":\"cli\""));
         assert!(raw.contains("\"query\":\"luther vandross\""));
         assert!(raw.contains("\"scope\":\"track\""));
         assert!(raw.contains("\"source\":\"hybrid\""));
 
         let raw = serde_json::to_string(&IpcMessage {
             id: 9,
+            source: None,
             payload: IpcPayload::Request(Request::PlaybackCommand {
                 command: super::PlaybackCommand::Next,
             }),
@@ -944,6 +1547,7 @@ mod tests {
     fn tui_refresh_request_wire_shape_is_kebab_case_and_typed() {
         let raw = serde_json::to_string(&IpcMessage {
             id: 10,
+            source: None,
             payload: IpcPayload::Request(Request::RecentlyPlayed),
         })
         .unwrap();
@@ -952,6 +1556,7 @@ mod tests {
 
         let raw = serde_json::to_string(&IpcMessage {
             id: 11,
+            source: None,
             payload: IpcPayload::Request(Request::Image {
                 url: "https://example.invalid/cover.png".to_string(),
             }),
@@ -963,9 +1568,43 @@ mod tests {
     }
 
     #[test]
-    fn playlist_create_request_wire_shape_is_kebab_case_and_typed() {
+    fn cover_art_request_wire_shape_is_kebab_case_and_returns_local_path() {
         let raw = serde_json::to_string(&IpcMessage {
             id: 12,
+            source: None,
+            payload: IpcPayload::Request(Request::CoverArt {
+                url: "https://i.scdn.co/image/abc".to_string(),
+            }),
+        })
+        .unwrap();
+
+        assert!(raw.contains("\"cmd\":\"cover-art\""));
+        assert!(raw.contains("\"url\":\"https://i.scdn.co/image/abc\""));
+
+        let raw = serde_json::to_string(&IpcMessage {
+            id: 13,
+            source: None,
+            payload: IpcPayload::Response(Response::Ok {
+                data: ResponseData::CoverArt {
+                    path: "/tmp/abc.jpg".to_string(),
+                    cache_hit: true,
+                    bytes: 42,
+                    fetched_at_ms: Some(1_700_000_000_000),
+                },
+            }),
+        })
+        .unwrap();
+
+        assert!(raw.contains("\"kind\":\"cover-art\""));
+        assert!(raw.contains("\"path\":\"/tmp/abc.jpg\""));
+        assert!(raw.contains("\"cache_hit\":true"));
+    }
+
+    #[test]
+    fn playlist_create_request_wire_shape_is_kebab_case_and_typed() {
+        let raw = serde_json::to_string(&IpcMessage {
+            id: 14,
+            source: None,
             payload: IpcPayload::Request(Request::PlaylistCreate {
                 name: "Exile and Return".to_string(),
                 description: None,
@@ -977,5 +1616,22 @@ mod tests {
         assert!(raw.contains("\"cmd\":\"playlist-create\""));
         assert!(raw.contains("\"name\":\"Exile and Return\""));
         assert!(raw.contains("\"uris\":[\"spotify:track:1\"]"));
+    }
+
+    #[test]
+    fn lyrics_request_wire_shape_is_kebab_case_and_typed() {
+        let raw = serde_json::to_string(&IpcMessage {
+            id: 15,
+            source: None,
+            payload: IpcPayload::Request(Request::LyricsGet {
+                track_uri: Some("spotify:track:abc".to_string()),
+                force_refresh: true,
+            }),
+        })
+        .unwrap();
+
+        assert!(raw.contains("\"cmd\":\"lyrics-get\""));
+        assert!(raw.contains("\"track_uri\":\"spotify:track:abc\""));
+        assert!(raw.contains("\"force_refresh\":true"));
     }
 }
