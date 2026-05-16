@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 
 use spotuify_core::{Playback, Playlist};
 use spotuify_protocol::{
-    IpcClient, PlaybackCommand, Request, Response, ResponseData, SearchScopeData, SearchSourceData,
-    SyncTargetData,
+    IpcClient, OperationSource, PlaybackCommand, Request, Response, ResponseData, SearchScopeData,
+    SearchSourceData, SyncTargetData,
 };
 
 use crate::output::{self, OutputFormat};
@@ -127,10 +127,84 @@ pub async fn ipc_cache_status(format: OutputFormat) -> Result<()> {
     }
 }
 
+pub async fn ipc_lyrics(command: crate::LyricsCommand) -> Result<()> {
+    match command {
+        crate::LyricsCommand::Show { track, format } => {
+            let data = daemon_request(Request::LyricsGet {
+                track_uri: track,
+                force_refresh: false,
+            })
+            .await?;
+            output::print_response_data(&data, format)
+        }
+        crate::LyricsCommand::Fetch { track_uri, format } => {
+            let data = daemon_request(Request::LyricsGet {
+                track_uri: Some(track_uri),
+                force_refresh: true,
+            })
+            .await?;
+            output::print_response_data(&data, format)
+        }
+        crate::LyricsCommand::Export { track_uri, output } => {
+            let data = daemon_request(Request::LyricsGet {
+                track_uri: Some(track_uri),
+                force_refresh: false,
+            })
+            .await?;
+            output::export_lyrics_lrc(&data, output.as_deref())
+        }
+        crate::LyricsCommand::Offset {
+            track_uri,
+            offset,
+            format,
+        } => {
+            let offset_ms = parse_lyrics_offset(&offset)?;
+            let data = daemon_request(Request::LyricsOffsetSet {
+                track_uri,
+                offset_ms,
+            })
+            .await?;
+            output::print_response_data(&data, format)
+        }
+    }
+}
+
 pub async fn ipc_sync(target: SyncTargetData, format: OutputFormat) -> Result<()> {
     match daemon_request(Request::Sync { target }).await? {
         ResponseData::Sync { summary } => output::print_sync_summary(&summary, format),
         _ => unexpected_response(),
+    }
+}
+
+pub async fn ipc_viz(command: crate::VizCommand) -> Result<()> {
+    match command {
+        crate::VizCommand::Enable => print_ack(Request::SetVizEnabled { enabled: true }).await,
+        crate::VizCommand::Disable => print_ack(Request::SetVizEnabled { enabled: false }).await,
+        crate::VizCommand::Source { kind } => {
+            print_ack(Request::SetVizSource { kind: kind.into() }).await
+        }
+        crate::VizCommand::Status { format } => {
+            match daemon_request(Request::GetVizStatus).await? {
+                data @ ResponseData::VizStatus { .. } => output::print_response_data(&data, format),
+                _ => unexpected_response(),
+            }
+        }
+    }
+}
+
+pub async fn ipc_mpris(command: crate::MprisCommand) -> Result<()> {
+    match command {
+        crate::MprisCommand::Status { format } => {
+            match daemon_request(Request::GetDoctorReport).await? {
+                ResponseData::DoctorReport { report } => {
+                    let diagnostics = report
+                        .system
+                        .context("daemon did not return media-control diagnostics")?;
+                    output::print_system_diagnostics(&diagnostics, format)
+                }
+                _ => unexpected_response(),
+            }
+        }
     }
 }
 
@@ -144,6 +218,16 @@ pub async fn ipc_play_uri(uri: &str, format: OutputFormat) -> Result<()> {
         .await?,
         format,
     )
+}
+
+async fn print_ack(request: Request) -> Result<()> {
+    match daemon_request(request).await? {
+        ResponseData::Ack { message } => {
+            println!("{message}");
+            Ok(())
+        }
+        _ => unexpected_response(),
+    }
 }
 
 pub async fn ipc_playback_command(action: PlaybackCommand, format: OutputFormat) -> Result<()> {
@@ -421,7 +505,7 @@ async fn daemon_playlist(value: &str) -> Result<Playlist> {
         ResponseData::Playlists { playlists } => playlists,
         _ => return unexpected_response(),
     };
-    selection::resolve_playlist(&playlists, value)
+    Ok(selection::resolve_playlist(&playlists, value)?)
 }
 
 fn playlist_add_receipt(
@@ -477,7 +561,7 @@ fn confirm_playlist_add(playlist: &Playlist, uris: &[String]) -> Result<()> {
 
 async fn daemon_request(request: Request) -> Result<ResponseData> {
     spotuify_daemon::server::ensure_daemon_running().await?;
-    let mut client = IpcClient::connect().await?;
+    let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
     match client.request(request).await? {
         Response::Ok { data } => Ok(data),
         Response::Error { message, .. } => anyhow::bail!(message),
@@ -497,8 +581,8 @@ pub async fn ipc_reload() -> Result<()> {
     }
 }
 
-/// Phase 13 (P13-I) — request the daemon rebuild its upstream Spotify
-/// session (relevant for embedded librespot after a VPN flap).
+/// Phase 13 (P13-I) — request the daemon re-register its active player
+/// backend (useful after a VPN flap).
 pub async fn ipc_reconnect() -> Result<()> {
     match daemon_request(Request::Reconnect).await? {
         ResponseData::Ack { message } => {
@@ -511,6 +595,12 @@ pub async fn ipc_reconnect() -> Result<()> {
 
 fn unexpected_response<T>() -> Result<T> {
     anyhow::bail!("unexpected response from daemon")
+}
+
+fn parse_lyrics_offset(value: &str) -> Result<i64> {
+    let raw = value.trim().strip_suffix("ms").unwrap_or(value.trim());
+    raw.parse::<i64>()
+        .with_context(|| format!("expected offset like +50ms or -200ms, got `{value}`"))
 }
 
 fn read_input(path: &Path) -> Result<String> {

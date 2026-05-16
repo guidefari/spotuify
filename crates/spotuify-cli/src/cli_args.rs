@@ -10,6 +10,55 @@ use clap::Subcommand;
 
 use crate::output::OutputFormat;
 
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VizSourceKindArg {
+    Auto,
+    Sink,
+    Loopback,
+    None,
+}
+
+impl From<VizSourceKindArg> for spotuify_protocol::VizSourceKindData {
+    fn from(value: VizSourceKindArg) -> Self {
+        match value {
+            VizSourceKindArg::Auto => Self::Auto,
+            VizSourceKindArg::Sink => Self::Sink,
+            VizSourceKindArg::Loopback => Self::Loopback,
+            VizSourceKindArg::None => Self::None,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum VizCommand {
+    /// Enable the TUI spectrum visualizer.
+    Enable,
+    /// Disable the TUI spectrum visualizer.
+    Disable,
+    /// Select the audio source used by the visualizer.
+    Source {
+        /// Source kind: auto, sink, loopback, or none.
+        #[arg(value_enum)]
+        kind: VizSourceKindArg,
+    },
+    /// Show visualizer status and diagnostics.
+    Status {
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MprisCommand {
+    /// Print media-control registration status.
+    Status {
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
 #[derive(Subcommand)]
 pub enum QueueCommand {
     /// Add an item to the current queue.
@@ -107,6 +156,45 @@ pub enum LibraryCommand {
         /// Maximum cached library rows to print.
         #[arg(long, default_value_t = 100)]
         limit: u32,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LyricsCommand {
+    /// Print lyrics for the current or specified track.
+    Show {
+        /// Spotify track URI. Defaults to the current now-playing track.
+        #[arg(long)]
+        track: Option<String>,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Force-refresh cached lyrics for a Spotify track URI.
+    Fetch {
+        /// Spotify track URI.
+        track_uri: String,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Export lyrics as an LRC file.
+    Export {
+        /// Spotify track URI.
+        track_uri: String,
+        /// Write to a file instead of stdout.
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
+    /// Save a per-track lyrics timing offset, e.g. +50ms or -200ms.
+    Offset {
+        /// Spotify track URI.
+        track_uri: String,
+        /// Offset in milliseconds, with optional `ms` suffix.
+        offset: String,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -282,7 +370,7 @@ pub enum OpsCommand {
         /// Predict the reversal without executing.
         #[arg(long)]
         dry_run: bool,
-        /// Skip confirmation prompts.
+        /// Required to execute a non-dry-run undo.
         #[arg(long)]
         yes: bool,
         /// Override snapshot-id conflict detection.

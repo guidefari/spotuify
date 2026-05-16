@@ -17,4 +17,6 @@ pub mod selection {
     pub use spotuify_spotify::selection::*;
 }
 
-pub use cli_args::{LibraryCommand, PlaylistCommand, QueueCommand};
+pub use cli_args::{
+    LibraryCommand, LyricsCommand, MprisCommand, PlaylistCommand, QueueCommand, VizCommand,
+};

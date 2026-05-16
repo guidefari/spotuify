@@ -1,11 +1,16 @@
 use std::io::{self, Write};
+use std::path::Path;
 
-use anyhow::Result;
-use clap::ValueEnum;
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use spotuify_core::{Device, MediaItem, Playback, Playlist, Queue, StoredAnalyticsEvent};
-use spotuify_protocol::{CacheStatus, CacheSyncSummary, PlaylistCreateReceipt, ReindexStats};
+use spotuify_core::{
+    Device, MediaItem, Playback, Playlist, Queue, StoredAnalyticsEvent, SyncedLyrics,
+};
+use spotuify_protocol::{
+    CacheStatus, CacheSyncSummary, PlaylistCreateReceipt, ReindexStats, ResponseData,
+    SystemDiagnostics,
+};
 
 // Re-export OutputFormat so existing `crate::output::OutputFormat`
 // call sites keep compiling. The type itself lives in
@@ -709,15 +714,19 @@ pub fn print_cache_status(status: &CacheStatus, format: OutputFormat) -> Result<
         OutputFormat::Json => print_json(status),
         OutputFormat::Jsonl => print_json_line(status),
         OutputFormat::Csv => {
-            println!("database_path,index_path,media_items,devices,playback_snapshots,playlists,playlist_items,recent_items,library_items,search_runs,search_results,sync_events,index_documents,last_sync_at_ms,last_search_at_ms");
+            let freshness_json = serde_json::to_string(&status.freshness)?;
+            println!("database_path,index_path,cover_cache_path,media_items,devices,playback_snapshots,queue_snapshots,queue_items,playlists,playlist_items,recent_items,library_items,search_runs,search_results,sync_events,lyrics_cache,lyrics_offsets,cover_cache_files,cover_cache_bytes,cover_cache_oldest_entry_ms,cover_cache_ttl_secs,cover_cache_max_bytes,index_documents,last_sync_at_ms,last_search_at_ms,freshness_json");
             println!(
                 "{}",
                 csv_row(&[
                     &status.database_path,
                     &status.index_path,
+                    &status.cover_cache_path,
                     &status.media_items.to_string(),
                     &status.devices.to_string(),
                     &status.playback_snapshots.to_string(),
+                    &status.queue_snapshots.to_string(),
+                    &status.queue_items.to_string(),
                     &status.playlists.to_string(),
                     &status.playlist_items.to_string(),
                     &status.recent_items.to_string(),
@@ -725,6 +734,16 @@ pub fn print_cache_status(status: &CacheStatus, format: OutputFormat) -> Result<
                     &status.search_runs.to_string(),
                     &status.search_results.to_string(),
                     &status.sync_events.to_string(),
+                    &status.lyrics_cache.to_string(),
+                    &status.lyrics_offsets.to_string(),
+                    &status.cover_cache_files.to_string(),
+                    &status.cover_cache_bytes.to_string(),
+                    &status
+                        .cover_cache_oldest_entry_ms
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    &status.cover_cache_ttl_secs.to_string(),
+                    &status.cover_cache_max_bytes.to_string(),
                     &status.index_documents.to_string(),
                     &status
                         .last_sync_at_ms
@@ -734,6 +753,7 @@ pub fn print_cache_status(status: &CacheStatus, format: OutputFormat) -> Result<
                         .last_search_at_ms
                         .map(|v| v.to_string())
                         .unwrap_or_default(),
+                    &freshness_json,
                 ])
             );
             Ok(())
@@ -741,21 +761,164 @@ pub fn print_cache_status(status: &CacheStatus, format: OutputFormat) -> Result<
         OutputFormat::Ids => {
             println!("{}", status.database_path);
             println!("{}", status.index_path);
+            if !status.cover_cache_path.is_empty() {
+                println!("{}", status.cover_cache_path);
+            }
             Ok(())
         }
         OutputFormat::Table => {
             println!("database\t{}", status.database_path);
             println!("index\t{}", status.index_path);
+            if !status.cover_cache_path.is_empty() {
+                println!("cover_cache\t{}", status.cover_cache_path);
+                println!("cover_cache_files\t{}", status.cover_cache_files);
+                println!("cover_cache_bytes\t{}", status.cover_cache_bytes);
+                println!("cover_cache_ttl_secs\t{}", status.cover_cache_ttl_secs);
+            }
             println!("media_items\t{}", status.media_items);
+            println!("queue_snapshots\t{}", status.queue_snapshots);
+            println!("queue_items\t{}", status.queue_items);
             println!("playlists\t{}", status.playlists);
             println!("playlist_items\t{}", status.playlist_items);
             println!("recent_items\t{}", status.recent_items);
             println!("library_items\t{}", status.library_items);
             println!("search_runs\t{}", status.search_runs);
+            println!("lyrics_cache\t{}", status.lyrics_cache);
+            println!("lyrics_offsets\t{}", status.lyrics_offsets);
             println!("index_documents\t{}", status.index_documents);
+            println!(
+                "freshness\tmedia_items fresh={} unknown={} gen={}",
+                status.freshness.media_items.fresh,
+                status.freshness.media_items.unknown,
+                status.freshness.media_items.max_sync_generation
+            );
+            println!(
+                "freshness\tqueue fresh_snapshots={} fresh_items={} gen={}",
+                status.freshness.queue_snapshots.fresh,
+                status.freshness.queue_items.fresh,
+                status
+                    .freshness
+                    .queue_snapshots
+                    .max_sync_generation
+                    .max(status.freshness.queue_items.max_sync_generation)
+            );
+            println!(
+                "freshness\tplaylists fresh={} unknown={} gen={}",
+                status.freshness.playlists.fresh,
+                status.freshness.playlists.unknown,
+                status.freshness.playlists.max_sync_generation
+            );
             Ok(())
         }
     }
+}
+
+pub fn print_system_diagnostics(
+    diagnostics: &SystemDiagnostics,
+    format: OutputFormat,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(diagnostics),
+        OutputFormat::Jsonl => print_json_line(diagnostics),
+        OutputFormat::Csv => {
+            println!("name,enabled,detail");
+            println!(
+                "{}",
+                csv_row(&[
+                    "media-controls",
+                    bool_str(diagnostics.media_controls_enabled),
+                    diagnostics
+                        .media_controls_bus_name
+                        .as_deref()
+                        .unwrap_or("-"),
+                ])
+            );
+            println!(
+                "{}",
+                csv_row(&[
+                    "shell-hook",
+                    bool_str(diagnostics.hooks_enabled),
+                    diagnostics.hook_command.as_deref().unwrap_or("-"),
+                ])
+            );
+            println!(
+                "{}",
+                csv_row(&[
+                    "notifications",
+                    bool_str(diagnostics.notifications_enabled),
+                    "-",
+                ])
+            );
+            println!(
+                "{}",
+                csv_row(&[
+                    "discord-rpc",
+                    bool_str(diagnostics.discord_enabled),
+                    diagnostics.discord_application_id.as_deref().unwrap_or("-"),
+                ])
+            );
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            if let Some(bus_name) = diagnostics.media_controls_bus_name.as_deref() {
+                println!("{bus_name}");
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!(
+                "media-controls\t{}",
+                bool_str(diagnostics.media_controls_enabled)
+            );
+            if let Some(bus_name) = diagnostics.media_controls_bus_name.as_deref() {
+                println!("bus_name\t{bus_name}");
+            }
+            println!("shell-hook\t{}", bool_str(diagnostics.hooks_enabled));
+            if let Some(command) = diagnostics.hook_command.as_deref() {
+                println!("hook_command\t{command}");
+            }
+            println!(
+                "notifications\t{}",
+                bool_str(diagnostics.notifications_enabled)
+            );
+            println!("discord-rpc\t{}", bool_str(diagnostics.discord_enabled));
+            Ok(())
+        }
+    }
+}
+
+pub fn export_lyrics_lrc(data: &ResponseData, output_path: Option<&Path>) -> Result<()> {
+    let ResponseData::Lyrics {
+        lyrics: Some(lyrics),
+        ..
+    } = data
+    else {
+        bail!("No lyrics available");
+    };
+    let lrc = render_lyrics_lrc(lyrics);
+    if let Some(path) = output_path {
+        std::fs::write(path, lrc).with_context(|| format!("write {}", path.display()))?;
+    } else {
+        print!("{lrc}");
+    }
+    Ok(())
+}
+
+fn render_lyrics_lrc(lyrics: &SyncedLyrics) -> String {
+    let mut rendered = String::new();
+    for line in &lyrics.lines {
+        rendered.push_str(&format_lrc_timestamp(line.start_ms));
+        rendered.push_str(&line.text);
+        rendered.push('\n');
+    }
+    rendered
+}
+
+fn format_lrc_timestamp(start_ms: u64) -> String {
+    let minutes = start_ms / 60_000;
+    let seconds = (start_ms / 1_000) % 60;
+    let centiseconds = (start_ms % 1_000) / 10;
+    format!("[{minutes:02}:{seconds:02}.{centiseconds:02}]")
 }
 
 pub fn print_reindex_stats(stats: &ReindexStats, format: OutputFormat) -> Result<()> {
@@ -784,12 +947,14 @@ pub fn print_sync_summary(summary: &CacheSyncSummary, format: OutputFormat) -> R
         OutputFormat::Json => print_json(summary),
         OutputFormat::Jsonl => print_json_line(summary),
         OutputFormat::Csv => {
-            println!("target,playback_snapshots,devices,playlists,playlist_items,recent_items,library_items,media_items");
+            println!("target,playback_snapshots,queue_snapshots,queue_items,devices,playlists,playlist_items,recent_items,library_items,media_items");
             println!(
                 "{}",
                 csv_row(&[
                     summary.target.label(),
                     &summary.playback_snapshots.to_string(),
+                    &summary.queue_snapshots.to_string(),
+                    &summary.queue_items.to_string(),
                     &summary.devices.to_string(),
                     &summary.playlists.to_string(),
                     &summary.playlist_items.to_string(),
@@ -807,6 +972,8 @@ pub fn print_sync_summary(summary: &CacheSyncSummary, format: OutputFormat) -> R
         OutputFormat::Table => {
             println!("target\t{}", summary.target.label());
             println!("media_items\t{}", summary.media_items);
+            println!("queue_snapshots\t{}", summary.queue_snapshots);
+            println!("queue_items\t{}", summary.queue_items);
             println!("devices\t{}", summary.devices);
             println!("playlists\t{}", summary.playlists);
             println!("playlist_items\t{}", summary.playlist_items);
@@ -911,12 +1078,89 @@ pub fn print_response_data(
         D::Image { bytes } => {
             print!("<image {} bytes>", bytes.len());
         }
+        D::CoverArt {
+            path,
+            cache_hit,
+            bytes,
+            ..
+        } => match format {
+            OutputFormat::Json | OutputFormat::Jsonl => {
+                return render_json_or_summary(format, data, |_| {})
+            }
+            OutputFormat::Csv => {
+                println!("path,cache_hit,bytes");
+                println!(
+                    "{}",
+                    csv_row(&[path, &cache_hit.to_string(), &bytes.to_string()])
+                );
+            }
+            OutputFormat::Ids => println!("{path}"),
+            OutputFormat::Table => {
+                println!("path\t{path}");
+                println!("cache_hit\t{cache_hit}");
+                println!("bytes\t{bytes}");
+            }
+        },
         D::Mutation { receipt } => {
             return print_basic_receipt(&receipt.action, &receipt.message, format);
         }
         D::PlaylistCreate { receipt } => {
             return print_playlist_create_receipt(receipt, format);
         }
+        D::Lyrics { lyrics, offset_ms } => match format {
+            OutputFormat::Json | OutputFormat::Jsonl => {
+                return render_json_or_summary(format, data, |_| {})
+            }
+            OutputFormat::Csv => {
+                println!("start_ms,text,is_rtl");
+                if let Some(lyrics) = lyrics {
+                    for line in &lyrics.lines {
+                        println!(
+                            "{}",
+                            csv_row(&[
+                                &line.start_ms.to_string(),
+                                &line.text,
+                                &line.is_rtl.to_string(),
+                            ])
+                        );
+                    }
+                }
+            }
+            OutputFormat::Ids => {
+                if let Some(lyrics) = lyrics {
+                    println!("{}", lyrics.track_uri);
+                }
+            }
+            OutputFormat::Table => {
+                if let Some(lyrics) = lyrics {
+                    println!("provider\t{}", lyrics.provider.label());
+                    println!("synced\t{}", lyrics.synced);
+                    println!("offset_ms\t{offset_ms}");
+                    for line in &lyrics.lines {
+                        println!("{}\t{}", line.start_ms, line.text);
+                    }
+                } else {
+                    println!("No lyrics available");
+                }
+            }
+        },
+        D::LyricsOffset {
+            track_uri,
+            offset_ms,
+        } => match format {
+            OutputFormat::Json | OutputFormat::Jsonl => {
+                return render_json_or_summary(format, data, |_| {})
+            }
+            OutputFormat::Csv => {
+                println!("track_uri,offset_ms");
+                println!("{}", csv_row(&[track_uri, &offset_ms.to_string()]));
+            }
+            OutputFormat::Ids => println!("{track_uri}"),
+            OutputFormat::Table => {
+                println!("track\t{track_uri}");
+                println!("offset_ms\t{offset_ms}");
+            }
+        },
         D::DaemonStatus { status } => match format {
             OutputFormat::Json | OutputFormat::Jsonl => {
                 let json = serde_json::to_string_pretty(status)?;
@@ -1109,6 +1353,25 @@ pub fn print_response_data(
             }
             _ => println!("Pruned {pruned_runs} search run(s)"),
         },
+        D::VizStatus { diagnostics } => render_json_or_summary(format, diagnostics, |d| {
+            println!("enabled\t{}", d.enabled);
+            println!("configured\t{}", d.configured_source.as_str());
+            println!("active\t{:?}", d.active_source);
+            println!("playing\t{}", d.playing);
+            println!("target_fps\t{}", d.target_fps);
+            if let Some(backend) = d.backend_kind {
+                println!("backend\t{}", backend.label());
+            }
+            if let Some(age_ms) = d.last_frame_age_ms {
+                println!("last_frame_age_ms\t{age_ms}");
+            }
+            if let Some(device) = d.loopback_device_name.as_deref() {
+                println!("loopback_device\t{device}");
+            }
+            if let Some(hint) = d.hint.as_deref() {
+                println!("hint\t{hint}");
+            }
+        })?,
         D::OperationUndoResult {
             undo_op_id,
             succeeded,
@@ -1170,11 +1433,23 @@ fn render_json_or_summary<T: serde::Serialize>(
 #[cfg(test)]
 mod tests {
     use super::{
-        write_basic_receipt, write_item_receipt, write_media_items, write_mutation_output,
-        write_playlist_create_receipt, MutationOutput, OutputFormat,
+        render_lyrics_lrc, write_basic_receipt, write_item_receipt, write_media_items,
+        write_mutation_output, write_playlist_create_receipt, MutationOutput, OutputFormat,
     };
-    use spotuify_core::{MediaItem, MediaKind};
+    use spotuify_core::{LyricLine, LyricsProvider, MediaItem, MediaKind, SyncedLyrics};
     use spotuify_protocol::PlaylistCreateReceipt;
+
+    fn utf8(out: Vec<u8>) -> String {
+        String::from_utf8(out).expect("output should be valid UTF-8")
+    }
+
+    fn json_value(out: &[u8]) -> serde_json::Value {
+        serde_json::from_slice(out).expect("output should be valid JSON")
+    }
+
+    fn json_line(line: &str) -> serde_json::Value {
+        serde_json::from_str(line).expect("line should be valid JSON")
+    }
 
     #[test]
     fn csv_media_output_is_pipeable_and_escapes_commas_and_quotes() {
@@ -1194,10 +1469,10 @@ mod tests {
         }];
         let mut out = Vec::new();
 
-        write_media_items(&mut out, &items, OutputFormat::Csv).unwrap();
+        write_media_items(&mut out, &items, OutputFormat::Csv).expect("CSV output should write");
 
         assert_eq!(
-            String::from_utf8(out).unwrap(),
+            utf8(out),
             "id,uri,type,name,subtitle,context,duration_ms\ntrack-1,spotify:track:track-1,track,\"Hello, \"\"Friend\"\"\",\"Artist, Featured\",Album,123000\n"
         );
     }
@@ -1207,9 +1482,9 @@ mod tests {
         let items = vec![media_item("track-1", "Never Too Much")];
         let mut out = Vec::new();
 
-        write_media_items(&mut out, &items, OutputFormat::Json).unwrap();
+        write_media_items(&mut out, &items, OutputFormat::Json).expect("JSON output should write");
 
-        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let value = json_value(&out);
         let first = &value[0];
         assert_eq!(first["id"], "track-1");
         assert_eq!(first["uri"], "spotify:track:track-1");
@@ -1226,19 +1501,14 @@ mod tests {
         ];
         let mut out = Vec::new();
 
-        write_media_items(&mut out, &items, OutputFormat::Jsonl).unwrap();
+        write_media_items(&mut out, &items, OutputFormat::Jsonl)
+            .expect("JSONL output should write");
 
-        let output = String::from_utf8(out).unwrap();
+        let output = utf8(out);
         let lines = output.lines().collect::<Vec<_>>();
         assert_eq!(lines.len(), 2);
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(lines[0]).unwrap()["uri"],
-            "spotify:track:track-1"
-        );
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(lines[1]).unwrap()["uri"],
-            "spotify:track:track-2"
-        );
+        assert_eq!(json_line(lines[0])["uri"], "spotify:track:track-1");
+        assert_eq!(json_line(lines[1])["uri"], "spotify:track:track-2");
     }
 
     #[test]
@@ -1249,22 +1519,20 @@ mod tests {
         ];
         let mut out = Vec::new();
 
-        write_media_items(&mut out, &items, OutputFormat::Ids).unwrap();
+        write_media_items(&mut out, &items, OutputFormat::Ids).expect("IDs output should write");
 
-        assert_eq!(
-            String::from_utf8(out).unwrap(),
-            "spotify:track:track-1\nspotify:track:track-2\n"
-        );
+        assert_eq!(utf8(out), "spotify:track:track-1\nspotify:track:track-2\n");
     }
 
     #[test]
     fn json_receipt_output_has_stable_shape() {
         let mut out = Vec::new();
 
-        write_basic_receipt(&mut out, "pause", "Paused", OutputFormat::Json).unwrap();
+        write_basic_receipt(&mut out, "pause", "Paused", OutputFormat::Json)
+            .expect("receipt output should write");
 
         assert_eq!(
-            String::from_utf8(out).unwrap(),
+            utf8(out),
             "{\n  \"action\": \"pause\",\n  \"message\": \"Paused\",\n  \"ok\": true\n}\n"
         );
     }
@@ -1287,9 +1555,10 @@ mod tests {
         };
         let mut out = Vec::new();
 
-        write_item_receipt(&mut out, "play", &item, OutputFormat::Ids).unwrap();
+        write_item_receipt(&mut out, "play", &item, OutputFormat::Ids)
+            .expect("item receipt output should write");
 
-        assert_eq!(String::from_utf8(out).unwrap(), "spotify:track:track-1\n");
+        assert_eq!(utf8(out), "spotify:track:track-1\n");
     }
 
     #[test]
@@ -1305,9 +1574,10 @@ mod tests {
         };
         let mut out = Vec::new();
 
-        write_playlist_create_receipt(&mut out, &receipt, OutputFormat::Json).unwrap();
+        write_playlist_create_receipt(&mut out, &receipt, OutputFormat::Json)
+            .expect("playlist create receipt should write");
 
-        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let value = json_value(&out);
         assert_eq!(value["playlist_uri"], "spotify:playlist:playlist-1");
         assert_eq!(value["added_item_count"], 2);
         assert_eq!(value["action"], "playlist-create");
@@ -1330,13 +1600,43 @@ mod tests {
         };
         let mut out = Vec::new();
 
-        write_mutation_output(&mut out, &receipt, OutputFormat::Json).unwrap();
+        write_mutation_output(&mut out, &receipt, OutputFormat::Json)
+            .expect("mutation output should write");
 
-        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let value = json_value(&out);
         assert_eq!(value["action"], "playlist-add");
         assert_eq!(value["dry_run"], true);
         assert_eq!(value["requested"], 2);
         assert_eq!(value["uris"][1], "spotify:track:2");
+    }
+
+    #[test]
+    fn lyrics_lrc_export_uses_centisecond_timestamps() {
+        let lyrics = SyncedLyrics {
+            provider: LyricsProvider::Lrclib,
+            track_uri: "spotify:track:abc".to_string(),
+            lines: vec![
+                LyricLine {
+                    start_ms: 1_230,
+                    text: "first".to_string(),
+                    is_rtl: false,
+                },
+                LyricLine {
+                    start_ms: 61_999,
+                    text: "second".to_string(),
+                    is_rtl: false,
+                },
+            ],
+            fetched_at_ms: 9,
+            synced: true,
+            language: None,
+            source_url: None,
+        };
+
+        assert_eq!(
+            render_lyrics_lrc(&lyrics),
+            "[00:01.23]first\n[01:01.99]second\n"
+        );
     }
 
     fn media_item(id: &str, name: &str) -> MediaItem {
