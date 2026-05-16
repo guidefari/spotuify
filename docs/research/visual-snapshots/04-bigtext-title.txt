@@ -1,0 +1,25 @@
+Step 4 snapshot — big-text track title via tui-big-text Quadrant
+Same player chrome as step 3 but the title "Doves in the Wind" now
+renders as a 2-row block-glyph (Quadrant pixel size). The visual
+weight is now where it should be: the title is the dominant element
+in the middle column.
+
+┌ spotuify ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                                          │
+│      .----.      ▜▛▙                      ▀           ▟  ▜▌          █ ▐▌ ▀       ▝█                             ⏮   ⏸   ⏭     ♡         │
+│     / .--. \     ▐▌▐▌▟▀▙ █ █ ▟▀▙ ▟▀▀     ▝█  █▀▙     ▝█▀ ▐▙▜▖▟▀▙     █▗▐▌▝█  █▀▙ ▗▄█                             ⇄ shuffle   ↻ all       │
+│     | |  | |     ♪ Artist                                                                                       🔊  ██████░░  72          │
+│     \ '--' /                                                                                                                             │
+│      '----'      playing on Living Room                                 0:00 / 3:00                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Notes:
+- The big-text glyphs read as "Doves in the Wind" when rendered with
+  background colours and at full-character spacing. In a symbol-only
+  dump they look like block-art noise; in a real terminal they look
+  like a banner title.
+- Long titles get truncated with `…` so they don't wrap and break the
+  player chrome height.
+- The artist line moved below the big-text title (smaller, muted),
+  the state-and-device line moved into the bottom row alongside the
+  progress gauge.

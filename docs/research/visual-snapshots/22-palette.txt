@@ -1,0 +1,40 @@
+Step 22 — Palette + typography unification
+
+Single source of truth lives in `crates/spotuify-tui/src/widgets/style.rs`.
+Every chrome element (chips, borders, blocks, modals) now resolves to
+one of these roles. Replacing a colour means editing one constant.
+
+Role         RGB                  Used by
+─────────────────────────────────────────────────────────────────────────
+BG           15 18 20             root background, key-chip foreground
+PANEL        22 27 30             card background
+TEXT         230 238 242          primary text
+MUTED        130 140 145          secondary text, metadata
+GREEN        30 215 96            Spotify-branded affirmative chips,
+                                  selected row bg, cursor, viz bars,
+                                  affirm buttons, "playing" state chip
+WARN         245 185 65           rate-limit / compat banners,
+                                  WRN log chip, schema-compat
+RED          245 88 88            destructive buttons, error border,
+                                  ERR log chip, restricted state
+ACCENT       120 210 240          card-title chip background,
+                                  category state chip, section chips
+DIM_BORDER   45 55 60             every panel/card border
+CHIP_BG      60 72 78             key chip background
+CHIP_FG      240 248 252          key chip foreground
+
+Typography hierarchy:
+1. tui-big-text `PixelSize::Full` — focus-mode title (snapshot 21).
+2. tui-big-text `PixelSize::Quadrant` — bottom transport title,
+   Player tab hero title (snapshots 04 + 06).
+3. Bold TEXT — track/playlist/device names in lists.
+4. Plain TEXT — body copy.
+5. MUTED — metadata, secondary text.
+6. DIM_BORDER — hairline borders.
+
+Notes:
+- The legacy `panel_block` and the new `card_block`/`focused_card_block`
+  now share the same `DIM_BORDER` colour, so the two read as one
+  visual family.
+- Selection cursor `▌` always uses GREEN; marked-row dot `●` uses
+  GREEN with BOLD. Inactive checkbox `○` uses MUTED.

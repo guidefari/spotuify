@@ -1,0 +1,24 @@
+Step 3 snapshot — bottom transport with chip buttons + volume bar
+Player chrome at 140 cols, sample track "Doves in the Wind", playing,
+shuffle on, repeat=all, volume 72.
+
+┌ spotuify ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                  ♪ Doves in the Wind                                                                                                     │
+│      .----.      Artist                                                                                          ⏮   ⏸   ⏭     ♡         │
+│     / .--. \                                                                                                     ⇄ shuffle   ↻ all       │
+│     | |  | |     playing on Living Room                                                                         🔊  ██████░░  72          │
+│     \ '--' /                                                                                                                             │
+│      '----'                                               0:00 / 3:00                                                                    │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Notes:
+- Right column: three chip buttons (⏮ ⏸ ⏭) + like chip (♡ when not
+  saved, ♥ in GREEN affirm-bg when saved).
+- Below that: shuffle / repeat state chips. GREEN bg when active,
+  CHIP_BG (dim) when off. Repeat values: "off" / "all" / "1".
+- Bottom: speaker glyph that adapts to volume (🔇 🔈 🔉 🔊), bar made
+  of █ filled + ░ empty cells, numeric percent.
+- Left column still shows the vinyl-record fallback art (Step 5 will
+  replace it with a deterministic gradient).
+- Middle column still shows plain-bold track title (Step 4 swaps in
+  big-text via tui-big-text).

@@ -1,0 +1,33 @@
+Step 13 snapshot — Lyrics view (rail or fullscreen)
+Header: gradient thumb + track + artist + album/context.
+Body: synced lyrics, active line uses CHIP_BG background (inverted
+chip look in a real terminal), neighbouring lines fade to MUTED,
+distant lines fade to DIM_BORDER. Footer: provider chip + count +
+offset.
+
+│▀▀▀▀▀▀Doves in the Wind                                                                                                               │
+│▀▀D▀▀▀SZA · Kendrick Lamar                                                                                                            │
+│▀▀▀▀▀▀  Album · 3:00                                                                                                                  │
+│Real lovers don't change                                                                                                              │
+│They only put up with us a little longer                                                                                              │
+│Real lovers don't lie                                                                                                                 │
+│Lookin' in your eyes I can taste the truth                                                                                            │
+│Doves in the wind                                                                                                                     │
+│I'm callin' for you                                                                                                                   │
+│ lrclib   6 lines  ·  offset +0ms                                                                                                     │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Notes:
+- Active line in real terminal: TEXT fg on CHIP_BG inverted bar so
+  it pops without overflowing the line height.
+- "Doves in the wind" is the active line in this snapshot at
+  progress_ms = 16500, offset = 0.
+- ±1 line: TEXT muted; ±2: MUTED; further: DIM_BORDER (almost
+  invisible). Builds a soft focus around the active lyric.
+- Footer chip carries the provider name (`lrclib` / `spotify-mercury`)
+  + line count + signed offset in ms. The user knows where lyrics
+  came from and how to nudge sync.
+- Empty branch: spinner + "Fetching synced lyrics…" when loading;
+  "No synced lyrics for this track. (some tracks are instrumental…)"
+  copy when the providers return nothing — no longer a "press u"
+  prompt.

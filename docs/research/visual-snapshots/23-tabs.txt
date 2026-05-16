@@ -1,0 +1,13 @@
+Step 23 snapshot — Tabs / sidebar
+Numeric prefix `[N]` rendered as a CHIP_BG chip; active tab gets the
+GREEN chip + bold TEXT label. Dividers are thin `│` in DIM_BORDER.
+
+│   1  Player   │    2  Search   │    3  Library   │    4  Playlists   │    5  Queue   │    6  Devices   │    7  Diagnostics   │    8  Lyrics
+
+Notes:
+- In a real terminal the `1 / 2 / 3 …` cells render as inverted chips
+  (so the shortcut reads as a button).
+- The active tab gets a GREEN-bg numeric chip + bold TEXT label.
+- The dividers `│` are MUTED/DIM_BORDER so the tab row reads as a
+  unit instead of a stripe.
+- Pressing the numeric key still switches screens directly.

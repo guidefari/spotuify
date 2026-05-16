@@ -1,0 +1,37 @@
+Step 15 snapshot — Hints rail (right rail when `H` is active)
+Card chrome with current context in the chip. Sections grouped by
+category (Playback / Navigation / Selection / View / Edit /
+Diagnostics / Help). Each shortcut renders as a chip + label.
+
+╭ Keymap  ·  H hide  ·  Search ───────────────────────╮
+│ Playback                                            │
+│  Space  Toggle Playback                             │
+│  n     Next Track                                   │
+│  p     Previous Track                               │
+│                                                     │
+│ Navigation                                          │
+│  /     Search                                       │
+│  4     Open Playlists                               │
+│                                                     │
+│ Selection                                           │
+│  Enter Play Selected                                │
+│  e     Queue Selected                               │
+│  l     Like Selected                                │
+│  a     Add To Playlist                              │
+│                                                     │
+│ View                                                │
+│  z     Toggle Compact Player                        │
+│  F     Fullscreen Rail                              │
+│                                                     │
+│ Help                                                │
+│  ?     Help                                         │
+│  Ctrl-p Command Palette                             │
+╰─────────────────────────────────────────────────────╯
+
+Notes:
+- Categories arrive from `tui_actions::default_actions()` so the
+  rail mirrors the central registry.
+- Each shortcut chip is inverted CHIP_BG/CHIP_FG (real terminal);
+  labels are plain TEXT.
+- Sections render in a fixed order (Playback first), so the rail
+  is glanceable.

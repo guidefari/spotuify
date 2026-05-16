@@ -1,0 +1,25 @@
+Step 17 snapshot — Banner
+Banners live in the ephemeral row of the bottom status bar so the
+hint row beneath them is never displaced. Each kind carries its own
+severity chip + icon, and the AUTH/ScopeReauthRequired variant gets
+an inline `R` chip naming the recovery key.
+
+Auth — ScopeReauthRequired:
+ 🔒   Spotify permissions out of date. Quit, run `spotuify logout && spotuify login`, then restart.   R re-auth
+
+Auth — ExpiredRefresh:
+ 🔒   Spotify refresh token expired. Run `spotuify login`.
+
+Rate-limited (during 30s back-off):
+ ⏱   rate limited on /me/tracks; retrying in 30s
+
+Schema-compat:
+ ⓘ   Spotify changed /me/playlists?limit=50; local compatibility applied
+
+Notes:
+- Severity chips: RED-bg for auth (🔒 lock), WARN-bg for rate-limit
+  (⏱ stopwatch), WARN-bg for compat/deprecated (ⓘ info).
+- ScopeReauthRequired banner is the only one with an action chip
+  today. Future banners can grow chips via the same mechanism.
+- The chip-styled hint row underneath still renders contextual
+  shortcuts (see snapshot 02).

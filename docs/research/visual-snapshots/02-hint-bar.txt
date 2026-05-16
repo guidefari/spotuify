@@ -1,0 +1,19 @@
+Step 2 snapshot — hint bar rebuilt
+Bottom 4 rows of TUI at 140 cols. The hint row is the very bottom and
+is NEVER displaced by toast/banner/pending text; those flow into a
+dedicated ephemeral row above it. (Colour drops out of a symbol-only
+dump but the chip backgrounds render as inverted in a real terminal.)
+
+No toast / banner — ephemeral row is blank:
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  Enter  Play Selected ·  m  Mark Item ·  e  Queue Selected ·  l  Like Selected ·  a  Add To Playlist
+
+With a success toast: the toast lands on its own ephemeral row and
+the hint row underneath stays intact.
+
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ✓  Liked Wonderwall
+  Enter  Play Selected ·  m  Mark Item ·  e  Queue Selected ·  l  Like Selected ·  a  Add To Playlist

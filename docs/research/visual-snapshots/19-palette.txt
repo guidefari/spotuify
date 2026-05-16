@@ -1,0 +1,31 @@
+Step 19 snapshot — Command palette (Ctrl-p)
+Focused-card chrome (GREEN border + GREEN title chip). Input row with
+`›` prompt + cursor block. Command rows = key chip + label + category
+state chip. Footer = `Enter run` Affirm chip + plain `↑/↓ move`,
+`Esc close` hints.
+
+╭ Command Palette  ·  Search ──────────────────────────────────────────────────╮
+│ ›  ▍                                                                         │
+│                                                                              │
+│  Enter   Play Selected             Playback                                  │
+│  e       Queue Selected            Selection                                 │
+│  l       Like Selected             Selection                                 │
+│▌ a       Add To Playlist           Selection                                 │
+│  /       Search                    Navigation                                │
+│  L       Toggle Lyrics Rail        View                                      │
+│  Q       Toggle Queue Rail         View                                      │
+│  F       Fullscreen Rail           View                                      │
+│  ?       Help                      Help                                      │
+│                                                                              │
+│  Enter run   ↑/↓ move   Esc close                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+Notes:
+- Cursor block `▍` indicates the input is active; characters typed
+  filter the list incrementally.
+- Each row carries a key chip + bold label + category chip
+  (ACCENT-bg) so the user sees what kind of action each command is.
+- Cursor `▌` highlights the active row; in a real terminal the
+  whole row is inverted GREEN.
+- Footer uses the same Affirm/Cancel button-chip vocabulary as the
+  modal footers, so the language is consistent across overlays.

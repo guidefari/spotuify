@@ -1,0 +1,41 @@
+Step 6 snapshot — Player tab body redesigned
+Layout: hero card on the LEFT half, spectrum + queue on the RIGHT.
+Symbols only (a real terminal renders the gradient as smooth colour
+fields). The bottom row shows the always-visible bottom-player chrome
+underneath the body.
+
+╭ Now Playing ─────────────────────────────────────────────────────────────────╮╭ Spectrum ─────────────────────────────────────────────╮
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀││        ▃▃▃▃                        ▁▁▁▁               │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀││        ████▂▂▂▂    ▆▆▆▆            ████               │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀││        ████████    ████▅▅▅▅        ████▇▇▇▇           │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀││    ████████████    ████████▃▃▃▃████████████▆▆▆▆       │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀││▂▂▂▂████████████▆▆▆▆████████████████████████████       │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀││████████████████████████████████████████████████       │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│╰───────────────────────────────────────────────────────╯
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀│╭ Up Next ──────────────────────────────────────────────╮
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀││     ♪ Sweet Thing  track                              │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀D▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀││       Artist  Album · 3:00                            │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀││     ♪ Never Too Much  track                           │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀││       Artist  Album · 3:00                            │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀││     ♪ A House Is Not a Home  track                    │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀││       Artist  Album · 3:00                            │
+│                                                                             ││                                                       │
+│▜▛▙                      ▀           ▟  ▜▌          █ ▐▌ ▀       ▝█          ││                                                       │
+│▐▌▐▌▟▀▙ █ █ ▟▀▙ ▟▀▀     ▝█  █▀▙     ▝█▀ ▐▙▜▖▟▀▙     █▗▐▌▝█  █▀▙ ▗▄█          ││                                                       │
+│♪ Artist    Album · 3:00                                                     ││                                                       │
+│ playing   on Living Room    ⇄ shuffle   ↻ all                               ││                                                       │
+╰─────────────────────────────────────────────────────────────────────────────╯╰───────────────────────────────────────────────────────╯
+
+Notes:
+- LEFT: hero card with the deterministic gradient art filling the
+  top ~14 rows (D = "Doves in the Wind"'s initial), then the big-text
+  title "Doves in the Wind" in 2-row block glyphs, then artist · album
+  line with kind icon, then state chips (playing, on Living Room,
+  ⇄ shuffle, ↻ all). Card title chip = "Now Playing" in ACCENT bg.
+- RIGHT TOP: live spectrum card with 12-band FFT bars. Bars render in
+  GREEN gradient in a real terminal.
+- RIGHT BOTTOM: "Up Next" card listing the queue (kind icon + name +
+  artist + duration per row).
+- Compact mode (`z`) is still available: it drops the hero entirely
+  and gives the queue the whole body. The persistent bottom transport
+  carries the now-playing details in that case.

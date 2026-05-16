@@ -1,0 +1,50 @@
+Step 20 snapshot — Empty states
+Every per-screen empty state now leads with a throbber + bold copy +
+muted clarification, or an actionable prompt with GREEN accent.
+
+Library (empty + auto-sync in progress):
+ ⠋  Fetching your library…
+ It refreshes automatically and stays cached.
+
+Library (auto-sync finished, still 0 items):
+ Your library will appear here.
+ It refreshes automatically once auth completes. Press u to force a refresh.
+
+Search (idle):
+ Ready to search.
+ Press / and type an artist, song, album, or playlist.
+
+Search (in-flight):
+ ⠋  Searching Spotify and local cache…
+ Local matches surface first; remote results stream in.
+
+Queue (empty):
+ Queue is empty.
+ Press `e` on any track or album to enqueue.
+
+Devices (empty):
+ No visible devices
+ Open Spotify on a phone/laptop/speaker to make it visible. Press u to refresh.
+
+Diagnostics (loading):
+ ⠋  Loading doctor…
+ Auto-fetching the daemon report, cache stats, and recent logs.
+
+Lyrics (no synced lyrics):
+ No synced lyrics for this track.
+ (some tracks are instrumental, or the provider doesn't have them.)
+
+Lyrics (loading):
+ ⠋  Fetching synced lyrics…
+ Spotify provider first, LRCLIB fallback.
+
+Playlist drill-in (loading tracks):
+ ⠋  Loading tracks…
+ Press b to go back.
+
+Notes:
+- Spinner animates at ~12 fps using the `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` braille sequence.
+- All empty states say what's happening AND what to do next, never
+  just "no data."
+- "Run spotuify sync library" / "press u to fetch" prompts are gone
+  from the user-facing copy (auto-sync handles those).

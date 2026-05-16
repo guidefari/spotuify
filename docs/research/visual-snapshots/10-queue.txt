@@ -1,0 +1,25 @@
+Step 10 snapshot — Queue screen
+Top card: Now Playing with state chip + 2-line track info.
+Middle: filter bar.
+Bottom card: Up Next with count + media rows + cursor `▌` + duration.
+
+│♪ Have You Ever Loved Somebody   playing                                                                                              │
+│   Luther Vandross  Album · 3:00                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+╭ Queue Filter ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│filter   Ctrl-f filters this list only                                                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+┌ Up Next  3 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│   ♪  Sweet Thing  4:07                                                                                                               │
+│      Mary J. Blige  Album · 4:07                                                                                                     │
+│▌  ♪  Never Too Much  4:08                                                                                                            │
+│      Luther Vandross  Album · 4:08                                                                                                   │
+│   ♪  A House Is Not a Home  4:41                                                                                                     │
+│      Luther Vandross  Album · 4:41                                                                                                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Notes:
+- Empty state branch: card title "Up Next  0" + body "Queue is empty.
+  Press `e` on any track or album to enqueue it." with GREEN accent.
+- The state chip on the Now-Playing line flips between GREEN
+  `playing` and dim `paused`.

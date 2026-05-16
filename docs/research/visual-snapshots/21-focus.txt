@@ -1,0 +1,33 @@
+Step 21 snapshot — Focus / fullscreen mode (F)
+Hero header (12 rows): giant gradient art on the left, FULL-pixel-
+size big-text title in the middle, artist/album row, progress gauge.
+Queue fills the rest of the screen.
+
+╭ Queue Fullscreen  ·  F/Esc close ────────────────────────────────────────────╮
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                          │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  ████████ ████ ████████ ████ ████████ ████              │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ ██░░░░░░██░░░░██░░░░░░██░░░░██░░░░░░██░░░░              │
+│▀▀▀▀▀▀▀▀▀▀▀▀D▀▀▀▀▀▀▀  ██░░░░  ██░░░░██░░░░  ██░░░░██░░░░  ██░░░░             │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ ██████   ██░░░░██░░░░  ██░░░░██████  ██░░░░             │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                          │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  ♪ SZA · Kendrick Lamar  Album · 3:00                    │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                                          │
+│▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  ████████████████░░░░░░░░░░░░  1:32 / 3:00               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭ Up Next  3 ──────────────────────────────────────────────────────────────────╮
+│   ♪  Sweet Thing  4:07                                                       │
+│      Mary J. Blige  Album · 4:07                                             │
+│   ♪  Never Too Much  4:08                                                    │
+│      Luther Vandross  Album · 4:08                                           │
+│   ♪  A House Is Not a Home  4:41                                             │
+│      Luther Vandross  Album · 4:41                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+Notes:
+- The big-text title uses `PixelSize::Full` (8 rows per glyph) so the
+  title dominates the hero. In real terminals the block glyphs spell
+  the song title as a banner.
+- Art on the left expands to ~20 cols × 10 rows; the centred letter
+  comes from the title's first character.
+- Gauge inherits the same GREEN-on-dim styling as the bottom transport
+  so the focus view doesn't introduce a third visual language.

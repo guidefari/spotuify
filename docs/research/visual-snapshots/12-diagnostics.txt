@@ -1,0 +1,25 @@
+Step 12 snapshot — Diagnostics with section chips + log severity chips
+Left card: Health + Findings (loading state shown). Right card:
+Cache/Logs/Operations sections with chip-styled severity (ERR/WRN/
+INF/DBG/TRC) on each log row.
+
+│⠋ Loading doctor…                                          ││ Recent Logs  (5)  ·  Ctrl-f filter                                      │
+│Auto-fetching the daemon report, cache stats, and recent   ││▌  INF  2026-05-15T12:00:00Z INFO  daemon: started                       │
+│logs.                                                      ││   DBG  2026-05-15T12:00:01Z DEBUG spotify: token refreshed              │
+│                                                           ││   WRN  2026-05-15T12:00:02Z WARN  spotify: rate-limit hit, backing off  │
+│                                                           ││30s                                                                      │
+│                                                           ││   ERR  2026-05-15T12:00:03Z ERROR spotify: 411 on PUT /me/tracks (legacy│
+│                                                           ││build?)                                                                  │
+│                                                           ││   INF  2026-05-15T12:00:04Z INFO  player: ready spotuify-hume           │
+│                                                           ││ Operations   ·  u to undo selected                                      │
+│                                                           ││  no recorded operations yet                                             │
+└───────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────────┘
+
+Notes:
+- Severity chips: ERR (red), WRN (warn), INF (accent), DBG/TRC (dim).
+  Parsed from the log line's level token.
+- Cursor `▌` flags the row that `Enter` or `u` would act on.
+- Filter section title swaps from "Recent Logs (N)" to "Recent Logs
+  matching `query`" with GREEN accent when Ctrl-f is active.
+- Left card loading state: spinner + "Auto-fetching the daemon
+  report…" copy, so the user knows nothing is wedged.

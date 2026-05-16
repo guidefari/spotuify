@@ -1,0 +1,24 @@
+Step 9 snapshot — Playlists list redesigned
+Card chrome with title chip + count + inline hints. Each row carries
+an art marker (▣ filled = has art, ▢ outline = no art), name, count,
+and owner on row 2.
+
+│filter   Ctrl-f filters this list only                                                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+┌ Playlists  3  ·  Enter open · a add ─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ ▣ Quiet Storm  41 tracks                                                                                                             │
+│    by me                                                                                                                             │
+│ ▢ Coding  12 tracks                                                                                                                  │
+│    by anita                                                                                                                          │
+│ ▣ Sunday Roast  27 tracks                                                                                                            │
+│    by me                                                                                                                             │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Notes:
+- ▣ = playlist has cover art (in a real terminal it's GREEN bold);
+  ▢ = no art (MUTED outline). Both 1-cell wide so the rows align.
+- Owner moves to row 2 with a 3-space indent so the name dominates.
+- Title chip carries the count and a one-line shortcut hint.
+- The drill-down view (opening a playlist) renders the same media-row
+  format as the library; the title chip becomes the playlist name +
+  "press b to go back".

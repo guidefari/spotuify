@@ -1,0 +1,39 @@
+Step 16 snapshot — Modals
+Three modals, all centered, each with a chip-styled title carrying
+a status icon + colour, body text, and button chips in the footer.
+
+16b — Confirm modal (destructive action)
+                   ┌ ⚠  Reset cache ──────────────────────────────────────────┐
+                   │                                                          │
+                   │This will delete all cached playlists and library items.  │
+                   │                                                          │
+                   │   y · yes     n · no    Esc cancel                       │
+                   │                                                          │
+                   └──────────────────────────────────────────────────────────┘
+
+16c — Error modal (403 / scope)
+             ┌ 🔒   Action failed ───────────────────────────────────────────────────┐
+             │                                                                      │
+             │Spotify API 403 on POST /playlists/abc/tracks: scope                  │
+             │playlist-modify-public required                                       │
+             │                                                                      │
+             │Scope or auth issue. Run `spotuify logout && spotuify login` then     │
+             │ Esc dismiss    ? help                                                │
+             └──────────────────────────────────────────────────────────────────────┘
+
+(16a Playlist-picker also captured in the test output — it gets the
+`focused_card_block` (GREEN border) plus ● filled / ○ outline checkbox
+glyphs and a `Space toggle · Enter add · Esc cancel` button-chip row
+at the bottom.)
+
+Notes:
+- Confirm modal: RED title chip with `⚠`, button chips `y · yes`
+  (Danger=RED) and `n · no` (Cancel=CHIP_BG), inline `Esc cancel`
+  hint.
+- Error modal: title icon adapts to the error category — 🔒 for
+  auth/403, ⚡ for 411 (the "internal bug" case), ✖ for 5xx, 📡
+  for network blips, ⚠ for everything else. The hint line below the
+  body explains the recovery, then the footer carries `Esc dismiss`
+  + `? help`.
+- Playlist picker: focused card (GREEN border), ● for selected
+  rows, ○ for unselected, cursor `▌` for the focused row.

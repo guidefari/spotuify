@@ -1,0 +1,26 @@
+Step 8 snapshot — Library rows redesigned
+2-line layout per item, marker + kind glyph + name + duration on
+row 1, indented artist + context on row 2. Selection cursor `▌` on
+the left, marked-item dot `●` next to selected.
+
+│filter   Ctrl-f filters this list only                                                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+┌ Library  4 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ ● ♪  Never Too Much  4:08                                                                                                            │
+│      Luther Vandross  Album · 4:08                                                                                                   │
+│▌  ♪  If This World Were Mine  4:41                                                                                                   │
+│      Luther Vandross  Album · 4:41                                                                                                   │
+│   ▣  Forever, for Always, for Love                                                                                                   │
+│      Luther Vandross  Album                                                                                                          │
+│   ★  Luther Vandross                                                                                                                 │
+│      Artist  Album                                                                                                                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Notes:
+- Library card uses the new `card_block` chrome with title chip
+  + count.
+- Track rows show duration (mm:ss) in muted text on row 1.
+- Album rows show the artist on row 2 without a duration.
+- Artist rows still use the existing `★` glyph.
+- Empty-state branch (not shown) renders a throbber + "Fetching your
+  library…" copy + reassurance that auto-sync handles it.

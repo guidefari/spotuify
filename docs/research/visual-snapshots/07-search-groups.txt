@@ -1,0 +1,26 @@
+Step 7 snapshot — search results as a 6-card grid
+Cards: Tracks · Artists · Albums (top row), Playlists · Podcasts ·
+Episodes (bottom row). Each card has an ACCENT title chip with
+icon + count. The selected item ("Luther Vandross" in Artists) gets
+the GREEN border in a real terminal — symbol-only dump can't show
+colour.
+
+│/ luther  press / to search tracks, episodes, albums, playlists                                                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+┌ ♪  Tracks  3 ─────────────────────────────┐┌ 👤   Artists  1 ────────────────────────────┐┌ 💿   Albums  2 ────────────────────────────┐
+│  Never Too Much                           ││▌ Luther Vandross                           ││  Never Too Much                           │
+│  Have You Ever Loved Somebody             ││                                            ││  The Night I Fell in Love                 │
+│  A House Is Not a Home                    ││                                            ││                                           │
+└───────────────────────────────────────────┘└────────────────────────────────────────────┘└───────────────────────────────────────────┘
+┌ ≣  Playlists  1 ──────────────────────────┐┌ 🎙  Podcasts  1 ────────────────────────────┐┌ ▶  Episodes  1 ───────────────────────────┐
+│  Smooth Soul                              ││  Soul Stories                              ││  Episode 7: Luther                        │
+└───────────────────────────────────────────┘└────────────────────────────────────────────┘└───────────────────────────────────────────┘
+
+Notes:
+- Single-row layout at ≥144 cols (or when ≤3 groups visible);
+  two-row grid when there are >3 groups and width <144.
+- Each card uses `card_block` (ACCENT title chip + DIM_BORDER) for
+  the unfocused state and `focused_card_block` (GREEN title chip +
+  GREEN border) for the card containing the cursor.
+- Row marker `▌` indicates the selected item; `●` indicates marked
+  items.

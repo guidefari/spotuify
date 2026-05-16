@@ -1,0 +1,25 @@
+Step 1 snapshot — chip / card / section style helpers
+Rendered via TestBackend at 80x12. Background colour and chip-fg/bg
+styling drop out of a pure-symbol dump but the structure shows.
+
+ space  play   n  next   L  lyrics   Q  queue   ?  help
+
+ Songs    Albums    Artists
+
+ playing    idle    403    warn    accent
+
+ Yes    No    Delete
+
+┌ Tracks (12) ───────────┐  ┌ Artists (3) ───────────┐  ┌ Playlists (7) ───────┐
+│                        │  │                        │  │                      │
+│                        │  │                        │  │                      │
+└────────────────────────┘  └────────────────────────┘  └──────────────────────┘
+
+Notes:
+- Row 0 simulates the hint bar: key chips + labels.
+- Row 2 is a row of section chips (search-group titles, "Up next", etc.).
+- Row 4 is state chips (playing/idle/error/warn/accent).
+- Row 6 is button chips (modal actions).
+- Rows 8-11 show three card blocks side by side. The middle one uses
+  `focused_card_block` for the GREEN border + GREEN title (focused
+  group in search / focused panel in modal).

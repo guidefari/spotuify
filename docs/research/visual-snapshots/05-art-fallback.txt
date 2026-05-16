@@ -1,0 +1,35 @@
+Step 5 snapshot — deterministic 2-color gradient album-art fallback
+Replaces the static vinyl-record ASCII. Every cell is `▀` (upper half
+block); the foreground is the top sub-pixel, the background is the
+bottom sub-pixel, both sampled from the diagonal gradient. The colour
+pair is HSL-derived from the track id (140° apart on the hue wheel,
+deterministic per seed). The middle cell carries the title's first
+letter so the fallback still reads as cover art, not abstract noise.
+
+Track id `spotify:track:doves-in-the-wind` (label = "D"):
+
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+▀▀▀▀▀▀▀▀D▀▀▀▀▀▀▀▀▀
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+Track id `spotify:track:never-too-much` (label = "N") — same symbol
+grid, different hue pair (verified by the per-cell `bg` colour diff
+test).
+
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+▀▀▀▀▀▀▀▀N▀▀▀▀▀▀▀▀▀
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+Test coverage:
+- `gradient_fills_rect_with_multiple_colours_so_it_never_looks_broken`
+  — asserts ≥4 distinct bg colours.
+- `same_seed_produces_identical_gradient_so_a_track_looks_the_same_each_run`
+  — symbol+fg+bg byte-identical for the same seed.
+- `different_seeds_produce_visibly_different_gradients`
+  — ≥25% of cells differ between two unrelated track ids.

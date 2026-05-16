@@ -1,0 +1,24 @@
+Step 14 snapshot — Queue rail
+Card chrome `Queue  ·  Q hide  ·  N`. Section chip `Now` with a
+state chip (`playing`/`paused`). Track name bold, artist muted.
+Section chip `Up Next` separates the upcoming list. Trailing
+`+N more` row when the queue is deeper than 12.
+
+╭ Queue  ·  Q hide  ·  3 ─────────────╮
+│ Now    playing                       │
+│  Have You Ever Loved Somebody        │
+│  Luther Vandross                     │
+│                                      │
+│ Up Next                              │
+│   1. Sweet Thing                     │
+│   2. Never Too Much                  │
+│   3. A House Is Not a Home           │
+╰──────────────────────────────────────╯
+
+Notes:
+- Section chips use the ACCENT palette so the rail reads as two
+  zones (now / up next) without extra borders.
+- Track names are bold; numbers and meta are MUTED so the eye
+  lands on the song names.
+- Empty branch: "queue is empty — press `e` on any track or album
+  to enqueue".

@@ -1,0 +1,24 @@
+Step 11 snapshot — Devices screen
+Card list with per-kind icon, state chip, volume bar, type label.
+
+│filter   Ctrl-f filters this list only                                                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+┌ Devices  4  ·  Enter or x transfer playback ─────────────────────────────────────────────────────────────────────────────────────────┐
+│ 📱   iPhone — Bhekani   idle                                                                                                          │
+│      Smartphone    🔊  ████░░░░  45                                                                                                   │
+│▌🔊   Living Room   playing                                                                                                            │
+│      Speaker    🔊  ██████░░  72                                                                                                      │
+│ 🖥  Studio Mac   idle                                                                                                                 │
+│      Computer    🔊  fixed                                                                                                            │
+│ 📡   Old AirPlay   restricted                                                                                                         │
+│      CastAudio    🔊  fixed                                                                                                           │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Notes:
+- Kind icons: 📱 phone/tablet, 🖥 computer/laptop, 🔊 speaker,
+  📺 tv, 🚗 car, 🎮 console, 📡 cast, 🎧 default.
+- State chips: GREEN `playing`, dim `idle`, RED `restricted`.
+- Volume row: 8-cell `█/░` bar + numeric percent; `fixed` for
+  devices that don't expose volume control.
+- Cursor `▌` on the active row (Living Room, the GREEN highlight in
+  a real terminal extends across the row).

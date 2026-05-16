@@ -1,0 +1,30 @@
+Step 18 snapshot — Help overlay (?)
+Two-column grid: FAQs on the left, contextual shortcut chips on the
+right. Search box at the top filters both columns by substring.
+
+╭ Help  ·  ? toggle  ·  Ctrl-p commands  ·  Esc close ──────────────────────────╮
+│ Type to filter shortcuts and FAQs:                                            │
+│  /  ▍                                                                         │
+│                                                                               │
+│  FAQ                                  Shortcuts                               │
+│   How do I play a playlist?            Enter  Play Selected                   │
+│     Press 4, pick a playlist…           e      Queue Selected                 │
+│   How do I search?                      l      Like Selected                  │
+│     Press /, type a query, Enter        a      Add To Playlist                │
+│   How do I queue multiple tracks?       /      Search                         │
+│     Mark with m, then press e           Ctrl-p Command Palette                │
+│   How do I fix no active device?        L      Toggle Lyrics Rail             │
+│     Press 6 for Devices, Enter          Q      Toggle Queue Rail              │
+│   How do I re-authorize Spotify?        F      Fullscreen Rail                │
+│     spotuify logout && spotuify login                                         │
+│                                                                               │
+╰───────────────────────────────────────────────────────────────────────────────╯
+
+Notes:
+- Search input at the top accepts characters typed while the overlay
+  is open; cursor `▍` indicates focus.
+- FAQ titles are bold; answers MUTED below.
+- Shortcut rows use key chips + label. When a shortcut has a CLI
+  equivalent (`Ctrl-p` → command palette etc.), an indented `CLI:` line
+  appears below in MUTED.
+- Filter matches against shortcut, label, FAQ question, and FAQ answer.
