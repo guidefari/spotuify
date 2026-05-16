@@ -18,8 +18,10 @@ The goal is simple: run `spotuify`. If credentials or OAuth are missing, setup s
 - Device list and Spotify Connect transfer.
 - Cover art rendering through Kitty, iTerm2, Sixel, or half-block fallback.
 - Fully keyboard navigable with vim-style movement, pane switching, help overlay, paging, and back navigation.
-- **Phase 10 analytics**: local `listen_facts` table + `spotuify analytics top` / `habits` / `rediscovery` for Wrapped-style insights, plus shell-hook bridge to ListenBrainz / Last.fm scrobblers.
-- **Phase 12 operation log + undo**: every mutating command is recorded; `spotuify ops undo` reverts the last reversible action, MCP exposes `undo_last` as a safety net for agent runs.
+- Local analytics: `listen_facts` plus `spotuify analytics top` / `habits` / `rediscovery` for Wrapped-style insights, with shell-hook recipes for ListenBrainz, Last.fm, and Discord.
+- Operation log + undo: mutating commands are recorded; `spotuify ops undo --dry-run` previews and `spotuify ops undo --yes` applies reversible undo. MCP exposes `undo_last` as a safety net for agent runs.
+- MCP server over stdio or loopback HTTP for agents.
+- Audio visualization through embedded sink taps or loopback capture.
 
 ## Requirements
 
@@ -60,7 +62,7 @@ spotuify daemon install-service       # registers a systemd --user unit
 spotuify
 ```
 
-Spotuify uses Secret Service (GNOME Keyring / KWallet) for credential storage. On a headless server with no DBus session, pass `--allow-file-credentials` at login to fall back to an age-encrypted credentials file under `~/.local/share/spotuify/`.
+Spotuify uses Secret Service (GNOME Keyring / KWallet) for credential storage. Headless encrypted-file credential fallback is planned but not exposed as a stable login flag yet.
 
 ### Linux (Arch / Fedora / other)
 
@@ -94,8 +96,8 @@ Plain first-time `brew install spotuify` requires acceptance into `homebrew/core
 From this repository:
 
 ```sh
-cargo build --release
-./target/release/spotuify --help
+cargo build
+./target/debug/spotuify --help
 ```
 
 Install into your Cargo bin path:
@@ -112,19 +114,20 @@ For platform-specific embedded librespot builds, pick the right audio backend fe
 ```sh
 # Linux (alsa, routes through pipewire-alsa shim on modern distros):
 cargo install --git https://github.com/planetaryescape/spotuify --locked \
-              --features 'embedded-playback,alsa-backend'
+              --features 'embedded-playback,system-integrations,loopback-cpal,alsa-backend'
 
 # Linux musl (pure-Rust rodio backend):
 cargo install --git https://github.com/planetaryescape/spotuify --locked \
-              --no-default-features --features 'embedded-playback,rodio-backend'
+              --no-default-features \
+              --features 'embedded-playback,system-integrations,loopback-cpal,rodio-backend'
 
 # macOS (PortAudio bridge to CoreAudio):
 cargo install --git https://github.com/planetaryescape/spotuify --locked \
-              --features 'embedded-playback,portaudio-backend'
+              --features 'embedded-playback,system-integrations,loopback-cpal,portaudio-backend'
 
 # Windows (rodio writes to WASAPI):
 cargo install --git https://github.com/planetaryescape/spotuify --locked \
-              --features 'embedded-playback,rodio-backend'
+              --features 'embedded-playback,system-integrations,loopback-cpal,rodio-backend'
 ```
 
 ## Releases
@@ -273,6 +276,16 @@ redirect_uri = "http://127.0.0.1:8888/callback"
 autostart = true
 # config_path = "~/.config/spotifyd/spotifyd.conf"
 # device_name = "spotuify"
+
+[notifications]
+enabled = false
+summary = "{track}"
+body = "{artist} - {album}"
+on_track_change = true
+on_pause = false
+on_resume = false
+on_skip = false
+on_error = true
 ```
 
 Supported environment overrides:
@@ -298,6 +311,7 @@ spotuify config set redirect_uri "http://127.0.0.1:8888/callback"
 spotuify config set spotifyd.autostart true
 spotuify config set spotifyd.config_path "~/.config/spotifyd/spotifyd.conf"
 spotuify config set spotifyd.device_name "spotuify"
+spotuify config set notifications.enabled true
 ```
 
 Valid config keys:
@@ -309,6 +323,25 @@ redirect_uri
 spotifyd.config_path
 spotifyd.device_name
 spotifyd.autostart
+player.backend
+player.bitrate
+player.device_name
+player.normalization
+player.audio_cache_mib
+player.pulse_props
+player.event_hook          # legacy alias for analytics.hook_command
+analytics.hook_command
+analytics.hook_timeout_ms
+cache.cover_cache_mb
+cache.cover_cache_ttl_days
+notifications.enabled
+notifications.summary
+notifications.body
+notifications.on_track_change
+notifications.on_pause
+notifications.on_resume
+notifications.on_skip
+notifications.on_error
 ```
 
 ## Commands
@@ -325,6 +358,40 @@ spotuify config path
 spotuify config init
 spotuify config get <key>
 spotuify config set <key> <value>
+spotuify status --format json
+spotuify devices
+spotuify search "query" --type track --source local
+spotuify play "query"
+spotuify play-uri spotify:track:...
+spotuify pause
+spotuify resume
+spotuify next
+spotuify previous
+spotuify seek +30s
+spotuify volume 50
+spotuify shuffle on
+spotuify repeat track
+spotuify queue
+spotuify queue add spotify:track:...
+spotuify playlists
+spotuify playlist plan "brief" --format json
+spotuify playlist create "Name" --from candidates.jsonl --dry-run
+spotuify library tracks
+spotuify analytics top --kind tracks --format json
+spotuify lyrics show --track spotify:track:...
+spotuify viz enable
+spotuify hooks test
+spotuify mpris status
+spotuify sync search-cache --prune --older-than 7d
+spotuify cache status
+spotuify cache reset --confirm
+spotuify ops log
+spotuify ops undo --dry-run
+spotuify reload
+spotuify reconnect
+spotuify bug-report --include-logs 200
+spotuify generate completions zsh
+spotuify mcp
 ```
 
 Command behavior:
@@ -333,10 +400,11 @@ Command behavior:
 - `spotuify onboard` runs the same setup flow intentionally. It reuses saved credentials when they already exist.
 - `spotuify login` reruns OAuth using existing config.
 - `spotuify logout` removes the Keychain token.
-- `spotuify doctor` checks config, token status, API access timings, visible devices, recent playback, queue, playlists, logs, and `spotifyd` state.
+- `spotuify doctor` checks config, token status, API access timings, visible devices, recent playback, queue, playlists, logs, cache version, lyrics, MCP, and player backend state.
 - `spotuify logs path` prints the log file path.
-- `spotuify logs tail` prints recent log lines.
+- `spotuify logs tail --follow --format json` streams structured log lines.
 - `spotuify config ...` reads or writes `spotuify.toml` without requiring valid Spotify credentials.
+- One-shot commands talk to the daemon over local IPC. Use `--no-daemon-start` when scripts should fail instead of starting the daemon.
 
 ## Keyboard
 
@@ -454,17 +522,17 @@ This verifies the token, scopes, and API access before you enter the TUI. If one
 
 ```bash
 # Claude Code
-claude mcp add spotuify --command spotuify-mcp
+claude mcp add spotuify --command spotuify --args mcp
 
 # Cursor: add to .cursor/mcp.json
 {
   "mcpServers": {
-    "spotuify": { "command": "spotuify-mcp" }
+    "spotuify": { "command": "spotuify", "args": ["mcp"] }
   }
 }
 
 # Continue: add to ~/.continue/config.json under mcpServers
-"spotuify": { "command": "spotuify-mcp", "args": [] }
+"spotuify": { "command": "spotuify", "args": ["mcp"] }
 ```
 
 Tools exposed:
@@ -472,18 +540,28 @@ Tools exposed:
 - Read: `search`, `now_playing`, `devices_list`, `queue_show`, `playlists_list`, `playlist_tracks`, `library_list`
 - Transport: `play`, `play_uri`, `pause`, `resume`, `next`, `previous`, `seek`, `volume`, `shuffle`, `repeat`
 - Destructive (require `confirm: true`): `queue_add`, `transfer_device`, `playlist_create`, `playlist_add`, `playlist_remove`, `library_save`, `library_unsave`
-- Mercury (Phase 9 gated): `lyrics`, `radio_start`, `related_artists`
-- Analytics (Phase 10 gated): `analytics_top`, `analytics_habits`
-- Ops (Phase 12 gated): `ops_log`, `undo_last` (`undo_last` bypasses confirm — it is the safety net)
+- Lyrics: `lyrics`
+- Analytics: `analytics_top`, `analytics_habits`, `analytics_search`, `analytics_rediscovery`
+- Ops: `ops_log`, `undo_last` (`undo_last` is the safety net)
 
 Resources:
 
-- `spotuify://playback` — current playback state (subscribable)
-- `spotuify://devices` — visible Spotify Connect devices (subscribable)
-- `spotuify://playlists` — user playlists (subscribable)
+- `spotuify://playback` — current playback state
+- `spotuify://devices` — visible Spotify Connect devices
+- `spotuify://playlists` — user playlists
 - `spotuify://doctor` — latest health-check report
 
 Destructive tools called without `confirm: true` return a preview the LLM can show to the user. The LLM is expected to relay it and ask before retrying with `confirm: true`. Patterns adopted from spotify-player commit #966.
+
+## How spotuify differs
+
+| If you want... | `spotuify` chooses... |
+|---|---|
+| A terminal-first controller for scripts and agents | CLI and MCP surfaces first; the TUI is another client |
+| Playback that keeps running after the UI exits | Daemon-backed control through local IPC |
+| A local library/search runtime | SQLite cache plus rebuildable search index |
+| Maximum desktop integration polish today | Use an official Spotify client or a desktop-first app instead |
+| The smallest possible binary with no daemon | `spotuify` is not optimizing for that trade-off |
 
 ## Spotify API Limits
 
@@ -596,6 +674,14 @@ Art does not render:
 
 Use Kitty or another terminal supported by `ratatui-image`. The app falls back to block rendering when terminal image protocols are unavailable.
 
+Visualizer shows no bars on macOS loopback:
+
+macOS does not expose system-output loopback devices by default. Use the embedded playback backend for sink-tap visualization, or install BlackHole/Loopback Audio and select it as the loopback input source. Without a virtual loopback device, `spotuify` may fall back to the microphone input so the visualizer stays quiet while music plays.
+
+Windows daemon media keys:
+
+Windows media-key integration needs a UI/window handle. The headless daemon still handles CLI, TUI, and MCP playback commands, but global Windows media keys may require a foreground TUI session until the hidden-window driver is complete.
+
 `spotifyd` does not start:
 
 ```sh
@@ -619,13 +705,27 @@ Common checks:
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo build --release
+scripts/cargo-test -p spotuify-spotify --tests
+cargo clippy -p spotuify-spotify --all-targets -- -D warnings
+```
+
+Use package-scoped checks while iterating. Full workspace clippy/tests and
+release builds are release gates, not the default edit/verify loop. To smoke an
+already-built binary with the fake provider:
+
+```sh
+scripts/smoke.sh
+```
+
+To have smoke build the release binary first:
+
+```sh
+SPOTUIFY_SMOKE_BUILD=1 scripts/smoke.sh
 ```
 
 Run locally:
 
+```sh
 cargo run
 cargo run -- onboard
 cargo run -- doctor
@@ -634,11 +734,17 @@ cargo run -- doctor
 ## Project Layout
 
 ```text
-src/main.rs      CLI, onboarding, config commands, doctor
-src/config.rs    config file loading and get/set helpers
-src/auth.rs      Spotify OAuth PKCE and Keychain token storage
-src/spotify.rs   Spotify Web API client and response mapping
-src/spotifyd.rs  spotifyd process detection and autostart
-src/app.rs       TUI state, event loop, and key handling
-src/ui.rs        ratatui rendering, help overlay, and hint bar
+src/main.rs                    unified binary entrypoint and legacy adapters
+crates/spotuify-protocol       daemon IPC protocol and shared wire types
+crates/spotuify-daemon         daemon state, handlers, diagnostics, sync coordination
+crates/spotuify-cli            reusable CLI argument/output helpers
+crates/spotuify-tui            Ratatui app state, actions, and rendering
+crates/spotuify-spotify        Spotify Web API, OAuth, config, rate limits
+crates/spotuify-player         connect-only, spotifyd, and embedded librespot backends
+crates/spotuify-store          SQLite cache, migrations, operation log
+crates/spotuify-search         local search index
+crates/spotuify-mcp            MCP stdio/HTTP server
+crates/spotuify-lyrics         Spotify/LRCLIB lyrics providers
+crates/spotuify-system         cover cache, notifications, media-control helpers
+crates/spotuify-audio          audio analyzer and visualization sources
 ```

@@ -3,8 +3,8 @@
 ## Dev setup
 
 ```bash
-cargo build --locked
-cargo test --locked
+cargo fmt --check
+scripts/cargo-test -p spotuify-spotify --tests
 ```
 
 Run locally:
@@ -31,17 +31,27 @@ cargo run
 
 ## Current required checks
 
-Run all of these before sending changes:
+Use package-scoped checks while iterating:
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --locked
-cargo build --locked --release
-scripts/smoke.sh
+scripts/cargo-test -p <crate> --tests
+cargo clippy -p <crate> --all-targets -- -D warnings
 ```
 
-`scripts/smoke.sh` uses the fake Spotify provider by default. Do not repeatedly run live Spotify API checks from tests or agent smoke runs.
+Run the full gate before release/merge windows, not after every edit:
+
+```bash
+cargo clippy --all-targets -- -D warnings
+cargo test --locked
+cargo build --locked --release \
+  --features "embedded-playback system-integrations loopback-cpal <audio-backend>"
+SPOTUIFY_SMOKE_BUILD=1 scripts/smoke.sh
+```
+
+`scripts/smoke.sh` uses the fake Spotify provider by default and no longer
+builds unless `SPOTUIFY_SMOKE_BUILD=1` is set. Do not repeatedly run live
+Spotify API checks from tests or agent smoke runs.
 
 ## Real-system verification
 
