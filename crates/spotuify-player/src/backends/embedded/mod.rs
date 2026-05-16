@@ -385,6 +385,12 @@ impl PlayerBackend for EmbeddedBackend {
         let parsed = SpotifyUri::from_uri(uri).map_err(|err| {
             PlayerError::InvalidArg(format!("invalid Spotify URI `{uri}`: {err}"))
         })?;
+        // Spirc::add_to_queue silently no-ops when we are not the
+        // active device. activate() is idempotent and cheap — call it
+        // first so a fresh device or one that just lost focus picks up
+        // the queue mutation. activate() is a no-op when already
+        // active, so the cost is one bus round-trip in the worst case.
+        self.send_spirc(|spirc| spirc.activate())?;
         self.send_spirc(|spirc| spirc.add_to_queue(parsed))
     }
 
