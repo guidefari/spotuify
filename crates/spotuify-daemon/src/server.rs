@@ -60,6 +60,17 @@ pub async fn run_daemon() -> Result<()> {
         SocketState::Missing => {}
     }
 
+    // Preflight: zombie cleanup. A previous `daemon start` run can
+    // crash during init (config error, audio backend failure, etc.)
+    // and orphan a process that still holds the Tantivy index lock.
+    // The next start then fails with `LockBusy` and silently exits.
+    // Detect any spotuify-daemon process other than us, terminate
+    // them, and clear stale tantivy lockfiles. Background: on
+    // 2026-05-17 a fresh daemon couldn't bind because 109 zombie
+    // processes from prior --foreground runs held the lock.
+    cleanup_zombie_daemons();
+    clear_stale_tantivy_locks();
+
     // Phase 0: backend init errors propagate from DaemonState::new.
     // Log them prominently — `spotuify daemon start` redirects stderr
     // to the log file, so an explicit ERROR line with the full
@@ -780,6 +791,93 @@ fn write_daemon_pid_file() -> Result<()> {
 
 fn clear_daemon_pid_file() {
     let _ = std::fs::remove_file(DaemonState::pid_path());
+}
+
+/// Kill orphaned spotuify daemon processes before binding the
+/// socket. A fresh start can otherwise fail with `LockBusy` on the
+/// Tantivy index lock because a previous run died during init
+/// without releasing it.
+///
+/// Strategy: walk `ps -ax -o pid,ppid,command`. A daemon is "orphaned"
+/// when its parent is init (PID 1) — that's where launchd / shell
+/// re-parents processes whose original parent already exited. Our
+/// own PID and our actual parent (the CLI that just spawned us)
+/// are skipped to avoid suicide. Send SIGTERM, wait 500 ms, then
+/// SIGKILL stragglers.
+fn cleanup_zombie_daemons() {
+    let me = std::process::id();
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-ax", "-o", "pid=,ppid=,command="])
+        .output()
+    else {
+        return;
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut victims = Vec::new();
+    for line in stdout.lines() {
+        let mut parts = line.trim_start().splitn(3, char::is_whitespace);
+        let Some(pid_str) = parts.next() else { continue };
+        let Some(ppid_str) = parts.next() else { continue };
+        let Some(cmd) = parts.next() else { continue };
+        let Ok(pid) = pid_str.trim().parse::<u32>() else { continue };
+        let Ok(ppid) = ppid_str.trim().parse::<u32>() else { continue };
+        if pid == me {
+            continue;
+        }
+        // Only consider truly orphaned processes (re-parented to
+        // init, PID 1). A spotuify daemon with a live parent is
+        // either the CLI that spawned us (so ppid != 1 — skipped)
+        // or a user-initiated `daemon start --foreground` running
+        // in a terminal (also ppid != 1 — skipped). Killing only
+        // ppid==1 keeps us conservative without needing libc.
+        if ppid != 1 {
+            continue;
+        }
+        if cmd.contains("spotuify") && cmd.contains("daemon") {
+            victims.push(pid);
+        }
+    }
+    if victims.is_empty() {
+        return;
+    }
+    tracing::warn!(
+        count = victims.len(),
+        pids = ?victims,
+        "preflight: killing orphaned spotuify daemon processes"
+    );
+    for pid in &victims {
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    for pid in &victims {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+    }
+}
+
+/// Tantivy uses two `.tantivy-*.lock` files in the index directory.
+/// Filesystem locks (fcntl/flock) are released when a process dies,
+/// but the lock files persist on disk and can confuse the next
+/// IndexWriter into reporting `LockBusy`. After we've killed any
+/// stray daemons above, removing the files is safe — no live
+/// process holds them.
+fn clear_stale_tantivy_locks() {
+    let Some(base) = dirs::data_dir()
+        .or_else(|| dirs::home_dir().map(|home| home.join("Library/Application Support")))
+    else {
+        return;
+    };
+    let index_dir = base.join("spotuify").join("search_index");
+    for name in [".tantivy-writer.lock", ".tantivy-meta.lock"] {
+        let path = index_dir.join(name);
+        if path.exists() {
+            tracing::warn!(path = %path.display(), "preflight: removing stale tantivy lock");
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 pub(crate) fn current_daemon_version() -> &'static str {

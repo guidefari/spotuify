@@ -2,6 +2,26 @@
 
 > A daemon-backed, CLI-first, keyboard-native Spotify controller and music library runtime for terminal users, built around a local cache, pipeable commands, and an impeccable player experience.
 
+## Use spotuify to build spotuify (read this before debugging anything)
+
+**When investigating a runtime bug, drive the binary yourself. Do not ask the user to rebuild, reproduce, and screenshot — that loop is slow and leaves blind spots between your guesses.**
+
+Spotuify holds a hard contract: **every feature must be exposed via the CLI.** Anything the TUI / MCP / daemon can do, `spotuify <subcommand>` can do too. That contract exists in part so you (as an agent) can drive every feature end-to-end without a human in the loop. If you find a feature that only lives in the TUI or MCP, that's a CLI gap to file, not a "needs the user" situation.
+
+The user maintains the live state of their machine and account; you have everything you need to verify your own changes:
+
+- **Build:** `cargo build --release --bin spotuify`
+- **Restart daemon:** `./target/release/spotuify daemon stop && ./target/release/spotuify daemon start`
+- **Run the failing case:** `./target/release/spotuify <subcommand>` (`search`, `play`, `queue add`, `playlists`, etc.)
+- **Read the daemon log:** `~/Library/Logs/spotuify/spotuify.log` — filter out tantivy noise with `grep -v tantivy`
+- **Auth token for raw Spotify probes:** `security find-generic-password -s spotuify -w` returns a JSON blob with `.access_token`. Pipe it to `curl -H "Authorization: Bearer $TOKEN" https://api.spotify.com/v1/...` to probe the upstream directly.
+- **Tantivy lockfile stuck:** `rm ~/Library/Application\ Support/spotuify/search_index/.tantivy-*.lock` after killing the daemon.
+- **Stray daemons:** `pkill -9 -f 'spotuify daemon'`. If the daemon won't start with a `LockBusy` error, that's the cause.
+
+**Only ask the user when the case genuinely needs human judgment:** visual TUI verification, a Spotify-account-state question (e.g. "are you on Premium?"), or a product decision. If you find yourself guessing limit values, parameter shapes, or what an error means — stop, drive the case, and read the actual response. One direct empirical test usually replaces five rounds of guesses.
+
+The lesson came from the 2026-05-17 search-limit debug: I spent five iterations guessing `limit` values when one `curl` bisect across 1..50 would have given the truth. Don't repeat that.
+
 ## Name
 
 - Write: `spotuify` lowercase, in code font when inline.

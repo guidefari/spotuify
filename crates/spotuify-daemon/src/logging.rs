@@ -36,7 +36,18 @@ pub fn init_with_format(format: LogFormat) -> Result<WorkerGuard> {
         .to_path_buf();
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
 
-    let appender = tracing_appender::rolling::never(&dir, "spotuify.log");
+    // Daily rotation with a 7-file retention window. The previous
+    // setup used `rolling::never` which left a single growing file —
+    // a 2026-05-17 inspection found a 14 GB log dominated by stale
+    // tantivy file_watcher WARNs from old test temp dirs. Daily files
+    // are named `spotuify.log.YYYY-MM-DD`; older days get deleted
+    // automatically.
+    let appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("spotuify.log")
+        .max_log_files(7)
+        .build(&dir)
+        .with_context(|| format!("failed to init rolling log at {}", dir.display()))?;
     let (writer, guard) = tracing_appender::non_blocking(appender);
     let filter = resolve_log_filter();
 
@@ -66,10 +77,22 @@ pub fn init_with_format(format: LogFormat) -> Result<WorkerGuard> {
 /// Resolve the log filter. `SPOTUIFY_LOG` wins; fall back to `RUST_LOG`
 /// (covers installs whose service files set the standard tracing env);
 /// finally a sensible default.
+///
+/// The default suppresses two tantivy modules at WARN level because
+/// their watchers chronically log spurious `Failed to open meta file
+/// ... NotFound` lines when test temp dirs disappear out from under
+/// them. The errors are not actionable and used to fill the daemon
+/// log at gigabyte scale.
 fn resolve_log_filter() -> EnvFilter {
     EnvFilter::try_from_env("SPOTUIFY_LOG")
         .or_else(|_| EnvFilter::try_from_env("RUST_LOG"))
-        .unwrap_or_else(|_| EnvFilter::new("spotuify=debug,info"))
+        .unwrap_or_else(|_| {
+            EnvFilter::new(
+                "spotuify=debug,info,\
+                 tantivy::directory::file_watcher=error,\
+                 tantivy::directory::managed_directory=error",
+            )
+        })
 }
 
 pub fn log_path() -> Result<PathBuf> {
