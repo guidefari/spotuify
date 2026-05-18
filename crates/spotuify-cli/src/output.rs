@@ -1070,6 +1070,12 @@ pub fn print_response_data(
         D::SearchResults { items } | D::MediaItems { items } => {
             return print_media_items(items, format)
         }
+        D::SearchStarted { query, version } => {
+            // Ack for streaming-search clients; CLI never uses
+            // SearchStream/SearchPage today, but render something
+            // sensible in case a future caller emits this.
+            println!("search started: query={query} version={version}");
+        }
         D::CacheStatus { status } => return print_cache_status(status, format),
         D::Reindex { stats } => return print_reindex_stats(stats, format),
         D::Sync { summary } => return print_sync_summary(summary, format),

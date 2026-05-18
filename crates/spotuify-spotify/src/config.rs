@@ -992,15 +992,6 @@ fn parse_bool(value: &str) -> Result<bool> {
 }
 
 
-fn expand_home(value: &str) -> PathBuf {
-    if let Some(rest) = value.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(value)
-}
-
 const CONFIG_TEMPLATE: &str = r#"# spotuify config
 # Copy your Spotify app credentials from https://developer.spotify.com/dashboard.
 client_id = ""
@@ -1049,8 +1040,7 @@ on_error = true
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_single_override, expand_home, get_config_value, parse_bool, set_config_value, Config,
-        ConfigKey,
+        apply_single_override, get_config_value, parse_bool, set_config_value, Config, ConfigKey,
     };
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1069,14 +1059,6 @@ mod tests {
         assert!(
             viz.enabled,
             "VizConfig::default must ship visualizer on — it's the player's identity"
-        );
-    }
-
-    #[test]
-    fn keeps_absolute_paths() {
-        assert_eq!(
-            expand_home("/tmp/sample.conf"),
-            std::path::PathBuf::from("/tmp/sample.conf")
         );
     }
 

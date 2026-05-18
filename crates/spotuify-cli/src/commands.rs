@@ -1,12 +1,13 @@
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use spotuify_core::{Playback, Playlist};
+use spotuify_core::{MediaItem, MediaKind, Playback, Playlist};
 use spotuify_protocol::{
-    IpcClient, OperationSource, PlaybackCommand, Request, Response, ResponseData, SearchScopeData,
-    SearchSourceData, SyncTargetData,
+    DaemonEvent, IpcClient, OperationSource, PlaybackCommand, Request, Response, ResponseData,
+    SearchScopeData, SearchSourceData, SyncTargetData,
 };
 
 use crate::output::{self, OutputFormat};
@@ -31,20 +32,29 @@ pub async fn ipc_search(
     scope: SearchScopeData,
     source: SearchSourceData,
     limit: u32,
+    pages: u8,
     play: bool,
     index: usize,
     format: OutputFormat,
 ) -> Result<()> {
-    let items = match daemon_request(Request::Search {
-        query: query.to_string(),
-        scope,
-        source,
-        limit,
-    })
-    .await?
-    {
-        ResponseData::SearchResults { items } => items,
-        _ => return unexpected_response(),
+    // pages > 1 uses the same streaming path as the TUI (Request::SearchStream
+    // → 18 parallel daemon-spawned tasks → DaemonEvent::SearchPage events →
+    // SearchComplete). Aggregate events synchronously before printing so the
+    // CLI experience stays one-shot.
+    let items = if pages > 1 {
+        stream_search_aggregate(query, scope, source).await?
+    } else {
+        match daemon_request(Request::Search {
+            query: query.to_string(),
+            scope,
+            source,
+            limit,
+        })
+        .await?
+        {
+            ResponseData::SearchResults { items } => items,
+            _ => return unexpected_response(),
+        }
     };
 
     if play {
@@ -59,6 +69,119 @@ pub async fn ipc_search(
     }
 
     output::print_media_items(&items, format)
+}
+
+/// CLI equivalent of TUI scroll-load-more: fetch a single page of
+/// results for one media kind at a given offset.
+pub async fn ipc_search_page(
+    query: &str,
+    kind: MediaKind,
+    offset: u32,
+    format: OutputFormat,
+) -> Result<()> {
+    let version = 1u64;
+    let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
+    let ack = client
+        .request(Request::SearchPage {
+            query: query.to_string(),
+            kind: kind.clone(),
+            offset,
+            version,
+        })
+        .await?;
+    match ack {
+        Response::Ok {
+            data: ResponseData::SearchStarted { .. },
+        } => {}
+        Response::Error { message, .. } => {
+            anyhow::bail!("search-page request failed: {message}");
+        }
+        other => anyhow::bail!("unexpected ack: {other:?}"),
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    loop {
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for SearchPage event");
+        }
+        let ev = tokio::time::timeout(Duration::from_millis(500), client.next_event()).await;
+        match ev {
+            Ok(Ok(DaemonEvent::SearchPage {
+                kind: ev_kind,
+                offset: ev_offset,
+                version: ev_version,
+                items,
+                ..
+            })) if ev_kind == kind && ev_offset == offset && ev_version == version => {
+                return output::print_media_items(&items, format);
+            }
+            Ok(Ok(_)) => continue,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => continue,
+        }
+    }
+}
+
+/// Connect, subscribe to events, fire `Request::SearchStream`, drain
+/// pages until `SearchComplete`. Used by `spotuify search --pages 3`
+/// to give CLI users the same 180-result capability as the TUI.
+async fn stream_search_aggregate(
+    query: &str,
+    scope: SearchScopeData,
+    source: SearchSourceData,
+) -> Result<Vec<MediaItem>> {
+    let version = 1u64;
+    let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
+    let ack = client
+        .request(Request::SearchStream {
+            query: query.to_string(),
+            scope,
+            source,
+            version,
+        })
+        .await?;
+    match ack {
+        Response::Ok {
+            data: ResponseData::SearchStarted { .. },
+        } => {}
+        Response::Error { message, .. } => {
+            anyhow::bail!("search-stream request failed: {message}");
+        }
+        other => anyhow::bail!("unexpected ack: {other:?}"),
+    }
+
+    let mut items: Vec<MediaItem> = Vec::new();
+    let mut seen_uris: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if std::time::Instant::now() >= deadline {
+            // Partial results are better than a hard error; just return
+            // what we collected so far. Mirrors TUI behavior when an
+            // event leg lags.
+            break;
+        }
+        let ev = tokio::time::timeout(Duration::from_millis(500), client.next_event()).await;
+        match ev {
+            Ok(Ok(DaemonEvent::SearchPage {
+                version: ev_version,
+                items: page_items,
+                ..
+            })) if ev_version == version => {
+                for item in page_items {
+                    if seen_uris.insert(item.uri.clone()) {
+                        items.push(item);
+                    }
+                }
+            }
+            Ok(Ok(DaemonEvent::SearchComplete {
+                version: ev_version,
+                ..
+            })) if ev_version == version => break,
+            Ok(Ok(_)) => continue,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => continue,
+        }
+    }
+    Ok(items)
 }
 
 pub async fn ipc_queue(command: Option<crate::QueueCommand>, format: OutputFormat) -> Result<()> {
@@ -114,7 +237,7 @@ pub async fn ipc_play_query(
     // `spotuify play <query>` is a "find anywhere and play" command
     // — catalog discovery, not library lookup. Limit=10 keeps the
     // search slim since we only consume the top result.
-    ipc_search(query, scope, SearchSourceData::Spotify, 10, true, 1, format).await
+    ipc_search(query, scope, SearchSourceData::Spotify, 10, 1, true, 1, format).await
 }
 
 pub async fn ipc_reindex(format: OutputFormat) -> Result<()> {
@@ -566,7 +689,102 @@ fn confirm_playlist_add(playlist: &Playlist, uris: &[String]) -> Result<()> {
 async fn daemon_request(request: Request) -> Result<ResponseData> {
     spotuify_daemon::server::ensure_daemon_running().await?;
     let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
-    match client.request(request).await? {
+    let response = client.request(request.clone()).await?;
+    match response {
+        Response::Ok { data } => Ok(data),
+        Response::Error {
+            kind: spotuify_protocol::IpcErrorKind::AuthRevoked,
+            message,
+            ..
+        } => handle_auth_revoked_then_retry(request, &message).await,
+        Response::Error { message, .. } => anyhow::bail!(message),
+    }
+}
+
+/// Interactive auto-recovery on `IpcErrorKind::AuthRevoked`. Prompts
+/// Format OAuth progress as the same human-readable lines the CLI
+/// has always emitted. Used by both `spotuify login` and the
+/// auth-revoked retry path so the user sees identical output.
+fn cli_login_progress(event: spotuify_spotify::auth::LoginProgress) {
+    use spotuify_spotify::auth::LoginProgress;
+    match event {
+        LoginProgress::OpeningBrowser {
+            auth_url,
+            redirect_uri,
+        } => {
+            eprintln!("Opening Spotify authorization in your browser...");
+            eprintln!("Spotify Dashboard Redirect URI should be one of:");
+            eprintln!("  {redirect_uri}");
+            eprintln!("  http://127.0.0.1/callback  (loopback dynamic-port allowlist)");
+            eprintln!("Do not use the Website field, localhost, or a trailing slash.\n");
+            eprintln!("If it does not open, visit:\n{auth_url}\n");
+        }
+        LoginProgress::BrowserLaunchFailed {
+            auth_url,
+            redirect_uri,
+            error,
+        } => {
+            eprintln!(
+                "Could not launch a browser automatically ({error}).\nOpen this URL in any browser:\n  {auth_url}\n(Waiting for the OAuth callback on {redirect_uri})"
+            );
+        }
+        LoginProgress::WaitingForCallback => {}
+        LoginProgress::Saved => {
+            eprintln!("Spotify auth saved in macOS Keychain.");
+        }
+    }
+}
+
+/// the user on stdin; on Y, runs the same OAuth flow as `spotuify
+/// login`, asks the daemon to drop its stale token cache, then
+/// retries the original request exactly once.
+///
+/// Non-TTY callers (scripts, pipes) skip the prompt and exit with
+/// the actionable error message — they have no way to answer "Y".
+async fn handle_auth_revoked_then_retry(
+    request: Request,
+    original_message: &str,
+) -> Result<ResponseData> {
+    use std::io::{BufRead, IsTerminal, Write};
+
+    eprintln!("Spotify session expired ({original_message}).");
+
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!(
+            "Spotify session expired and stdin is not a TTY; run `spotuify login` to recover"
+        );
+    }
+
+    eprint!("Re-authenticate now? [Y/n] ");
+    std::io::stderr().flush().ok();
+    let mut answer = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut answer)
+        .context("failed to read stdin")?;
+    let answer = answer.trim();
+    let consent = answer.is_empty()
+        || matches!(answer, "y" | "Y" | "yes" | "Yes" | "YES");
+    if !consent {
+        anyhow::bail!("Aborted. Run `spotuify login` when you're ready to re-authenticate.");
+    }
+
+    eprintln!("Re-authenticating…");
+    let config = spotuify_spotify::config::Config::load()
+        .context("failed to load Spotify config")?;
+    spotuify_spotify::auth::login(&config, cli_login_progress)
+        .await
+        .context("OAuth flow failed")?;
+
+    // Tell the daemon to drop its cached broken token + clear the
+    // auth-revoked latch so the retry doesn't immediately fail again
+    // with the same error.
+    let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
+    let _ = client.request(Request::ReloadAuth).await?;
+
+    eprintln!("Retrying original command…");
+    let mut retry_client = IpcClient::connect_with_source(OperationSource::Cli).await?;
+    match retry_client.request(request).await? {
         Response::Ok { data } => Ok(data),
         Response::Error { message, .. } => anyhow::bail!(message),
     }

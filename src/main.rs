@@ -122,15 +122,37 @@ enum Command {
         /// `hybrid` returns local cached hits immediately and refreshes Spotify in the background.
         #[arg(long, value_enum, default_value = "spotify")]
         source: SearchSource,
-        /// Maximum results to return (Spotify caps per-type at 50).
+        /// Maximum results to return (Spotify caps per-type at 10 empirically).
         #[arg(long, default_value_t = 50)]
         limit: u32,
+        /// Pages of 10 to request per media type. `1` = one-shot (current
+        /// behavior, up to 60 items). `3` matches the TUI streaming
+        /// fanout (up to 180 items). Aggregates pages via `SearchStream`
+        /// before printing.
+        #[arg(long = "pages", default_value_t = 1)]
+        pages: u8,
         /// Play one result instead of printing results.
         #[arg(long)]
         play: bool,
         /// 1-based search result index for --play.
         #[arg(long, default_value_t = 1)]
         index: usize,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Fetch a single page (10 items) of search results at a specific
+    /// offset. Mirrors the TUI's scroll-load-more flow — useful for
+    /// scripts walking past the 180-item streaming horizon.
+    SearchPage {
+        /// Search query.
+        query: String,
+        /// Media kind to fetch.
+        #[arg(long = "type", value_enum, default_value = "track")]
+        kind: SearchKindSingle,
+        /// Offset (multiple of 10). Spotify caps `limit + offset` at 1000.
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -379,6 +401,31 @@ enum SearchSource {
     Local,
     Spotify,
     Hybrid,
+}
+
+/// Single-kind variant of `SearchKind` for `search-page` (the API
+/// requires exactly one kind per offset-paginated call).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum SearchKindSingle {
+    Track,
+    Episode,
+    Show,
+    Album,
+    Artist,
+    Playlist,
+}
+
+impl From<SearchKindSingle> for spotuify_core::MediaKind {
+    fn from(kind: SearchKindSingle) -> Self {
+        match kind {
+            SearchKindSingle::Track => Self::Track,
+            SearchKindSingle::Episode => Self::Episode,
+            SearchKindSingle::Show => Self::Show,
+            SearchKindSingle::Album => Self::Album,
+            SearchKindSingle::Artist => Self::Artist,
+            SearchKindSingle::Playlist => Self::Playlist,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -682,6 +729,57 @@ enum GenerateCommand {
     ManPage,
 }
 
+/// Format an OAuth progress event as the human-readable lines the
+/// CLI has always emitted. The TUI passes its own callback so the
+/// modal renders progress inside its border instead of bleeding
+/// across the alt-screen buffer.
+fn cli_login_progress(event: spotuify_spotify::auth::LoginProgress) {
+    use spotuify_spotify::auth::LoginProgress;
+    match event {
+        LoginProgress::OpeningBrowser {
+            auth_url,
+            redirect_uri,
+        } => {
+            println!("Opening Spotify authorization in your browser...");
+            println!("Spotify Dashboard Redirect URI should be one of:");
+            println!("  {redirect_uri}");
+            println!("  http://127.0.0.1/callback  (loopback dynamic-port allowlist)");
+            println!("Do not use the Website field, localhost, or a trailing slash.\n");
+            println!("If it does not open, visit:\n{auth_url}\n");
+        }
+        LoginProgress::BrowserLaunchFailed {
+            auth_url,
+            redirect_uri,
+            error,
+        } => {
+            println!(
+                "Could not launch a browser automatically ({error}).\nOpen this URL in any browser:\n  {auth_url}\n(Waiting for the OAuth callback on {redirect_uri})"
+            );
+        }
+        LoginProgress::WaitingForCallback => {}
+        LoginProgress::Saved => {
+            println!("Spotify auth saved in macOS Keychain.");
+        }
+    }
+}
+
+/// Best-effort: tell the running daemon to drop its in-memory token
+/// cache and clear the `auth_revoked` latch after the user has just
+/// completed `spotuify login` / `spotuify logout`. Without this, the
+/// daemon keeps refreshing against the previous (now-revoked)
+/// refresh token and surfacing the same `auth revoked; re-login
+/// required` error even though disk + keychain hold fresh
+/// credentials. Returns `Ok(())` if no daemon is running — the next
+/// daemon start will read the fresh tokens off disk on its own.
+async fn nudge_daemon_reload_auth() -> Result<()> {
+    use spotuify_protocol::{IpcClient, OperationSource, Request};
+    let Ok(mut client) = IpcClient::connect_with_source(OperationSource::Cli).await else {
+        return Ok(());
+    };
+    let _ = client.request(Request::ReloadAuth).await?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     // Phase 11 (F9): force the Windows console code page to UTF-8 before
@@ -749,9 +847,33 @@ async fn run() -> Result<()> {
             if let Some(redirect_uri) = redirect_uri {
                 config.redirect_uri = redirect_uri;
             }
-            Ok(login(&config).await?)
+            login(&config, cli_login_progress).await?;
+            // The running daemon (if any) is still holding the
+            // previous, now-revoked token in its in-memory cache and
+            // has its `auth_revoked` latch set. Without nudging it,
+            // every command keeps retrying with the stale refresh
+            // token — the user re-auths, restarts nothing, and the
+            // error keeps coming back. Fire `Request::ReloadAuth` to
+            // drop the cache and clear the latch. Best-effort: if no
+            // daemon is running, the next daemon start picks up the
+            // fresh tokens from disk.
+            if let Err(err) = nudge_daemon_reload_auth().await {
+                tracing::debug!(error = %err, "post-login daemon reload-auth skipped");
+            }
+            Ok(())
         }
-        Some(Command::Logout) => Ok(logout()?),
+        Some(Command::Logout) => {
+            logout()?;
+            // Same rationale as Login above — the daemon may still
+            // have a cached access token in memory. ReloadAuth drops
+            // it so the next command fails fast with "not logged in"
+            // instead of one last successful call against the
+            // revoked-but-not-yet-expired access token.
+            if let Err(err) = nudge_daemon_reload_auth().await {
+                tracing::debug!(error = %err, "post-logout daemon reload-auth skipped");
+            }
+            Ok(())
+        }
         Some(Command::Doctor { format }) => doctor(format).await,
         Some(Command::Daemon { command }) => handle_daemon(command).await,
         Some(Command::Mcp {
@@ -767,6 +889,7 @@ async fn run() -> Result<()> {
             kind,
             source,
             limit,
+            pages,
             play,
             index,
             format,
@@ -776,12 +899,19 @@ async fn run() -> Result<()> {
                 kind.into(),
                 source.into(),
                 limit,
+                pages,
                 play,
                 index,
                 format,
             )
             .await
         }
+        Some(Command::SearchPage {
+            query,
+            kind,
+            offset,
+            format,
+        }) => commands::ipc_search_page(&query, kind.into(), offset, format).await,
         Some(Command::ResolveTracks { from, format }) => {
             commands::ipc_resolve_tracks(&from, format).await
         }
@@ -1251,7 +1381,7 @@ async fn onboard() -> Result<()> {
 
     println!("\nCredentials saved. Starting Spotify OAuth...");
     let config = Config::load().context("failed to load saved config")?;
-    login(&config).await?;
+    login(&config, cli_login_progress).await?;
 
     println!("\nOAuth complete. Syncing Spotify data...");
     initial_sync(config).await?;

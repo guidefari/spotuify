@@ -273,6 +273,7 @@ fn kind_label(data: &spotuify_protocol::ResponseData) -> &'static str {
         D::Playback { .. } => "playback",
         D::Devices { .. } => "devices",
         D::SearchResults { .. } => "search_results",
+        D::SearchStarted { .. } => "search_started",
         D::CacheStatus { .. } => "cache_status",
         D::Reindex { .. } => "reindex",
         D::Sync { .. } => "sync",
