@@ -919,7 +919,17 @@ impl App {
             self.playlists = playlists;
         }
         if let Some(library) = snapshot.library {
-            self.library_items = library;
+            // Library renders as two side-by-side panels: Music on
+            // the left (Track / Album / Artist), Podcasts on the right
+            // (Show / Episode). Navigation (j/k) walks `library_items`
+            // as a single flat list, though — so if music and podcasts
+            // are interleaved (which the SQL `ORDER BY fetched_at_ms`
+            // gives us, since shows get re-fetched on their own
+            // cadence), the cursor lurches between panels mid-scroll.
+            // Partition into music-first / podcasts-last so the flat
+            // list mirrors the panel layout: scrolling down stays in
+            // Music until you genuinely cross the boundary.
+            self.library_items = partition_library_for_navigation(library);
         }
         if let Some(recent) = snapshot.recent {
             if let Some(item) = recent.first() {
@@ -2583,6 +2593,39 @@ fn search_groups(items: &[MediaItem]) -> Vec<(MediaKind, Vec<MediaItem>)> {
     })
     .filter(|(_, group_items)| !group_items.is_empty())
     .collect()
+}
+
+/// Order library items so cursor navigation (a single `app.selected`
+/// index into the flat Vec) matches the side-by-side Music / Podcasts
+/// panel layout in the renderer. All non-podcast kinds keep their
+/// relative order and come first; Show / Episode keep their relative
+/// order and come last. Stable partition — no other sorting happens
+/// here, so SQL's `ORDER BY fetched_at_ms DESC, name ASC` still
+/// determines order within each panel.
+pub(crate) fn partition_library_for_navigation(items: Vec<MediaItem>) -> Vec<MediaItem> {
+    let (music, podcasts): (Vec<_>, Vec<_>) = items
+        .into_iter()
+        .partition(|item| !matches!(item.kind, MediaKind::Show | MediaKind::Episode));
+    music.into_iter().chain(podcasts).collect()
+}
+
+/// Pick the index in `items` that the cursor should snap to when a
+/// search hasn't yet been steered by the user. Priority order matches
+/// `search_groups` and is also what `g t/r/b/p/s/e` would jump to:
+/// Tracks first, then Artists, Albums, Playlists, Shows, Episodes.
+/// Returns `None` only when `items` is empty.
+pub(crate) fn preferred_search_index(items: &[MediaItem]) -> Option<usize> {
+    const PRIORITY: [MediaKind; 6] = [
+        MediaKind::Track,
+        MediaKind::Artist,
+        MediaKind::Album,
+        MediaKind::Playlist,
+        MediaKind::Show,
+        MediaKind::Episode,
+    ];
+    PRIORITY
+        .iter()
+        .find_map(|kind| items.iter().position(|item| item.kind == *kind))
 }
 
 fn rect_inner(area: Rect, margin: Margin) -> Rect {
@@ -4744,6 +4787,44 @@ mod tests {
         let mut m = item(uri, name);
         m.kind = kind;
         m
+    }
+
+    /// Library renders Music and Podcasts in side-by-side panels.
+    /// Navigation walks `library_items` as a flat list, so the flat
+    /// order must match the panel layout: all music first (relative
+    /// order preserved from the SQL query), then all podcasts.
+    /// Otherwise `j/k` lurches between panels whenever a Show happens
+    /// to sit between two music items in the underlying SQL ordering.
+    #[test]
+    fn partition_library_keeps_music_before_podcasts_with_stable_relative_order() {
+        let interleaved = vec![
+            search_item("spotify:track:a", "A", MediaKind::Track),
+            search_item("spotify:show:1", "Show 1", MediaKind::Show),
+            search_item("spotify:album:b", "B", MediaKind::Album),
+            search_item("spotify:episode:1", "Ep 1", MediaKind::Episode),
+            search_item("spotify:artist:c", "C", MediaKind::Artist),
+            search_item("spotify:show:2", "Show 2", MediaKind::Show),
+            search_item("spotify:track:d", "D", MediaKind::Track),
+        ];
+        let partitioned = partition_library_for_navigation(interleaved);
+        let uris: Vec<&str> = partitioned.iter().map(|i| i.uri.as_str()).collect();
+        assert_eq!(
+            uris,
+            vec![
+                // Music block keeps fetched_at_ms / name ordering from SQL.
+                "spotify:track:a",
+                "spotify:album:b",
+                "spotify:artist:c",
+                "spotify:track:d",
+                // Podcasts block likewise.
+                "spotify:show:1",
+                "spotify:episode:1",
+                "spotify:show:2",
+            ],
+            "music kinds must come before podcasts, and relative order inside each \
+             panel must match the input — otherwise the SQL `ORDER BY` is silently \
+             undone, which would surprise anyone debugging via the daemon CLI"
+        );
     }
 
     #[test]
