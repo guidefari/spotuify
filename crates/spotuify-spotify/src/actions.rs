@@ -426,7 +426,7 @@ async fn ensure_playback_target(client: &mut SpotifyClient) -> SpotifyResult<()>
     let mut last_devices = Vec::new();
     for attempt in 0..4 {
         let devices = client.devices().await?;
-        if let Some(device) = preferred_device(client.config(), &devices) {
+        if let Some(device) = preferred_device(client.config(), &devices, client.own_device_id()) {
             let id = device
                 .id
                 .clone()
@@ -452,8 +452,25 @@ async fn ensure_playback_target(client: &mut SpotifyClient) -> SpotifyResult<()>
     })
 }
 
-pub fn preferred_device(config: &Config, devices: &[Device]) -> Option<Device> {
+pub fn preferred_device(
+    config: &Config,
+    devices: &[Device],
+    own_device_id: Option<&str>,
+) -> Option<Device> {
     let unrestricted = devices.iter().filter(|device| !device.is_restricted);
+    // 0. Our own device — when the daemon has registered an embedded
+    //    librespot session, we know its deterministic device_id (SHA-1
+    //    of the registration name). Prefer the entry that matches so
+    //    stale namesakes accumulated from prior daemon runs in
+    //    `/v1/me/player/devices` are harmless: we always transfer to
+    //    the live one rather than picking a stale-by-name match.
+    if let Some(own_id) = own_device_id {
+        if let Some(device) = unrestricted.clone().find(|device| {
+            device.id.as_deref() == Some(own_id)
+        }) {
+            return Some(device.clone());
+        }
+    }
     // 1. Active device — already chosen by the user via another client.
     if let Some(device) = unrestricted.clone().find(|device| device.is_active) {
         return Some(device.clone());
@@ -575,7 +592,7 @@ mod tests {
         ];
 
         assert_eq!(
-            preferred_device(&config(Some("spotuify-hume")), &devices)
+            preferred_device(&config(Some("spotuify-hume")), &devices, None)
                 .expect("preferred device should resolve to active unrestricted device")
                 .name,
             "phone"
@@ -590,7 +607,7 @@ mod tests {
         ];
 
         assert_eq!(
-            preferred_device(&config(Some("spotuify-hume")), &devices)
+            preferred_device(&config(Some("spotuify-hume")), &devices, None)
                 .expect("preferred device should skip restricted active devices")
                 .name,
             "spotuify-hume"
@@ -609,7 +626,7 @@ mod tests {
             device("Lounge", false, false),
         ];
 
-        let chosen = preferred_device(&config(Some("spotuify-hume")), &devices)
+        let chosen = preferred_device(&config(Some("spotuify-hume")), &devices, None)
             .expect("fuzzy fallback should match Hume");
         assert_eq!(chosen.name, "Hume");
     }
@@ -622,7 +639,7 @@ mod tests {
             device("Phone", false, false),
             device("Laptop", false, false),
         ];
-        let chosen = preferred_device(&config(Some("unrelated-name")), &devices)
+        let chosen = preferred_device(&config(Some("unrelated-name")), &devices, None)
             .expect("first-by-id fallback should always produce a device");
         // Stable sort by id → "id-Laptop" < "id-Phone" alphabetically.
         assert_eq!(chosen.name, "Laptop");
@@ -634,7 +651,7 @@ mod tests {
             device("Cast TV", false, true), // restricted, must be skipped
             device("Phone", false, false),
         ];
-        let chosen = preferred_device(&config(None), &devices)
+        let chosen = preferred_device(&config(None), &devices, None)
             .expect("fallback should ignore restricted devices");
         assert_eq!(chosen.name, "Phone");
     }
@@ -642,7 +659,36 @@ mod tests {
     #[test]
     fn preferred_device_returns_none_only_when_zero_unrestricted_devices() {
         let devices = [device("Cast TV", false, true)];
-        assert!(preferred_device(&config(None), &devices).is_none());
+        assert!(preferred_device(&config(None), &devices, None).is_none());
+    }
+
+    /// The whole point of the stable device_id refactor: when Spotify's
+    /// `/v1/me/player/devices` is bloated with stale namesakes (the
+    /// user had 7 "spotuify" entries left over from prior daemon
+    /// runs), `preferred_device` must pick the entry whose ID matches
+    /// ours — NOT the first name match (which would be a stale ghost).
+    #[test]
+    fn preferred_device_prefers_own_device_id_over_stale_namesakes() {
+        // Helper that lets us set an explicit device id on the fixture.
+        fn device_with_id(name: &str, id: &str, active: bool) -> Device {
+            let mut d = device(name, active, false);
+            d.id = Some(id.to_string());
+            d
+        }
+        // Six stale "spotuify" entries from prior daemon UUIDs, plus
+        // our live one with the deterministic SHA-1 id.
+        let own_id = "c77941ae06acef3ef6b17f577668e6100c0089ef";
+        let devices = [
+            device_with_id("spotuify", "stale-uuid-1", false),
+            device_with_id("spotuify", "stale-uuid-2", false),
+            device_with_id("spotuify", "stale-uuid-3", false),
+            device_with_id("spotuify", own_id, false),
+            device_with_id("spotuify", "stale-uuid-4", false),
+            device_with_id("spotuify", "stale-uuid-5", false),
+        ];
+        let chosen = preferred_device(&config(None), &devices, Some(own_id))
+            .expect("own-device-id match must win");
+        assert_eq!(chosen.id.as_deref(), Some(own_id));
     }
 
     #[test]

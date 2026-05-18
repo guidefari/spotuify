@@ -613,7 +613,39 @@ impl Store {
     }
 
     async fn persist_devices_with(&self, devices: &[Device], pool: &SqlitePool) -> Result<u32> {
+        self.persist_devices_inner(devices, pool, false).await
+    }
+
+    /// Persist the device list and **delete every cached row not in
+    /// this batch** so the local view exactly mirrors Spotify's
+    /// `/v1/me/player/devices` at this point in time.
+    ///
+    /// Use this from the periodic full-refresh path. The single-device
+    /// persist that happens during `persist_playback` (when the
+    /// playback poll includes an active device) must NOT prune — it
+    /// would nuke every other device after every poll. That path uses
+    /// the non-pruning `persist_devices`.
+    pub async fn replace_devices(&self, devices: &[Device]) -> Result<u32> {
+        self.persist_devices_inner(devices, &self.writer, true).await
+    }
+
+    async fn persist_devices_inner(
+        &self,
+        devices: &[Device],
+        pool: &SqlitePool,
+        prune_stale: bool,
+    ) -> Result<u32> {
+        // `prune_stale` with an empty batch would wipe the whole table —
+        // which IS the right behavior when Spotify returns 0 devices
+        // (the user disconnected everything). Handle that case
+        // explicitly; the original short-circuit dropped through to
+        // returning 0 without persisting OR pruning.
         if devices.is_empty() {
+            if prune_stale {
+                sqlx::query("DELETE FROM devices")
+                    .execute(pool)
+                    .await?;
+            }
             return Ok(0);
         }
         let fetched_at_ms = now_ms();
@@ -654,6 +686,16 @@ impl Store {
                 .await?;
             }
             tx.commit().await?;
+        }
+        if prune_stale {
+            // Drop every row not stamped with this refresh's
+            // generation. Mirrors what Spotify just told us about its
+            // /v1/me/player/devices state; ghost rows from prior
+            // runs (the 7 stale "spotuify" entries) disappear here.
+            sqlx::query("DELETE FROM devices WHERE sync_generation < ?")
+                .bind(fetched_at_ms)
+                .execute(pool)
+                .await?;
         }
         Ok(devices.len() as u32)
     }
@@ -2672,6 +2714,88 @@ mod tests {
 
         assert_eq!(total, 2);
         assert_eq!(ids, ["1", "2"]);
+    }
+
+    /// Locks the prune contract: `replace_devices` should mirror the
+    /// just-landed batch exactly, dropping rows from prior batches.
+    /// This is what makes Spotify's eventual auto-expiry of stale
+    /// Connect devices propagate into the spotuify cache (the user's
+    /// 7 ghost "spotuify" entries disappear once Spotify drops them
+    /// from `/v1/me/player/devices` and we refresh).
+    #[tokio::test]
+    async fn replace_devices_prunes_rows_missing_from_latest_refresh() {
+        let store = Store::in_memory()
+            .await
+            .expect("in-memory store should open");
+        fn make_device(id: &str, name: &str) -> Device {
+            Device {
+                id: Some(id.to_string()),
+                name: name.to_string(),
+                kind: "computer".to_string(),
+                is_active: false,
+                is_restricted: false,
+                volume_percent: Some(50),
+                supports_volume: true,
+            }
+        }
+
+        // First refresh: three devices (think 3 stale "spotuify" + 1 phone).
+        let batch_a = vec![
+            make_device("stale-1", "spotuify"),
+            make_device("stale-2", "spotuify"),
+            make_device("phone-1", "iPhone"),
+        ];
+        store.replace_devices(&batch_a).await.unwrap();
+        assert_eq!(store.list_devices().await.unwrap().len(), 3);
+
+        // Wait long enough that the second refresh's sync_generation
+        // is strictly greater (sync_generation is millisecond-resolution).
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        // Second refresh: Spotify has dropped one stale and the
+        // phone has gone idle (still present); the live device id
+        // is now `live-id`.
+        let batch_b = vec![
+            make_device("live-id", "spotuify"),
+            make_device("phone-1", "iPhone"),
+        ];
+        store.replace_devices(&batch_b).await.unwrap();
+        let after = store.list_devices().await.unwrap();
+        let ids: Vec<&str> = after
+            .iter()
+            .filter_map(|d| d.id.as_deref())
+            .collect();
+        assert_eq!(after.len(), 2, "stale rows must be pruned");
+        assert!(ids.contains(&"live-id"));
+        assert!(ids.contains(&"phone-1"));
+        assert!(!ids.contains(&"stale-1"));
+        assert!(!ids.contains(&"stale-2"));
+    }
+
+    /// `replace_devices` with an empty batch clears the cache —
+    /// Spotify reporting zero devices means "user unplugged
+    /// everything"; the cache should reflect that.
+    #[tokio::test]
+    async fn replace_devices_with_empty_batch_clears_cache() {
+        let store = Store::in_memory()
+            .await
+            .expect("in-memory store should open");
+        store
+            .replace_devices(&[Device {
+                id: Some("d1".to_string()),
+                name: "a".to_string(),
+                kind: "computer".to_string(),
+                is_active: false,
+                is_restricted: false,
+                volume_percent: None,
+                supports_volume: false,
+            }])
+            .await
+            .unwrap();
+        assert_eq!(store.list_devices().await.unwrap().len(), 1);
+
+        store.replace_devices(&[]).await.unwrap();
+        assert_eq!(store.list_devices().await.unwrap().len(), 0);
     }
 
     #[tokio::test]

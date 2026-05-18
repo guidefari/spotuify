@@ -204,6 +204,18 @@ impl EmbeddedBackend {
             })
     }
 
+    /// Build a `SessionConfig` with a deterministic `device_id` derived
+    /// from the configured device name (see `derive_device_id`).
+    /// Falls back to librespot's UUIDv4 default when we don't yet
+    /// know the name (e.g. preload firing before `register_device`).
+    fn session_config(&self) -> SessionConfig {
+        let mut config = SessionConfig::default();
+        if let Some(name) = self.state.lock().device_name.as_deref() {
+            config.device_id = derive_device_id(name);
+        }
+        config
+    }
+
     async fn session(&self) -> PlayerResult<Session> {
         if let Some(session) = self
             .state
@@ -217,7 +229,7 @@ impl EmbeddedBackend {
         }
 
         let credentials = self.credentials()?;
-        let session = Session::new(SessionConfig::default(), Some(self.cache.clone()));
+        let session = Session::new(self.session_config(), Some(self.cache.clone()));
         tokio::time::timeout(SESSION_CONNECT_TIMEOUT, session.connect(credentials, true))
             .await
             .map_err(|_| PlayerError::Timeout(SESSION_CONNECT_TIMEOUT))?
@@ -239,7 +251,7 @@ impl EmbeddedBackend {
             return Ok((session, credentials));
         }
 
-        let session = Session::new(SessionConfig::default(), Some(self.cache.clone()));
+        let session = Session::new(self.session_config(), Some(self.cache.clone()));
         self.state.lock().session = Some(session.clone());
         Ok((session, credentials))
     }
@@ -311,8 +323,12 @@ impl PlayerBackend for EmbeddedBackend {
     }
 
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId> {
-        self.ensure_spirc(name).await?;
+        // Stash the name BEFORE creating the session so `session_config`
+        // can derive the stable device_id (see `derive_device_id`).
+        // Order matters here — `ensure_spirc` constructs the librespot
+        // Session via `session_for_spirc`, which reads `device_name`.
         self.state.lock().device_name = Some(name.to_string());
+        self.ensure_spirc(name).await?;
         let id = DeviceId::new(format!("embedded-pending-{name}"));
         self.emit(PlayerEvent::Ready {
             device_id: id.clone(),
@@ -444,6 +460,33 @@ impl PlayerBackend for EmbeddedBackend {
     }
 }
 
+/// Derive a stable Spotify Connect device ID from a device name.
+///
+/// Spotify's `/v1/me/player/devices` retains every distinct device_id
+/// it has ever seen for hours-to-days, even after the librespot
+/// session shuts down — there's no public deregister API. Librespot's
+/// `SessionConfig::default_for_os()` defaults `device_id` to a fresh
+/// `uuid::Uuid::new_v4()` per process, so every daemon restart
+/// registers a NEW Connect device and the list grows monotonically.
+///
+/// The fix is industry-standard (this is exactly what spotifyd does at
+/// `Spotifyd/spotifyd/src/config.rs:616`): derive the ID
+/// deterministically from the device name via SHA-1. Same name → same
+/// ID across restarts → no accumulation.
+///
+/// `device_id` is opaque to Spotify; the format just needs to be stable
+/// for a given install. 40-char lowercase hex matches spotifyd so
+/// users running both end up with the same registration.
+fn derive_device_id(name: &str) -> String {
+    use sha1::{Digest, Sha1};
+    let digest = Sha1::digest(name.as_bytes());
+    let mut out = String::with_capacity(40);
+    for byte in digest {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
 fn player_config() -> PlayerConfig {
     PlayerConfig {
         // Phase 8 — periodic position heartbeat. The daemon's PlaybackClock
@@ -547,8 +590,9 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
 #[cfg(test)]
 mod tests {
     use super::{
-        load_request_for_uri, preloadable_uri, translate_librespot_player_event,
-        volume_percent_to_librespot, EmbeddedBackend, EmbeddedCachePaths,
+        derive_device_id, load_request_for_uri, preloadable_uri,
+        translate_librespot_player_event, volume_percent_to_librespot, EmbeddedBackend,
+        EmbeddedCachePaths,
     };
     use crate::backends::token_bridge::StaticTokenProvider;
     use crate::{PlayerBackend, PlayerError, PlayerEvent};
@@ -643,6 +687,24 @@ mod tests {
 
         assert!(request.start_playing);
         assert_eq!(request.seek_to, 42_000);
+    }
+
+    /// Locks the stable-device-id format so a careless refactor (e.g.
+    /// switching hashers) can't accidentally orphan every previously-
+    /// registered Spotify Connect device. The vector below is
+    /// `echo -n 'spotuify' | shasum -a 1` and matches the spotifyd
+    /// convention exactly.
+    #[test]
+    fn derive_device_id_is_lowercase_sha1_hex_of_name() {
+        let id = derive_device_id("spotuify");
+        assert_eq!(id, "c77941ae06acef3ef6b17f577668e6100c0089ef");
+        assert_eq!(id.len(), 40);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        // Same input → same output across calls (the whole point).
+        assert_eq!(derive_device_id("spotuify"), id);
+        // Different names produce different IDs (no collisions in
+        // practice with SHA-1 over short device names).
+        assert_ne!(derive_device_id("spotuify-hume"), id);
     }
 
     #[test]

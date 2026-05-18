@@ -42,6 +42,11 @@ spotuify-audio = { workspace = true, default-features = false }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+# Used to derive a stable Spotify Connect device ID from the
+# configured device name (matches spotifyd's pattern). Pinned to the
+# version already in the workspace tree via librespot's transitive
+# deps so we don't introduce a new build-graph entry.
+sha1 = "0.10"
 dirs = { workspace = true }
 futures = { workspace = true }
 parking_lot = { workspace = true }
