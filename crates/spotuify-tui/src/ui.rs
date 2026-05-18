@@ -3954,7 +3954,7 @@ mod tests {
             search_results: Vec::new(),
             search_version: 0,
             search_panes: std::collections::HashMap::new(),
-            search_seen_uris: std::collections::HashSet::new(),
+            search_user_steered: false,
             is_searching: false,
             action_in_flight: false,
             screen: Screen::Search,

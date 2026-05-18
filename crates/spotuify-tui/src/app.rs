@@ -193,6 +193,14 @@ pub struct SearchPaneState {
     pub loading: bool,
     pub exhausted: bool,
     pub next_offset: u32,
+    /// Pages keyed by Spotify offset. We store each page under its
+    /// offset rather than appending to a flat list so out-of-order
+    /// arrivals (Spotify's three-parallel initial fanout, or later
+    /// scroll-fetches whose responses race) don't scramble the
+    /// rendered order. Rebuilding the flat `search_results` walks
+    /// `pages` in offset order, giving the user a stable, stream-as-
+    /// you-go list that only ever grows downwards.
+    pub pages: std::collections::BTreeMap<u32, Vec<MediaItem>>,
 }
 
 pub struct App {
@@ -212,9 +220,15 @@ pub struct App {
     /// Per-pane scroll-pagination state. Populated when a streaming
     /// search runs; cleared on each `start_search`.
     pub search_panes: std::collections::HashMap<MediaKind, SearchPaneState>,
-    /// URIs already merged into `search_results` for the current
-    /// `search_version`. Used to dedup as paginated pages stream in.
-    pub search_seen_uris: std::collections::HashSet<String>,
+    /// True once the user has explicitly moved the cursor or picked a
+    /// pane (`g t/r/b/p/s/e`) during the current search. While false,
+    /// `app.selected` is auto-snapped to the first item of the highest-
+    /// priority non-empty kind (Tracks > Artists > Albums > Playlists >
+    /// Shows > Episodes) each time new results stream in. This stops
+    /// the focused-pane lottery: previously `app.selected = 0` pointed
+    /// at whichever provider's response landed first, so identical
+    /// queries could highlight Artists one run and Podcasts the next.
+    pub search_user_steered: bool,
     pub is_searching: bool,
     pub action_in_flight: bool,
     pub screen: Screen,
@@ -511,7 +525,7 @@ impl App {
             search_results: Vec::new(),
             search_version: 0,
             search_panes: std::collections::HashMap::new(),
-            search_seen_uris: std::collections::HashSet::new(),
+            search_user_steered: false,
             is_searching: false,
             action_in_flight: false,
             screen: Screen::Player,
@@ -578,6 +592,45 @@ impl App {
             refresh_requested: true,
             pending_g: false,
         })
+    }
+
+    /// Recompute `search_results` from each pane's offset-keyed pages
+    /// in deterministic order: kinds in render priority (Tracks first),
+    /// pages within a kind in ascending offset order, items within a
+    /// page in arrival order. URIs that appear in multiple pages /
+    /// kinds resolve to the first occurrence, so a stable position is
+    /// reserved as soon as the URI is first seen.
+    ///
+    /// Called whenever a `SearchPage` event updates a pane. Cost is
+    /// O(N) in total search items, which is bounded by Spotify's
+    /// `limit + offset ≤ 1000` wall (~6,000 items across all six
+    /// kinds at most) — well below the threshold where a more clever
+    /// incremental update would be worth the complexity.
+    pub(crate) fn rebuild_search_results(&mut self) {
+        use std::collections::HashSet;
+        const RENDER_ORDER: [MediaKind; 6] = [
+            MediaKind::Track,
+            MediaKind::Artist,
+            MediaKind::Album,
+            MediaKind::Playlist,
+            MediaKind::Show,
+            MediaKind::Episode,
+        ];
+        let mut combined = Vec::with_capacity(self.search_results.len());
+        let mut seen: HashSet<String> = HashSet::new();
+        for kind in RENDER_ORDER {
+            let Some(pane) = self.search_panes.get(&kind) else {
+                continue;
+            };
+            for page in pane.pages.values() {
+                for item in page {
+                    if seen.insert(item.uri.clone()) {
+                        combined.push(item.clone());
+                    }
+                }
+            }
+        }
+        self.search_results = combined;
     }
 
     pub(crate) fn visible_items(&self) -> Vec<MediaItem> {
@@ -764,6 +817,13 @@ impl App {
             self.playlist_selected = index;
         } else {
             self.selected = index;
+        }
+        // Cursor moved by an explicit user-input path (move_up/down,
+        // page_up/down, jump_top/bottom, mouse click). On Search we
+        // take that as a signal to stop auto-snapping to the
+        // preferred kind on each streaming result page.
+        if self.screen == Screen::Search {
+            self.search_user_steered = true;
         }
         self.clamp_selection();
     }
@@ -1392,12 +1452,12 @@ impl App {
                     return;
                 }
                 let arrived = items.len();
-                // Dedup against URIs already merged for this version.
-                for item in items {
-                    if self.search_seen_uris.insert(item.uri.clone()) {
-                        self.search_results.push(item);
-                    }
-                }
+                // Remember which item the cursor is on so a rebuild
+                // can put it back even if the visible list reorders
+                // (rare in steady-state, but possible if an earlier-
+                // offset page lands after a later one).
+                let selected_uri = self.search_results.get(self.selected).map(|i| i.uri.clone());
+
                 let pane = self.search_panes.entry(kind).or_default();
                 pane.loading = false;
                 // Empty page is the canonical exhaustion signal — Spotify's
@@ -1412,6 +1472,28 @@ impl App {
                     // the initial fanout fires offsets [0,10,20] in parallel
                     // and events can arrive out of order.
                     pane.next_offset = pane.next_offset.max(offset + arrived as u32);
+                }
+                // Key the page by its Spotify offset, NOT by arrival
+                // order. Rebuilding from offset-sorted pages gives a
+                // stable list that only ever grows downwards — no
+                // reshuffling when offset=20 arrives before offset=10.
+                pane.pages.insert(offset, items);
+
+                self.rebuild_search_results();
+
+                // Anchor the cursor on the highest-priority non-empty
+                // kind until the user steers. Once steered, preserve
+                // the URI under the cursor across rebuilds so the
+                // user's selection follows the same item even if its
+                // index shifted.
+                if !self.search_user_steered {
+                    if let Some(idx) = preferred_search_index(&self.search_results) {
+                        self.selected = idx;
+                    }
+                } else if let Some(uri) = selected_uri {
+                    if let Some(idx) = self.search_results.iter().position(|i| i.uri == uri) {
+                        self.selected = idx;
+                    }
                 }
             }
             DaemonEvent::SearchComplete { query, version } => {
@@ -2859,6 +2941,10 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
                     .position(|item| item.kind == target_kind)
                 {
                     app.selected = idx;
+                    // Explicit pane pick — same intent as moving the
+                    // cursor manually. Stop auto-snapping back to the
+                    // preferred kind on the next streamed page.
+                    app.search_user_steered = true;
                     return None;
                 }
                 app.toast = Some(format!(
@@ -3219,7 +3305,6 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     if query.trim().is_empty() {
         app.search_results.clear();
         app.search_panes.clear();
-        app.search_seen_uris.clear();
         app.is_searching = false;
         app.screen = Screen::Search;
         app.selected = 0;
@@ -3231,8 +3316,11 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     app.search_version = app.search_version.wrapping_add(1);
     let version = app.search_version;
     app.search_results.clear();
-    app.search_seen_uris.clear();
     app.search_panes.clear();
+    // Fresh search: auto-snap selection back on, so the first batch of
+    // results lands on the preferred kind (Tracks). The user gets a new
+    // chance to steer the cursor on this query.
+    app.search_user_steered = false;
     // Seed all six panes as loading; daemon will clear them as pages
     // resolve. This drives the per-pane "↓ loading more…" indicator
     // for the initial 18-request fanout.
@@ -3250,6 +3338,7 @@ fn start_search(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
                 loading: true,
                 exhausted: false,
                 next_offset: 0,
+                pages: std::collections::BTreeMap::new(),
             },
         );
     }
@@ -3970,6 +4059,10 @@ fn cycle_search_panel(app: &mut App, delta: isize) {
     let target = visible[next_idx].clone();
     if let Some(idx) = app.search_results.iter().position(|i| i.kind == target) {
         app.selected = idx;
+        // Cycling panels is an explicit user navigation — same as
+        // arrow keys / `g <letter>`. Stop auto-snapping to the
+        // preferred kind on the next streamed result page.
+        app.search_user_steered = true;
     }
 }
 
@@ -4138,7 +4231,7 @@ mod tests {
             search_results: Vec::new(),
             search_version: 0,
             search_panes: std::collections::HashMap::new(),
-            search_seen_uris: std::collections::HashSet::new(),
+            search_user_steered: false,
             is_searching: false,
             action_in_flight: false,
             screen: Screen::Player,
@@ -4688,6 +4781,325 @@ mod tests {
         assert_eq!(app.selected, 0, "cursor should land on Song A");
     }
 
+    /// The initial search fanout fires offsets [0, 10, 20] in
+    /// parallel; the responses can land in any order. The flat list
+    /// must show pages in offset order regardless of arrival order,
+    /// so the user never sees items reshuffle mid-stream.
+    #[test]
+    fn search_pages_arriving_out_of_order_render_in_offset_order() {
+        let mut app = test_app();
+        app.search_query = "anything".to_string();
+        app.search_version = 1;
+        app.screen = Screen::Search;
+        // Seed the pane the way start_search would.
+        app.search_panes.insert(
+            MediaKind::Track,
+            SearchPaneState {
+                loading: true,
+                exhausted: false,
+                next_offset: 0,
+                pages: std::collections::BTreeMap::new(),
+            },
+        );
+
+        // Offset 20 arrives FIRST (slow CDN, weird Spotify behaviour,
+        // whatever — the fanout was parallel).
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            spotuify_protocol::DaemonEvent::SearchPage {
+                query: "anything".to_string(),
+                kind: MediaKind::Track,
+                offset: 20,
+                version: 1,
+                items: vec![
+                    search_item("spotify:track:20", "Song 20", MediaKind::Track),
+                    search_item("spotify:track:21", "Song 21", MediaKind::Track),
+                ],
+            },
+        ));
+        // Then offset 0.
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            spotuify_protocol::DaemonEvent::SearchPage {
+                query: "anything".to_string(),
+                kind: MediaKind::Track,
+                offset: 0,
+                version: 1,
+                items: vec![
+                    search_item("spotify:track:0", "Song 0", MediaKind::Track),
+                    search_item("spotify:track:1", "Song 1", MediaKind::Track),
+                ],
+            },
+        ));
+        // Then offset 10.
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            spotuify_protocol::DaemonEvent::SearchPage {
+                query: "anything".to_string(),
+                kind: MediaKind::Track,
+                offset: 10,
+                version: 1,
+                items: vec![
+                    search_item("spotify:track:10", "Song 10", MediaKind::Track),
+                    search_item("spotify:track:11", "Song 11", MediaKind::Track),
+                ],
+            },
+        ));
+
+        let uris: Vec<&str> = app
+            .search_results
+            .iter()
+            .map(|i| i.uri.as_str())
+            .collect();
+        assert_eq!(
+            uris,
+            vec![
+                "spotify:track:0",
+                "spotify:track:1",
+                "spotify:track:10",
+                "spotify:track:11",
+                "spotify:track:20",
+                "spotify:track:21",
+            ],
+            "items must be rendered in offset order regardless of which page arrived first \
+             — otherwise the list reshuffles every time a slow page lands"
+        );
+    }
+
+    /// Search results stream in from six parallel Spotify endpoints
+    /// (tracks/artists/albums/playlists/shows/episodes). Whichever
+    /// response arrived first used to land at index 0 — i.e. the
+    /// focused pane was a coin flip. Fix: the cursor snaps to the
+    /// first item of the highest-priority non-empty kind on every
+    /// streamed page, until the user steers.
+    #[test]
+    fn streaming_search_pages_snap_cursor_to_tracks_regardless_of_arrival_order() {
+        let mut app = test_app();
+        app.search_query = "anything".to_string();
+        app.search_version = 1;
+        app.screen = Screen::Search;
+        // First page arrives: Podcasts. Spotify's podcast endpoint was
+        // fastest this run. Pre-fix cursor would point at the show.
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            spotuify_protocol::DaemonEvent::SearchPage {
+                query: "anything".to_string(),
+                kind: MediaKind::Show,
+                offset: 0,
+                version: 1,
+                items: vec![search_item("spotify:show:1", "Pod A", MediaKind::Show)],
+            },
+        ));
+        // Second page: an Album. Cursor would jump to Album under the
+        // pre-fix arrival-order behaviour (depending on insert order).
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            spotuify_protocol::DaemonEvent::SearchPage {
+                query: "anything".to_string(),
+                kind: MediaKind::Album,
+                offset: 0,
+                version: 1,
+                items: vec![search_item("spotify:album:1", "Album A", MediaKind::Album)],
+            },
+        ));
+        // Third page: Tracks. Now Tracks exist, so the cursor MUST
+        // snap to the first track regardless of when it arrived.
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            spotuify_protocol::DaemonEvent::SearchPage {
+                query: "anything".to_string(),
+                kind: MediaKind::Track,
+                offset: 0,
+                version: 1,
+                items: vec![
+                    search_item("spotify:track:1", "Song A", MediaKind::Track),
+                    search_item("spotify:track:2", "Song B", MediaKind::Track),
+                ],
+            },
+        ));
+
+        let selected_kind = app
+            .search_results
+            .get(app.selected)
+            .map(|i| i.kind.clone())
+            .expect("selection should index into results");
+        assert_eq!(
+            selected_kind,
+            MediaKind::Track,
+            "cursor must snap to the first Track once any track lands, no matter what kind \
+             arrived first — that was the random-pane bug"
+        );
+    }
+
+    /// After the user steers, a late-arriving earlier-offset page
+    /// shifts everyone's index — but the cursor must keep tracking
+    /// the same URI, not the same numeric index. `#[tokio::test]`
+    /// because cursor-move actions can spawn pagination triggers on
+    /// the current runtime.
+    #[tokio::test]
+    async fn user_steered_cursor_follows_uri_when_earlier_page_arrives_later() {
+        let mut app = test_app();
+        app.search_query = "anything".to_string();
+        app.search_version = 1;
+        app.screen = Screen::Search;
+        app.search_panes.insert(
+            MediaKind::Track,
+            SearchPaneState {
+                loading: true,
+                exhausted: false,
+                next_offset: 0,
+                pages: std::collections::BTreeMap::new(),
+            },
+        );
+
+        // Offset 10 lands first.
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            spotuify_protocol::DaemonEvent::SearchPage {
+                query: "anything".to_string(),
+                kind: MediaKind::Track,
+                offset: 10,
+                version: 1,
+                items: vec![
+                    search_item("spotify:track:10", "Song 10", MediaKind::Track),
+                    search_item("spotify:track:11", "Song 11", MediaKind::Track),
+                ],
+            },
+        ));
+        // User explicitly moves down to song 11.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let _ = handle_key(&mut app, key(KeyCode::Down), &tx).expect("down");
+        assert_eq!(
+            app.search_results[app.selected].uri,
+            "spotify:track:11",
+            "user moved cursor to song 11; precondition"
+        );
+
+        // Offset 0 lands AFTER. Rebuild shifts song 11 from index 1
+        // to index 3 (now [song:0, song:1, song:10, song:11]).
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            spotuify_protocol::DaemonEvent::SearchPage {
+                query: "anything".to_string(),
+                kind: MediaKind::Track,
+                offset: 0,
+                version: 1,
+                items: vec![
+                    search_item("spotify:track:0", "Song 0", MediaKind::Track),
+                    search_item("spotify:track:1", "Song 1", MediaKind::Track),
+                ],
+            },
+        ));
+        assert_eq!(
+            app.search_results[app.selected].uri,
+            "spotify:track:11",
+            "cursor must follow the URI the user picked, not the numeric index — \
+             otherwise late-arriving earlier pages would silently jerk the cursor \
+             to whatever happens to share the old index"
+        );
+    }
+
+    /// After the user has steered (arrow keys, `g <letter>`, or panel
+    /// cycle), subsequent streamed pages must NOT yank the cursor back
+    /// to Tracks. The user's last explicit choice wins.
+    #[test]
+    fn user_steered_cursor_survives_subsequent_streamed_pages() {
+        let mut app = test_app();
+        app.search_query = "anything".to_string();
+        app.search_version = 1;
+        app.screen = Screen::Search;
+
+        // First page: tracks land.
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            spotuify_protocol::DaemonEvent::SearchPage {
+                query: "anything".to_string(),
+                kind: MediaKind::Track,
+                offset: 0,
+                version: 1,
+                items: vec![search_item("spotify:track:1", "Song A", MediaKind::Track)],
+            },
+        ));
+        // Artists too.
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            spotuify_protocol::DaemonEvent::SearchPage {
+                query: "anything".to_string(),
+                kind: MediaKind::Artist,
+                offset: 0,
+                version: 1,
+                items: vec![search_item("spotify:artist:1", "Artist A", MediaKind::Artist)],
+            },
+        ));
+        // User picks Artists pane via `g r`.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let _ = handle_key(&mut app, key(KeyCode::Char('g')), &tx).expect("g");
+        let _ = handle_key(&mut app, key(KeyCode::Char('r')), &tx).expect("r");
+        assert_eq!(
+            app.search_results[app.selected].kind,
+            MediaKind::Artist,
+            "user just steered to Artists; precondition"
+        );
+
+        // Now a slow Albums page lands. Snap-to-preferred would pull
+        // the cursor back to Tracks. It must not.
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            spotuify_protocol::DaemonEvent::SearchPage {
+                query: "anything".to_string(),
+                kind: MediaKind::Album,
+                offset: 0,
+                version: 1,
+                items: vec![search_item("spotify:album:1", "Album A", MediaKind::Album)],
+            },
+        ));
+        assert_eq!(
+            app.search_results[app.selected].kind,
+            MediaKind::Artist,
+            "after the user has steered, new streaming pages must not yank the cursor — \
+             auto-snap is a startup hint, not a recurring override"
+        );
+    }
+
+    /// A brand-new search resets the steered flag — the next query
+    /// gets the auto-snap behaviour back. `#[tokio::test]` because
+    /// `start_search` spawns the request future on the current Tokio
+    /// runtime; the spawned task itself isn't what we're checking
+    /// (its first `await` never completes in tests) — we only need
+    /// the in-process state mutation that happens before the spawn.
+    #[tokio::test]
+    async fn fresh_search_query_re_enables_auto_snap() {
+        let mut app = test_app();
+        app.search_query = "first".to_string();
+        app.search_version = 1;
+        app.screen = Screen::Search;
+        // Initial page + user steers away.
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            spotuify_protocol::DaemonEvent::SearchPage {
+                query: "first".to_string(),
+                kind: MediaKind::Track,
+                offset: 0,
+                version: 1,
+                items: vec![search_item("spotify:track:1", "Song A", MediaKind::Track)],
+            },
+        ));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        // Steer to Artist (will toast 'no Artist results' but flip the flag).
+        // Easier: simulate by calling set_active_selection (mouse-click path).
+        app.apply_async_result(AsyncResult::DaemonEvent(
+            spotuify_protocol::DaemonEvent::SearchPage {
+                query: "first".to_string(),
+                kind: MediaKind::Artist,
+                offset: 0,
+                version: 1,
+                items: vec![search_item("spotify:artist:1", "Artist A", MediaKind::Artist)],
+            },
+        ));
+        let _ = handle_key(&mut app, key(KeyCode::Char('g')), &tx).expect("g");
+        let _ = handle_key(&mut app, key(KeyCode::Char('r')), &tx).expect("r");
+        assert!(
+            app.search_user_steered,
+            "g+r should mark the search as steered (precondition)"
+        );
+
+        // Start a new search → flag resets. Use start_search internal.
+        app.search_query = "second".to_string();
+        start_search(&mut app, &tx);
+        assert!(
+            !app.search_user_steered,
+            "new search must clear the steered flag so the next results land on Tracks"
+        );
+    }
+
     #[test]
     fn g_prefix_jump_to_missing_kind_shows_toast_and_keeps_cursor() {
         let mut app = test_app();
@@ -5011,6 +5423,7 @@ mod tests {
         let queue = Queue {
             currently_playing: Some(track_with_image("spotify:track:first", None)),
             items: Vec::new(),
+            ..Default::default()
         };
 
         app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::QueueChanged {
