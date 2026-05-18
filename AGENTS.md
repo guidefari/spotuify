@@ -85,11 +85,21 @@ Rules:
 - Admin surfaces stay in IPC but stay conceptually separate from core music.
 - Spotify weirdness is handled below this layer in provider/player code.
 
+## Daemon owns state. Clients are views.
+
+The daemon is the canonical state holder for everything user-visible: current playback, queue, devices, search results, library, recent. Clients — TUI, CLI, MCP, future ones — render that state. They never own it.
+
+**Optimistic UI updates live on the daemon, not in any client.** When a transport mutation lands, the daemon updates its `playback_clock` and emits a `DaemonEvent::PlaybackChanged { action: "optimistic-<verb>", playback: Some(snapshot) }` immediately, before the Spotify API call returns. Every subscriber — the TUI's event listener, a CLI `--watch` window, MCP — sees the same instant feedback. The authoritative `PlaybackChanged` from the command result follows and reconciles via the clock's source-priority ranking.
+
+When you're tempted to write `app.<field> = <new_value>` in the TUI to "make it feel snappier", stop. That mutation is invisible to every other client. Push it to the daemon as an `optimistic-*` event emit and let the existing subscriber path render it. The TUI's `merge_playback` / `handle_art_url_change` / queue-rail / devices-rail already react to those events — nothing to invent on the client side.
+
+The rule covers more than playback: queue reorders, library saves, playlist edits, search results — all of them. If a state field is read by the user, the daemon owns it; the client subscribes.
+
 ## Core principles
 
 1. **Player first**: If play/pause/seek/queue/device activation is flaky, the app is broken.
 2. **CLI first**: The CLI is the canonical user, script, test, and agent surface. If a capability only exists in the TUI, it is incomplete.
-3. **Daemon-backed**: TUI is a client, not the system. Music keeps playing after TUI exits.
+3. **Daemon-backed**: TUI is a client, not the system. Music keeps playing after TUI exits. State changes — even optimistic ones — originate from the daemon.
 4. **Local cache**: SQLite is the local source of truth for cached metadata. Spotify remains remote authority.
 5. **Search is navigation**: Tantivy/local search is a first-class feature, not a UI filter bolted on later.
 6. **Pipeable output**: JSON/JSONL/CSV/IDs output is a product feature.
