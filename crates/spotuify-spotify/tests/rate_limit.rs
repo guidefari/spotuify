@@ -275,6 +275,71 @@ async fn client_retries_429_then_returns_success_response() {
 }
 
 #[tokio::test]
+async fn client_surfaces_long_retry_after_without_waiting() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/me"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "3600"))
+        .mount(&server)
+        .await;
+
+    let client = RateLimitedClient::new(reqwest::Client::new(), None, 1, 1);
+    let err = tokio::time::timeout(
+        Duration::from_secs(1),
+        client.send_with_retry(Priority::Foreground, "GET /me", || {
+            client.inner().get(format!("{}/me", server.uri()))
+        }),
+    )
+    .await
+    .expect("long retry-after should not sleep inside foreground request")
+    .expect_err("429 should surface a typed rate-limit error");
+
+    assert!(matches!(
+        err,
+        SpotifyError::RateLimited {
+            retry_after,
+            ..
+        } if retry_after == Duration::from_secs(3600)
+    ));
+    assert_eq!(
+        server.received_requests().await.expect("requests").len(),
+        1,
+        "long retry-after should not immediately retry"
+    );
+}
+
+#[tokio::test]
+async fn client_surfaces_persisted_long_backoff_without_waiting() {
+    let server = MockServer::start().await;
+    let tmp = tempfile::NamedTempFile::new().expect("temp file");
+    let path = tmp.path().to_path_buf();
+    let mut state = BackoffState::default();
+    let now_ms = Utc::now().timestamp_millis();
+    state.record_rate_limit("GET /me", now_ms, Duration::from_secs(3600));
+    state.save(&path).expect("backoff state should save");
+
+    let client = RateLimitedClient::new(reqwest::Client::new(), Some(path.clone()), 1, 1);
+    let err = tokio::time::timeout(
+        Duration::from_secs(1),
+        client.send_with_retry(Priority::Foreground, "GET /me", || {
+            client.inner().get(format!("{}/me", server.uri()))
+        }),
+    )
+    .await
+    .expect("persisted long backoff should not sleep inside foreground request")
+    .expect_err("persisted long backoff should surface rate-limited");
+
+    assert!(matches!(err, SpotifyError::RateLimited { .. }));
+    assert_eq!(
+        server.received_requests().await.expect("requests").len(),
+        0,
+        "persisted long backoff should skip the HTTP request"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
 async fn client_bounds_sustained_429_and_persists_backoff() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

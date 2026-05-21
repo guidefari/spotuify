@@ -10,6 +10,9 @@ use crate::{parse_lrc, plain_text_lines, LyricsError};
 
 static NEXT_LRCLIB_REQUEST: OnceLock<Mutex<Instant>> = OnceLock::new();
 
+const MIN_REQUEST_SPACING: Duration = Duration::from_millis(500);
+const MAX_IN_REQUEST_RATE_LIMIT_SLEEP: Duration = Duration::from_secs(5);
+
 #[derive(Clone)]
 pub struct LrclibProvider {
     http: reqwest::Client,
@@ -104,13 +107,14 @@ impl LrclibProvider {
         F: FnMut() -> reqwest::RequestBuilder,
     {
         for attempt in 0..=1 {
-            wait_rate_limit().await;
+            wait_rate_limit().await?;
             let resp = make_request().send().await?;
             if resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
                 return Ok(resp);
             }
-            apply_rate_limit_backoff(retry_after_duration(resp.headers().get(RETRY_AFTER))).await;
-            if attempt == 1 {
+            let delay = retry_after_duration(resp.headers().get(RETRY_AFTER));
+            apply_rate_limit_backoff(delay).await;
+            if attempt == 1 || delay > MAX_IN_REQUEST_RATE_LIMIT_SLEEP {
                 return Err(LyricsError::RateLimited);
             }
         }
@@ -118,16 +122,25 @@ impl LrclibProvider {
     }
 }
 
-async fn wait_rate_limit() {
-    let mut next = NEXT_LRCLIB_REQUEST
-        .get_or_init(|| Mutex::new(Instant::now()))
-        .lock()
-        .await;
-    let now = Instant::now();
-    if *next > now {
-        tokio::time::sleep(*next - now).await;
+async fn wait_rate_limit() -> Result<(), LyricsError> {
+    loop {
+        let delay = {
+            let mut next = NEXT_LRCLIB_REQUEST
+                .get_or_init(|| Mutex::new(Instant::now()))
+                .lock()
+                .await;
+            let now = Instant::now();
+            if *next <= now {
+                *next = now + MIN_REQUEST_SPACING;
+                return Ok(());
+            }
+            *next - now
+        };
+        if delay > MAX_IN_REQUEST_RATE_LIMIT_SLEEP {
+            return Err(LyricsError::RateLimited);
+        }
+        tokio::time::sleep(delay).await;
     }
-    *next = Instant::now() + Duration::from_millis(500);
 }
 
 async fn apply_rate_limit_backoff(delay: Duration) {
@@ -147,6 +160,24 @@ fn retry_after_duration(header: Option<&HeaderValue>) -> Duration {
         .and_then(|value| value.parse::<u64>().ok())
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(1))
+}
+
+#[cfg(test)]
+async fn set_rate_limit_for_tests(delay: Duration) {
+    let mut next = NEXT_LRCLIB_REQUEST
+        .get_or_init(|| Mutex::new(Instant::now()))
+        .lock()
+        .await;
+    *next = Instant::now() + delay;
+}
+
+#[cfg(test)]
+async fn reset_rate_limit_for_tests() {
+    let mut next = NEXT_LRCLIB_REQUEST
+        .get_or_init(|| Mutex::new(Instant::now()))
+        .lock()
+        .await;
+    *next = Instant::now();
 }
 
 async fn response_to_lyrics(
@@ -208,6 +239,8 @@ mod tests {
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    static LRCLIB_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
     #[test]
     fn exact_synced_row_maps_to_synced_lyrics() {
         let row = LrclibResponse {
@@ -247,6 +280,8 @@ mod tests {
 
     #[tokio::test]
     async fn exact_request_retries_once_after_429_retry_after() {
+        let _guard = LRCLIB_TEST_LOCK.get_or_init(|| Mutex::new(())).lock().await;
+        reset_rate_limit_for_tests().await;
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/get"))
@@ -278,6 +313,22 @@ mod tests {
             .await
             .expect("wiremock should expose received requests");
         assert_eq!(requests.len(), 2);
+        reset_rate_limit_for_tests().await;
+    }
+
+    #[tokio::test]
+    async fn long_global_rate_limit_returns_without_sleeping() {
+        let _guard = LRCLIB_TEST_LOCK.get_or_init(|| Mutex::new(())).lock().await;
+        reset_rate_limit_for_tests().await;
+        set_rate_limit_for_tests(Duration::from_secs(3600)).await;
+
+        let err = tokio::time::timeout(Duration::from_millis(100), wait_rate_limit())
+            .await
+            .expect("long provider backoff should not sleep inside request")
+            .expect_err("long provider backoff should surface rate limited");
+
+        assert!(matches!(err, LyricsError::RateLimited));
+        reset_rate_limit_for_tests().await;
     }
 
     #[allow(dead_code)]

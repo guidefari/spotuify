@@ -42,9 +42,6 @@ pub enum Priority {
 }
 
 /// Maximum retry attempts on transient errors (5xx, single-shot Network).
-/// 429 retries are governed by the Retry-After header and reset the
-/// attempt counter so a client behind a sustained rate-limit doesn't
-/// give up after 3 tries.
 pub const MAX_TRANSIENT_RETRIES: u32 = 3;
 
 /// Bounded 429 retry count inside one user-visible request.
@@ -53,6 +50,14 @@ pub const MAX_TRANSIENT_RETRIES: u32 = 3;
 /// `Retry-After`, but a single CLI/TUI action must not sleep forever
 /// behind a sustained upstream rate limit.
 pub const MAX_RATE_LIMIT_RETRIES: u32 = 3;
+
+/// Maximum `Retry-After` we will sleep inside one request.
+///
+/// Longer cooldowns are still persisted and returned as typed
+/// `RateLimited` errors. Sleeping for Spotify's occasional hour-long
+/// cooldown inside setup, search, or transport commands makes the
+/// process look hung.
+pub const MAX_IN_REQUEST_RATE_LIMIT_SLEEP: Duration = Duration::from_secs(5);
 
 /// Exponential backoff base. Each attempt multiplies by 2 with ±25%
 /// jitter applied multiplicatively.
@@ -285,7 +290,7 @@ impl RateLimitedClient {
         let mut attempt = 0_u32;
         let mut rate_limit_attempt = 0_u32;
         loop {
-            self.sleep_until_eligible(scope).await;
+            self.sleep_until_eligible(scope).await?;
 
             let send_result = {
                 let _permit = match priority {
@@ -360,7 +365,9 @@ impl RateLimitedClient {
                     if status == 429 {
                         self.record_rate_limit(scope, now.timestamp_millis(), delay);
                         rate_limit_attempt += 1;
-                        if rate_limit_attempt >= MAX_RATE_LIMIT_RETRIES {
+                        if rate_limit_attempt >= MAX_RATE_LIMIT_RETRIES
+                            || delay > MAX_IN_REQUEST_RATE_LIMIT_SLEEP
+                        {
                             return Err(classify_response(
                                 status,
                                 retry_after.as_deref(),
@@ -390,14 +397,22 @@ impl RateLimitedClient {
         })
     }
 
-    async fn sleep_until_eligible(&self, scope: &str) {
+    async fn sleep_until_eligible(&self, scope: &str) -> Result<(), SpotifyError> {
         let wait_ms = self
             .backoff
             .read()
             .wait_ms(scope, Utc::now().timestamp_millis());
         if wait_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(wait_ms as u64)).await;
+            let delay = Duration::from_millis(wait_ms as u64);
+            if delay > MAX_IN_REQUEST_RATE_LIMIT_SLEEP {
+                return Err(SpotifyError::RateLimited {
+                    retry_after: delay,
+                    scope: scope.to_string(),
+                });
+            }
+            tokio::time::sleep(delay).await;
         }
+        Ok(())
     }
 
     fn record_rate_limit(&self, scope: &str, now_ms: i64, retry_after: Duration) {
