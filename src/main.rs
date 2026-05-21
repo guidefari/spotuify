@@ -1617,7 +1617,7 @@ fn wait_for_enter(message: &str) -> Result<()> {
 
 fn handle_logs(command: LogsCommand) -> Result<()> {
     match command {
-        LogsCommand::Path => println!("{}", logging::log_path()?.display()),
+        LogsCommand::Path => println!("{}", logging::active_log_path()?.display()),
         LogsCommand::Tail {
             lines,
             follow,
@@ -1631,11 +1631,11 @@ fn handle_logs(command: LogsCommand) -> Result<()> {
                         "{}",
                         serde_json::json!({
                             "warning": "no log file",
-                            "path": logging::log_path()?.display().to_string()
+                            "path": logging::active_log_path()?.display().to_string()
                         })
                     );
                 } else {
-                    println!("no logs yet: {}", logging::log_path()?.display());
+                    println!("no logs yet: {}", logging::active_log_path()?.display());
                 }
             } else {
                 for line in logs.lines() {
@@ -1670,7 +1670,7 @@ fn emit_log_line(line: &str, json_mode: bool) {
 
 fn follow_log_file(json_mode: bool) -> Result<()> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
-    let path = logging::log_path()?;
+    let path = logging::active_log_path()?;
     let mut pos = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     if !json_mode {
         println!("--- Following {} (Ctrl-C to stop) ---", path.display());

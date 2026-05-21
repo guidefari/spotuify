@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -99,8 +99,16 @@ pub fn log_path() -> Result<PathBuf> {
     Ok(spotuify_protocol::paths::log_dir().join("spotuify.log"))
 }
 
+pub fn active_log_path() -> Result<PathBuf> {
+    let base = log_path()?;
+    let Some(dir) = base.parent() else {
+        return Ok(base);
+    };
+    newest_log_file(dir).map_or(Ok(base.clone()), Ok)
+}
+
 pub fn read_tail(lines: usize) -> Result<String> {
-    let path = log_path()?;
+    let path = active_log_path()?;
     if !path.exists() {
         return Ok(String::new());
     }
@@ -117,6 +125,32 @@ pub fn read_tail(lines: usize) -> Result<String> {
         .collect::<Vec<_>>()
         .join("\n");
     Ok(lines)
+}
+
+fn newest_log_file(dir: &Path) -> Option<PathBuf> {
+    let entries = fs::read_dir(dir).ok()?;
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("spotuify.log") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
+        match newest {
+            Some((current, _)) if modified <= current => {}
+            _ => newest = Some((modified, path)),
+        }
+    }
+    newest.map(|(_, path)| path)
 }
 
 #[cfg(test)]
@@ -139,6 +173,20 @@ mod tests {
         } else {
             std::env::remove_var("SPOTUIFY_LOG_DIR");
         }
+    }
+
+    #[test]
+    fn active_log_path_prefers_newest_rotated_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().join("spotuify.log");
+        let rotated = temp.path().join("spotuify.log.2026-05-21");
+        fs::write(&base, "old").expect("write base");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::write(&rotated, "new").expect("write rotated");
+
+        let active = newest_log_file(temp.path()).expect("active log");
+
+        assert_eq!(active, rotated);
     }
 
     #[test]

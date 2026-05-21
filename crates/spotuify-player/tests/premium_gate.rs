@@ -8,14 +8,15 @@
 //! - HTTP 401 → bubbles up as an Auth error, not a Denied — so we
 //!   don't tell Free users "premium required" when the real problem
 //!   is a missing token.
-//! - 30s response delay → bounded 5s timeout fires.
+//! - Hung account lookup → bounded 5s timeout fires.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use spotuify_player::backends::premium_gate::{
-    check_premium_then_init, GateError, HttpWebApiClient, PremiumDecision,
+    check_premium_then_init, GateError, HttpWebApiClient, MeResponse, PremiumDecision, WebApiClient,
 };
 use spotuify_player::PlayerError;
 use spotuify_spotify::client::user_agent_string;
@@ -24,6 +25,18 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn client(server: &MockServer) -> HttpWebApiClient {
     HttpWebApiClient::with_base_url(server.uri(), "test-token".to_string())
+}
+
+struct HangingClient;
+
+#[async_trait]
+impl WebApiClient for HangingClient {
+    async fn get_me(&self) -> Result<MeResponse, GateError> {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        Ok(MeResponse {
+            product: "premium".to_string(),
+        })
+    }
 }
 
 #[tokio::test]
@@ -147,19 +160,12 @@ async fn http_401_propagates_as_auth_error_not_denial() {
     assert!(matches!(err, GateError::Auth(_)), "got {err:?}");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn slow_response_times_out_within_five_seconds() {
     // Bounded timeout: 5s ceiling locks in so a hung Spotify can't
     // wedge daemon startup.
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/me"))
-        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
-        .mount(&server)
-        .await;
-
     let start = std::time::Instant::now();
-    let err = check_premium_then_init(&client(&server), || async { Ok::<_, PlayerError>(()) })
+    let err = check_premium_then_init(&HangingClient, || async { Ok::<_, PlayerError>(()) })
         .await
         .expect_err("hang must time out");
     let elapsed = start.elapsed();

@@ -121,7 +121,9 @@ where
     Fut: Future<Output = Result<(), E>>,
     E: std::fmt::Display,
 {
-    let me = client.get_me().await?;
+    let me = tokio::time::timeout(GATE_TIMEOUT, client.get_me())
+        .await
+        .map_err(|_| GateError::Timeout(GATE_TIMEOUT))??;
     if me.product == "premium" {
         if let Err(err) = init().await {
             // We surface init errors as a generic "network" failure

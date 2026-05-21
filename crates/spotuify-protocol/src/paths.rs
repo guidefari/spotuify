@@ -27,18 +27,43 @@ use std::path::{Path, PathBuf};
 /// without socket/cache/log/auth collisions. Override with
 /// `SPOTUIFY_INSTANCE`.
 pub fn app_instance_name() -> String {
+    let is_target_build = cfg!(debug_assertions) || current_exe_is_cargo_target_build();
     if let Some(name) = std::env::var_os("SPOTUIFY_INSTANCE") {
         if let Some(s) = name.to_str() {
             if !s.is_empty() {
-                return s.to_string();
+                return resolve_app_instance_name(
+                    Some(s),
+                    is_target_build,
+                    allow_prod_instance_from_target_build(),
+                );
             }
         }
     }
-    if cfg!(debug_assertions) || current_exe_is_cargo_target_build() {
+    resolve_app_instance_name(None, is_target_build, false)
+}
+
+fn resolve_app_instance_name(
+    override_name: Option<&str>,
+    is_target_build: bool,
+    allow_prod_instance_from_target_build: bool,
+) -> String {
+    if let Some(name) = override_name {
+        if is_target_build && name == "spotuify" && !allow_prod_instance_from_target_build {
+            return "spotuify-dev".to_string();
+        }
+        return name.to_string();
+    }
+    if is_target_build {
         "spotuify-dev".to_string()
     } else {
         "spotuify".to_string()
     }
+}
+
+fn allow_prod_instance_from_target_build() -> bool {
+    std::env::var("SPOTUIFY_ALLOW_PROD_INSTANCE_FROM_TARGET")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 fn current_exe_is_cargo_target_build() -> bool {
@@ -247,6 +272,7 @@ mod tests {
     fn app_instance_name_respects_override() {
         let _g = ENV_LOCK.lock().unwrap();
         std::env::set_var("SPOTUIFY_INSTANCE", "ci-job-42");
+        std::env::remove_var("SPOTUIFY_ALLOW_PROD_INSTANCE_FROM_TARGET");
         assert_eq!(app_instance_name(), "ci-job-42");
         std::env::remove_var("SPOTUIFY_INSTANCE");
     }
@@ -311,5 +337,21 @@ mod tests {
         assert!(!path_has_cargo_target_profile_ancestor(Path::new(
             "/opt/homebrew/bin/spotuify"
         )));
+    }
+
+    #[test]
+    fn target_build_cannot_use_prod_instance_by_accident() {
+        assert_eq!(
+            resolve_app_instance_name(Some("spotuify"), true, false),
+            "spotuify-dev"
+        );
+        assert_eq!(
+            resolve_app_instance_name(Some("spotuify-smoke"), true, false),
+            "spotuify-smoke"
+        );
+        assert_eq!(
+            resolve_app_instance_name(Some("spotuify"), true, true),
+            "spotuify"
+        );
     }
 }

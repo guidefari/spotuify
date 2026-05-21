@@ -713,7 +713,7 @@ pub async fn start_daemon(foreground: bool) -> Result<Option<DaemonStatus>> {
         {
             anyhow::bail!(
                 "spotuify daemon exited during startup with {status}; inspect {}",
-                crate::logging::log_path()
+                crate::logging::active_log_path()
                     .map(|path| path.display().to_string())
                     .unwrap_or_else(|_| "the daemon log".to_string())
             );
@@ -731,7 +731,7 @@ pub async fn start_daemon(foreground: bool) -> Result<Option<DaemonStatus>> {
                 {
                     anyhow::bail!(
                         "spotuify daemon exited during startup with {exit_status}; inspect {}",
-                        crate::logging::log_path()
+                        crate::logging::active_log_path()
                             .map(|path| path.display().to_string())
                             .unwrap_or_else(|_| "the daemon log".to_string())
                     );
@@ -777,7 +777,8 @@ pub async fn ensure_daemon_running() -> Result<()> {
     let status = daemon_status().await?;
     if status.running && status.socket_reachable {
         let current_build_id = current_build_id();
-        if status.daemon_build_id.as_deref() == Some(current_build_id.as_str()) {
+        let current_version = current_daemon_version();
+        if daemon_is_compatible_with_current_binary(&status, &current_build_id, current_version) {
             return Ok(());
         }
         // Phase 13 (P13-H) — even if the daemon is stale, refuse to
@@ -785,13 +786,16 @@ pub async fn ensure_daemon_running() -> Result<()> {
         // user can run `spotuify daemon restart` explicitly.
         if no_daemon_start() {
             anyhow::bail!(
-                "running daemon is stale (build {:?} vs {current_build_id}) and \
+                "running daemon is stale (version {:?}, build {:?} vs {current_version}, {current_build_id}) and \
                  --no-daemon-start is set; run `spotuify daemon restart` first",
+                status.daemon_version,
                 status.daemon_build_id,
             );
         }
         tracing::info!(
+            running_version = ?status.daemon_version,
             running_build_id = ?status.daemon_build_id,
+            current_version,
             current_build_id,
             "restarting stale spotuify daemon"
         );
@@ -1070,6 +1074,18 @@ pub(crate) fn current_build_id() -> String {
     format!("{version}:{}:{}:{modified}", path.display(), meta.len())
 }
 
+fn daemon_is_compatible_with_current_binary(
+    status: &DaemonStatus,
+    current_build_id: &str,
+    current_version: &str,
+) -> bool {
+    if status.daemon_build_id.as_deref() == Some(current_build_id) {
+        return true;
+    }
+    status.protocol_version == IPC_PROTOCOL_VERSION
+        && status.daemon_version.as_deref() == Some(current_version)
+}
+
 /// Phase 12 (P12.7) — background retention loop.
 ///
 /// Wakes once a day and prunes:
@@ -1153,6 +1169,21 @@ async fn run_retention_once(state: &DaemonState) {
 mod tests {
     use super::*;
 
+    fn daemon_status_for_version(version: Option<&str>, build: Option<&str>) -> DaemonStatus {
+        DaemonStatus {
+            running: true,
+            socket_path: "/tmp/spotuify.sock".to_string(),
+            socket_exists: true,
+            socket_reachable: true,
+            stale_socket: false,
+            daemon_pid: Some(42),
+            uptime_secs: Some(1),
+            protocol_version: IPC_PROTOCOL_VERSION,
+            daemon_version: version.map(str::to_string),
+            daemon_build_id: build.map(str::to_string),
+        }
+    }
+
     #[test]
     fn status_without_running_daemon_marks_stale_socket() {
         let status =
@@ -1161,5 +1192,38 @@ mod tests {
         assert!(!status.running);
         assert!(status.stale_socket);
         assert!(!status.socket_reachable);
+    }
+
+    #[test]
+    fn same_version_daemon_is_compatible_even_when_binary_path_differs() {
+        let status = daemon_status_for_version(Some("1.2.3"), Some("1.2.3:/opt/homebrew/bin"));
+
+        assert!(daemon_is_compatible_with_current_binary(
+            &status,
+            "1.2.3:/tmp/cargo-install/bin",
+            "1.2.3"
+        ));
+    }
+
+    #[test]
+    fn different_version_daemon_is_stale_unless_build_id_matches() {
+        let status = daemon_status_for_version(Some("1.2.2"), Some("1.2.2:/opt/homebrew/bin"));
+
+        assert!(!daemon_is_compatible_with_current_binary(
+            &status,
+            "1.2.3:/opt/homebrew/bin",
+            "1.2.3"
+        ));
+    }
+
+    #[test]
+    fn exact_build_id_match_is_compatible_for_older_status_payloads() {
+        let status = daemon_status_for_version(None, Some("1.2.3:/opt/homebrew/bin"));
+
+        assert!(daemon_is_compatible_with_current_binary(
+            &status,
+            "1.2.3:/opt/homebrew/bin",
+            "1.2.3"
+        ));
     }
 }
