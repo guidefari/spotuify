@@ -9,6 +9,7 @@ ExecStart=%h/.cargo/bin/spotuify daemon start --foreground
 Restart=on-failure
 RestartSec=5s
 Environment=SPOTUIFY_LOG=spotuify=info
+Environment=SPOTUIFY_INSTANCE=spotuify
 # Back-compat: the daemon still honors RUST_LOG as a fallback so anyone
 # who has overlaid this unit can keep their tuning.
 # Spotuify writes its socket under XDG_RUNTIME_DIR. Make sure it points

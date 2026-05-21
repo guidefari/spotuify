@@ -322,7 +322,7 @@ enum Command {
         #[command(subcommand)]
         command: LogsCommand,
     },
-    /// Read or write ~/.config/spotuify/spotuify.toml.
+    /// Read or write the current instance config file.
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -1177,18 +1177,26 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
 /// Phase 11 (P11.4) — register the daemon as a platform-appropriate
 /// auto-start service. macOS: launchd LaunchAgent. Linux: systemd
 /// `--user` unit. Windows: Task Scheduler logon trigger. Each path
-/// drops the bundled file from `install/` into the right home dir
-/// and invokes the platform's `enable` command.
+/// writes an instance-specific service definition into the right home
+/// dir and invokes the platform's `enable` command.
 fn install_platform_service() -> Result<()> {
+    let instance = spotuify_protocol::paths::app_instance_name();
+    let exe = std::env::current_exe()
+        .context("failed to resolve current executable for service install")?;
+
     #[cfg(target_os = "macos")]
     {
         let agents = dirs::home_dir()
             .ok_or_else(|| anyhow::anyhow!("no home dir"))?
             .join("Library/LaunchAgents");
         std::fs::create_dir_all(&agents).context("could not create ~/Library/LaunchAgents")?;
-        let dest = agents.join("dev.spotuify.daemon.plist");
-        let src = find_install_file("launchd/dev.spotuify.daemon.plist")?;
-        std::fs::copy(&src, &dest).with_context(|| format!("copy {src:?} → {dest:?} failed"))?;
+        if instance != "spotuify" {
+            remove_legacy_dev_launchd_agent(&agents)?;
+        }
+        let label = launchd_label(&instance);
+        let dest = agents.join(format!("{label}.plist"));
+        std::fs::write(&dest, launchd_plist(&label, &exe, &instance))
+            .with_context(|| format!("write {dest:?} failed"))?;
         // launchctl bootstrap loads the agent into the current user's
         // GUI session; idempotent — re-running prints "already loaded".
         let uid = std::process::Command::new("id").arg("-u").output()?;
@@ -1206,7 +1214,7 @@ fn install_platform_service() -> Result<()> {
                 status
             );
         }
-        println!("Installed launchd agent: {dest:?}");
+        println!("Installed launchd agent for {instance}: {dest:?}");
         return Ok(());
     }
 
@@ -1216,41 +1224,42 @@ fn install_platform_service() -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("no config dir"))?
             .join("systemd/user");
         std::fs::create_dir_all(&units).context("could not create ~/.config/systemd/user")?;
-        let dest = units.join("spotuify-daemon.service");
-        let src = find_install_file("systemd/user/spotuify-daemon.service")?;
-        std::fs::copy(&src, &dest).with_context(|| format!("copy {src:?} → {dest:?} failed"))?;
+        let unit_name = systemd_unit_name(&instance);
+        let dest = units.join(format!("{unit_name}.service"));
+        std::fs::write(&dest, systemd_unit(&exe, &instance))
+            .with_context(|| format!("write {dest:?} failed"))?;
         std::process::Command::new("systemctl")
             .args(["--user", "daemon-reload"])
             .status()
             .ok();
         let status = std::process::Command::new("systemctl")
-            .args(["--user", "enable", "--now", "spotuify-daemon"])
+            .args(["--user", "enable", "--now", &unit_name])
             .status()?;
         if !status.success() {
-            anyhow::bail!("`systemctl --user enable --now spotuify-daemon` failed");
+            anyhow::bail!("`systemctl --user enable --now {unit_name}` failed");
         }
-        println!("Installed systemd user unit: {dest:?}");
+        println!("Installed systemd user unit for {instance}: {dest:?}");
         println!("Tip: enable lingering with `sudo loginctl enable-linger $USER`");
         return Ok(());
     }
 
     #[cfg(target_os = "windows")]
     {
-        let src = find_install_file("windows/spotuify-daemon-task.xml")?;
+        let task_name = windows_task_name(&instance);
+        let task_run = format!(
+            "cmd /C set \"SPOTUIFY_INSTANCE={}\" && \"{}\" daemon start --foreground",
+            instance,
+            exe.display()
+        );
         let status = std::process::Command::new("schtasks")
             .args([
-                "/Create",
-                "/TN",
-                "spotuify-daemon",
-                "/XML",
-                src.to_str().unwrap_or_default(),
-                "/F",
+                "/Create", "/TN", &task_name, "/SC", "ONLOGON", "/TR", &task_run, "/F",
             ])
             .status()?;
         if !status.success() {
             anyhow::bail!("`schtasks /Create` failed (status {status})");
         }
-        println!("Installed Windows Task Scheduler entry: spotuify-daemon");
+        println!("Installed Windows Task Scheduler entry for {instance}: {task_name}");
         return Ok(());
     }
 
@@ -1261,38 +1270,45 @@ fn install_platform_service() -> Result<()> {
 }
 
 fn uninstall_platform_service() -> Result<()> {
+    let instance = spotuify_protocol::paths::app_instance_name();
+
     #[cfg(target_os = "macos")]
     {
+        let label = launchd_label(&instance);
         let uid = std::process::Command::new("id").arg("-u").output()?;
         let uid = String::from_utf8_lossy(&uid.stdout).trim().to_string();
         let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &format!("gui/{uid}/dev.spotuify.daemon")])
+            .args(["bootout", &format!("gui/{uid}/{label}")])
             .status();
         let path = dirs::home_dir()
             .ok_or_else(|| anyhow::anyhow!("no home dir"))?
-            .join("Library/LaunchAgents/dev.spotuify.daemon.plist");
+            .join("Library/LaunchAgents")
+            .join(format!("{label}.plist"));
         let _ = std::fs::remove_file(&path);
-        println!("Removed launchd agent: {path:?}");
+        println!("Removed launchd agent for {instance}: {path:?}");
         return Ok(());
     }
     #[cfg(target_os = "linux")]
     {
+        let unit_name = systemd_unit_name(&instance);
         let _ = std::process::Command::new("systemctl")
-            .args(["--user", "disable", "--now", "spotuify-daemon"])
+            .args(["--user", "disable", "--now", &unit_name])
             .status();
         let path = dirs::config_dir()
             .ok_or_else(|| anyhow::anyhow!("no config dir"))?
-            .join("systemd/user/spotuify-daemon.service");
+            .join("systemd/user")
+            .join(format!("{unit_name}.service"));
         let _ = std::fs::remove_file(&path);
-        println!("Removed systemd user unit: {path:?}");
+        println!("Removed systemd user unit for {instance}: {path:?}");
         return Ok(());
     }
     #[cfg(target_os = "windows")]
     {
+        let task_name = windows_task_name(&instance);
         let _ = std::process::Command::new("schtasks")
-            .args(["/Delete", "/TN", "spotuify-daemon", "/F"])
+            .args(["/Delete", "/TN", &task_name, "/F"])
             .status();
-        println!("Removed Windows Task Scheduler entry: spotuify-daemon");
+        println!("Removed Windows Task Scheduler entry for {instance}: {task_name}");
         return Ok(());
     }
     #[allow(unreachable_code)]
@@ -1301,22 +1317,126 @@ fn uninstall_platform_service() -> Result<()> {
     }
 }
 
-/// Locate a bundled service file in `install/` relative to the
-/// running binary. Walks up from `current_exe` so the same lookup
-/// works for `cargo run`, an installed `/usr/local/bin/spotuify`,
-/// and a Homebrew Cellar layout.
-fn find_install_file(relative: &str) -> Result<PathBuf> {
-    let exe = std::env::current_exe()?;
-    for base in exe.ancestors() {
-        let candidate = base.join("install").join(relative);
-        if candidate.exists() {
-            return Ok(candidate);
-        }
+#[cfg(target_os = "macos")]
+fn launchd_label(instance: &str) -> String {
+    if instance == "spotuify" {
+        "com.planetaryescape.spotuify.daemon".to_string()
+    } else {
+        format!("com.planetaryescape.{instance}.daemon")
     }
-    anyhow::bail!(
-        "could not find install/{relative} relative to the running binary; \
-         reinstall spotuify from a release tarball that ships install/"
+}
+
+#[cfg(target_os = "macos")]
+fn launchd_plist(label: &str, exe: &Path, instance: &str) -> String {
+    let stdout = format!("/tmp/{instance}-daemon.log");
+    let stderr = format!("/tmp/{instance}-daemon.err");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exe}</string>
+        <string>daemon</string>
+        <string>start</string>
+        <string>--foreground</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{stdout}</string>
+    <key>StandardErrorPath</key>
+    <string>{stderr}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SPOTUIFY_INSTANCE</key>
+        <string>{instance}</string>
+        <key>SPOTUIFY_LOG</key>
+        <string>spotuify=info</string>
+    </dict>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>
+"#,
+        label = xml_escape(label),
+        exe = xml_escape(&exe.display().to_string()),
+        stdout = xml_escape(&stdout),
+        stderr = xml_escape(&stderr),
+        instance = xml_escape(instance),
     )
+}
+
+#[cfg(target_os = "macos")]
+fn remove_legacy_dev_launchd_agent(agents: &Path) -> Result<()> {
+    let uid = std::process::Command::new("id").arg("-u").output()?;
+    let uid = String::from_utf8_lossy(&uid.stdout).trim().to_string();
+    let _ = std::process::Command::new("launchctl")
+        .args(["bootout", &format!("gui/{uid}/dev.spotuify.daemon")])
+        .status();
+    let _ = std::fs::remove_file(agents.join("dev.spotuify.daemon.plist"));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_unit_name(instance: &str) -> String {
+    if instance == "spotuify" {
+        "spotuify-daemon".to_string()
+    } else {
+        format!("{instance}-daemon")
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_unit(exe: &Path, instance: &str) -> String {
+    format!(
+        "[Unit]\n\
+         Description=spotuify daemon ({instance})\n\
+         After=network-online.target\n\
+         Wants=network-online.target\n\
+         \n\
+         [Service]\n\
+         Type=simple\n\
+         ExecStart={} daemon start --foreground\n\
+         Restart=on-failure\n\
+         RestartSec=5s\n\
+         Environment=SPOTUIFY_INSTANCE={instance}\n\
+         Environment=SPOTUIFY_LOG=spotuify=info\n\
+         PrivateTmp=false\n\
+         \n\
+         [Install]\n\
+         WantedBy=default.target\n",
+        systemd_quote(&exe.display().to_string()),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_task_name(instance: &str) -> String {
+    if instance == "spotuify" {
+        "spotuify-daemon".to_string()
+    } else {
+        format!("{instance}-daemon")
+    }
 }
 
 async fn spotify_client(config: Config, source: AnalyticsSource) -> Result<SpotifyClient> {

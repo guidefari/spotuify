@@ -1362,11 +1362,7 @@ fn rate_limit_bucket_path() -> PathBuf {
     if let Some(path) = std::env::var_os("SPOTUIFY_RUNTIME_DIR") {
         return PathBuf::from(path).join("spotify-rate-limit.json");
     }
-    dirs::cache_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join(".cache")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("spotuify")
-        .join("spotify-rate-limit.json")
+    spotuify_protocol::paths::runtime_dir().join("spotify-rate-limit.json")
 }
 
 fn endpoint_scope(method: &Method, path: &str) -> String {

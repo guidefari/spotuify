@@ -96,23 +96,7 @@ fn resolve_log_filter() -> EnvFilter {
 }
 
 pub fn log_path() -> Result<PathBuf> {
-    // `SPOTUIFY_LOG_DIR` was previously declared in `spotuify_protocol::paths::log_dir`
-    // but the daemon's `log_path()` ignored it. Honor it here so integration tests
-    // and packagers can redirect logs into a sandbox.
-    if let Some(dir) = std::env::var_os("SPOTUIFY_LOG_DIR") {
-        return Ok(PathBuf::from(dir).join("spotuify.log"));
-    }
-
-    if cfg!(target_os = "macos") {
-        return dirs::home_dir()
-            .map(|home| home.join("Library/Logs/spotuify/spotuify.log"))
-            .context("could not resolve home directory");
-    }
-
-    dirs::cache_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join(".cache")))
-        .map(|dir| dir.join("spotuify/spotuify.log"))
-        .context("could not resolve cache directory")
+    Ok(spotuify_protocol::paths::log_dir().join("spotuify.log"))
 }
 
 pub fn read_tail(lines: usize) -> Result<String> {

@@ -457,11 +457,17 @@ impl PlayerConfig {
                 return name.to_string();
             }
         }
-        std::env::var("HOSTNAME")
+        let instance = spotuify_protocol::paths::app_instance_name();
+        let fallback = std::env::var("HOSTNAME")
             .or_else(|_| std::env::var("COMPUTERNAME"))
             .ok()
             .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| "spotuify".to_string())
+            .unwrap_or_else(|| instance.clone());
+        if instance == "spotuify" || fallback.contains(&instance) {
+            fallback
+        } else {
+            format!("{fallback}-{instance}")
+        }
     }
 
     /// Validate a `[player]` section without mutating state. Returns
@@ -670,10 +676,7 @@ pub fn config_path() -> SpotifyResult<PathBuf> {
         return Ok(PathBuf::from(path));
     }
 
-    Ok(dirs::config_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
-        .map(|dir| dir.join("spotuify/spotuify.toml"))
-        .ok_or_else(|| anyhow!("could not resolve config directory"))?)
+    Ok(spotuify_protocol::paths::config_dir().join("spotuify.toml"))
 }
 
 pub fn init_config() -> SpotifyResult<PathBuf> {
@@ -1241,6 +1244,25 @@ bitrate = 320
         assert!(gitignore.contains("*.json"));
         assert!(gitignore.contains("credentials.*"));
         assert!(gitignore.contains("*.encrypted"));
+    }
+
+    #[test]
+    fn effective_device_name_suffixes_unconfigured_dev_instance() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let old_instance = std::env::var_os("SPOTUIFY_INSTANCE");
+        let old_host = std::env::var_os("HOSTNAME");
+        let old_computer = std::env::var_os("COMPUTERNAME");
+        std::env::set_var("SPOTUIFY_INSTANCE", "spotuify-dev");
+        std::env::set_var("HOSTNAME", "studio");
+        std::env::remove_var("COMPUTERNAME");
+
+        let name = super::PlayerConfig::default().effective_device_name();
+
+        restore_env("SPOTUIFY_INSTANCE", old_instance);
+        restore_env("HOSTNAME", old_host);
+        restore_env("COMPUTERNAME", old_computer);
+
+        assert_eq!(name, "studio-spotuify-dev");
     }
 }
 

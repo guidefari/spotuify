@@ -9,20 +9,23 @@
 //! and ncspot's v1.0.0 socket-path lesson — never put sockets in the
 //! cache dir):
 //!
-//! - **macOS**: `~/Library/Application Support/spotuify/`.
-//! - **Linux**: `$XDG_RUNTIME_DIR/spotuify/` → `/run/user/<uid>/spotuify/`
-//!   → `/tmp/spotuify-<uid>/` (in that order, first writable wins).
-//! - **Windows**: `%LOCALAPPDATA%\spotuify\` for files; named pipe
-//!   `\\.\pipe\spotuify-<username>` for the IPC socket.
+//! - **macOS**: `~/Library/Application Support/<instance>/`.
+//! - **Linux**: `$XDG_RUNTIME_DIR/<instance>/` → `/run/user/<uid>/<instance>/`
+//!   → `/tmp/<instance>-<uid>/` (in that order, first writable wins).
+//! - **Windows**: `%LOCALAPPDATA%\<instance>\` for files; named pipe
+//!   `\\.\pipe\<instance>-<username>` for the IPC socket.
 //!
 //! Every path can be overridden via the matching `SPOTUIFY_*` env var
 //! so integration tests can hop into a temp directory.
 
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
-/// Per-build instance suffix. Debug builds get `-dev` so a developer
-/// can run both a stable installed binary and a `cargo run` next to it
-/// without socket collisions. Override with `SPOTUIFY_INSTANCE`.
+/// Per-build instance name. Debug builds and binaries run from Cargo's
+/// `target/{debug,release}` tree get `spotuify-dev` so a developer can
+/// run both a stable installed binary and a local build next to it
+/// without socket/cache/log/auth collisions. Override with
+/// `SPOTUIFY_INSTANCE`.
 pub fn app_instance_name() -> String {
     if let Some(name) = std::env::var_os("SPOTUIFY_INSTANCE") {
         if let Some(s) = name.to_str() {
@@ -31,11 +34,54 @@ pub fn app_instance_name() -> String {
             }
         }
     }
-    if cfg!(debug_assertions) {
+    if cfg!(debug_assertions) || current_exe_is_cargo_target_build() {
         "spotuify-dev".to_string()
     } else {
         "spotuify".to_string()
     }
+}
+
+fn current_exe_is_cargo_target_build() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    path_has_cargo_target_profile_ancestor(&exe)
+}
+
+fn path_has_cargo_target_profile_ancestor(path: &Path) -> bool {
+    let mut dir = path.parent();
+    while let Some(current) = dir {
+        let Some(name) = current.file_name() else {
+            dir = current.parent();
+            continue;
+        };
+        if (name == OsStr::new("debug") || name == OsStr::new("release"))
+            && has_target_parent(current)
+        {
+            return true;
+        }
+        dir = current.parent();
+    }
+    false
+}
+
+fn has_target_parent(profile_dir: &Path) -> bool {
+    let Some(parent) = profile_dir.parent() else {
+        return false;
+    };
+    if parent.file_name().is_some_and(is_cargo_target_dir_name) {
+        return true;
+    }
+    parent
+        .parent()
+        .and_then(|grandparent| grandparent.file_name())
+        .is_some_and(is_cargo_target_dir_name)
+}
+
+fn is_cargo_target_dir_name(name: &OsStr) -> bool {
+    let name = name.to_string_lossy();
+    name == "target" || name.starts_with("target-")
 }
 
 /// Where the daemon places its runtime state (socket, pid file). Per
@@ -103,9 +149,9 @@ pub fn data_dir() -> PathBuf {
         .join(&instance)
 }
 
-/// User config directory. `~/.config/spotuify/` on Linux,
-/// `~/Library/Application Support/spotuify/` on macOS,
-/// `%APPDATA%\spotuify\` on Windows.
+/// User config directory. `~/.config/<instance>/` on Linux,
+/// `~/Library/Application Support/<instance>/` on macOS,
+/// `%APPDATA%\<instance>\` on Windows.
 pub fn config_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("SPOTUIFY_CONFIG_DIR") {
         return PathBuf::from(path);
@@ -130,12 +176,20 @@ pub fn cache_dir() -> PathBuf {
         .join(&instance)
 }
 
-/// Where structured logs are written. Defaults under `data_dir/logs`.
+/// Where structured logs are written.
 pub fn log_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("SPOTUIFY_LOG_DIR") {
         return PathBuf::from(path);
     }
-    data_dir().join("logs")
+    let instance = app_instance_name();
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = dirs::home_dir() {
+            return home.join("Library/Logs").join(instance);
+        }
+    }
+
+    cache_dir()
 }
 
 /// IPC socket path / named-pipe address.
@@ -241,5 +295,21 @@ mod tests {
         std::env::set_var("SPOTUIFY_DATA_DIR", "/tmp/spotuify-data-test");
         assert_eq!(data_dir(), PathBuf::from("/tmp/spotuify-data-test"));
         std::env::remove_var("SPOTUIFY_DATA_DIR");
+    }
+
+    #[test]
+    fn target_profile_paths_are_classified_as_dev_builds() {
+        assert!(path_has_cargo_target_profile_ancestor(Path::new(
+            "/repo/target/release/spotuify"
+        )));
+        assert!(path_has_cargo_target_profile_ancestor(Path::new(
+            "/repo/target/aarch64-apple-darwin/release/spotuify"
+        )));
+        assert!(path_has_cargo_target_profile_ancestor(Path::new(
+            "/repo/target-cli/release/spotuify"
+        )));
+        assert!(!path_has_cargo_target_profile_ancestor(Path::new(
+            "/opt/homebrew/bin/spotuify"
+        )));
     }
 }

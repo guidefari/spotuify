@@ -11,12 +11,13 @@ Spotuify holds a hard contract: **every feature must be exposed via the CLI.** A
 The user maintains the live state of their machine and account; you have everything you need to verify your own changes:
 
 - **Build:** `cargo build --release --bin spotuify`
-- **Restart daemon:** `./target/release/spotuify daemon stop && ./target/release/spotuify daemon start`
+- **Runtime identity:** binaries run from `target/{debug,release}` default to `SPOTUIFY_INSTANCE=spotuify-dev`. Installed binaries default to `spotuify`. Override only when you intentionally want to target the other instance.
+- **Restart dev daemon:** `./target/release/spotuify daemon stop && ./target/release/spotuify daemon start`
 - **Run the failing case:** `./target/release/spotuify <subcommand>` (`search`, `play`, `queue add`, `playlists`, etc.)
-- **Read the daemon log:** `~/Library/Logs/spotuify/spotuify.log` — filter out tantivy noise with `grep -v tantivy`
-- **Auth token for raw Spotify probes:** `security find-generic-password -s spotuify -w` returns a JSON blob with `.access_token`. Pipe it to `curl -H "Authorization: Bearer $TOKEN" https://api.spotify.com/v1/...` to probe the upstream directly.
-- **Tantivy lockfile stuck:** `rm ~/Library/Application\ Support/spotuify/search_index/.tantivy-*.lock` after killing the daemon.
-- **Stray daemons:** `pkill -9 -f 'spotuify daemon'`. If the daemon won't start with a `LockBusy` error, that's the cause.
+- **Read the daemon log:** `./target/release/spotuify logs path` then tail that file; filter out tantivy noise with `grep -v tantivy`
+- **Auth token for raw Spotify probes:** dev target builds use keychain service `spotuify-dev`; installed prod uses `spotuify`. `security find-generic-password -s spotuify-dev -w` returns a JSON blob with `.access_token`. Pipe it to `curl -H "Authorization: Bearer $TOKEN" https://api.spotify.com/v1/...` to probe upstream directly.
+- **Tantivy lockfile stuck:** remove `.tantivy-*.lock` under the current instance `search_index` after stopping that instance's daemon.
+- **Stray daemons:** do not broad-`pkill` `spotuify daemon`; stop the current instance with its own binary/env so dev and prod do not kill each other.
 
 **Only ask the user when the case genuinely needs human judgment:** visual TUI verification, a Spotify-account-state question (e.g. "are you on Premium?"), or a product decision. If you find yourself guessing limit values, parameter shapes, or what an error means — stop, drive the case, and read the actual response. One direct empirical test usually replaces five rounds of guesses.
 

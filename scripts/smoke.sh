@@ -36,8 +36,14 @@ fi
 
 fake_spotuify() {
   SPOTUIFY_FAKE_SPOTIFY=1 \
+    SPOTUIFY_INSTANCE=spotuify-smoke \
     SPOTUIFY_RUNTIME_DIR="$fake_root/runtime" \
     SPOTUIFY_SOCKET="$fake_root/runtime/daemon.sock" \
+    SPOTUIFY_DATA_DIR="$fake_root/data" \
+    SPOTUIFY_CACHE_DIR="$fake_root/cache-dir" \
+    SPOTUIFY_CONFIG_DIR="$fake_root/config-dir" \
+    SPOTUIFY_LOG_DIR="$fake_root/logs" \
+    SPOTUIFY_KEYCHAIN_SERVICE=spotuify-smoke \
     SPOTUIFY_CACHE_DB="$fake_root/cache.sqlite" \
     SPOTUIFY_SEARCH_INDEX="$fake_root/index" \
     SPOTUIFY_ANALYTICS_DB="$fake_root/analytics.sqlite" \

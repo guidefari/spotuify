@@ -22,7 +22,6 @@ use crate::config::Config;
 use crate::error::{SpotifyError, SpotifyResult};
 use url::form_urlencoded;
 
-const KEYCHAIN_SERVICE: &str = "spotuify";
 const KEYCHAIN_USER: &str = "spotify";
 const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(20);
 const TOKEN_LOCK_TIMEOUT: Duration = Duration::from_secs(15);
@@ -160,13 +159,14 @@ fn keychain_get_token() -> Result<String, keychain::KeychainError> {
     #[cfg(test)]
     {
         Err(keychain::KeychainError::NoEntry {
-            service: KEYCHAIN_SERVICE.to_string(),
+            service: keychain_service(),
             account: KEYCHAIN_USER.to_string(),
         })
     }
     #[cfg(not(test))]
     {
-        keychain::get_password(KEYCHAIN_SERVICE, KEYCHAIN_USER)
+        let service = keychain_service();
+        keychain::get_password(&service, KEYCHAIN_USER)
     }
 }
 
@@ -178,7 +178,8 @@ fn keychain_set_token(raw: &str) -> Result<(), keychain::KeychainError> {
     }
     #[cfg(not(test))]
     {
-        keychain::set_password(KEYCHAIN_SERVICE, KEYCHAIN_USER, raw)
+        let service = keychain_service();
+        keychain::set_password(&service, KEYCHAIN_USER, raw)
     }
 }
 
@@ -189,8 +190,16 @@ fn keychain_delete_token() -> Result<(), keychain::KeychainError> {
     }
     #[cfg(not(test))]
     {
-        keychain::delete_password(KEYCHAIN_SERVICE, KEYCHAIN_USER)
+        let service = keychain_service();
+        keychain::delete_password(&service, KEYCHAIN_USER)
     }
+}
+
+fn keychain_service() -> String {
+    std::env::var("SPOTUIFY_KEYCHAIN_SERVICE")
+        .ok()
+        .filter(|service| !service.trim().is_empty())
+        .unwrap_or_else(spotuify_protocol::paths::app_instance_name)
 }
 
 fn delete_token(verbose: bool) -> AnyResult<()> {
@@ -535,15 +544,14 @@ fn load_token_bounded() -> AnyResult<Option<StoredToken>> {
 fn load_token_via_security_cli() -> AnyResult<Option<StoredToken>> {
     use std::process::{Command, Stdio};
 
+    let service = keychain_service();
     let mut child = Command::new("/usr/bin/security")
-        .args([
-            "find-generic-password",
-            "-s",
-            KEYCHAIN_SERVICE,
-            "-a",
-            KEYCHAIN_USER,
-            "-w",
-        ])
+        .arg("find-generic-password")
+        .arg("-s")
+        .arg(&service)
+        .arg("-a")
+        .arg(KEYCHAIN_USER)
+        .arg("-w")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()

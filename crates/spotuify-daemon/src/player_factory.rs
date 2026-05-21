@@ -53,10 +53,7 @@ fn build_embedded(
 ) -> Result<(Box<dyn PlayerBackend>, UnboundedReceiverStream<PlayerEvent>)> {
     use spotuify_player::backends::embedded::{EmbeddedBackend, EmbeddedCachePaths};
 
-    let cache_root = dirs::cache_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join(".cache")))
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("spotuify");
+    let cache_root = spotuify_protocol::paths::cache_dir();
     let paths = EmbeddedCachePaths::under(cache_root, config.player.audio_cache_mib);
     let token = Arc::new(DaemonTokenProvider::new(token_slot));
     let (backend, stream) = EmbeddedBackend::new_with_analyzer(paths, token, viz_analyzer)

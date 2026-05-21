@@ -21,6 +21,8 @@
     <string>/tmp/spotuify-daemon.err</string>
     <key>EnvironmentVariables</key>
     <dict>
+        <key>SPOTUIFY_INSTANCE</key>
+        <string>spotuify-dev</string>
         <key>SPOTUIFY_LOG</key>
         <string>spotuify=info</string>
     </dict>

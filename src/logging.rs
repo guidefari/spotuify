@@ -6,9 +6,8 @@ use std::io::Write;
 use std::path::PathBuf;
 
 /// Phase 13 (P13-B) — write a backtrace file when the process panics.
-/// Lands under `~/.cache/spotuify/backtrace/<unix_ts>-<pid>.log` (or
-/// macOS-equivalent) so the next start can surface "previous run
-/// crashed — see <path>" without losing the trace to the TUI altscreen.
+/// Lands under the current spotuify instance cache dir so dev/prod
+/// panic traces do not share state.
 pub fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -66,13 +65,7 @@ pub fn backtrace_log_path() -> Option<PathBuf> {
 }
 
 pub fn backtrace_dir() -> Option<PathBuf> {
-    if cfg!(target_os = "macos") {
-        dirs::home_dir().map(|h| h.join("Library/Caches/spotuify/backtrace"))
-    } else {
-        dirs::cache_dir()
-            .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
-            .map(|d| d.join("spotuify/backtrace"))
-    }
+    Some(spotuify_protocol::paths::cache_dir().join("backtrace"))
 }
 
 /// Phase 13 (P13-B) — surface a "previous run crashed" warning on next
@@ -140,7 +133,7 @@ mod tests {
 
     #[test]
     fn panic_backtrace_writer_records_payload_and_location() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let old_home = std::env::var_os("HOME");
         let old_cache = std::env::var_os("XDG_CACHE_HOME");
@@ -161,7 +154,7 @@ mod tests {
 
     #[test]
     fn surfaced_prior_panic_traces_are_deleted() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let old_home = std::env::var_os("HOME");
         let old_cache = std::env::var_os("XDG_CACHE_HOME");

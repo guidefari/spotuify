@@ -8,7 +8,7 @@
 //!
 //! ## Behaviour
 //!
-//! - **Cache dir**: `${cache_dir}/spotuify/covers/`.
+//! - **Cache dir**: `${spotuify_cache_dir}/covers/`.
 //! - **Filename**: `sha256(url)[..32].<ext>` where `ext` comes from the
 //!   HTTP `Content-Type` header (`image/jpeg → .jpg`, `png`, `webp`).
 //!   Any other content type is rejected.
@@ -45,16 +45,7 @@ pub struct CoverCacheConfig {
 
 impl Default for CoverCacheConfig {
     fn default() -> Self {
-        let root = if cfg!(target_os = "macos") {
-            dirs::home_dir()
-                .map(|h| h.join("Library/Caches/spotuify/covers"))
-                .unwrap_or_else(|| PathBuf::from("./spotuify-covers"))
-        } else {
-            dirs::cache_dir()
-                .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
-                .map(|d| d.join("spotuify/covers"))
-                .unwrap_or_else(|| PathBuf::from("./spotuify-covers"))
-        };
+        let root = spotuify_protocol::paths::cache_dir().join("covers");
         Self {
             root,
             ttl: DEFAULT_TTL,

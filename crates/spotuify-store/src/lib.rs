@@ -1752,20 +1752,14 @@ pub fn cache_db_path() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("SPOTUIFY_CACHE_DB") {
         return Ok(PathBuf::from(path));
     }
-    dirs::data_local_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join(".local/share")))
-        .map(|dir| dir.join("spotuify/cache.sqlite3"))
-        .ok_or_else(|| anyhow::anyhow!("could not resolve local data directory"))
+    Ok(spotuify_protocol::paths::data_dir().join("cache.sqlite3"))
 }
 
 pub fn search_index_path() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("SPOTUIFY_SEARCH_INDEX") {
         return Ok(PathBuf::from(path));
     }
-    dirs::data_local_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join(".local/share")))
-        .map(|dir| dir.join("spotuify/search_index"))
-        .ok_or_else(|| anyhow::anyhow!("could not resolve local data directory"))
+    Ok(spotuify_protocol::paths::data_dir().join("search_index"))
 }
 
 pub fn now_ms() -> i64 {

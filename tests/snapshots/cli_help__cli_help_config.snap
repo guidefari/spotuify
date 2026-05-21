@@ -2,7 +2,7 @@
 source: tests/cli_help.rs
 expression: normalize_help_output(&stdout)
 ---
-Read or write ~/.config/spotuify/spotuify.toml
+Read or write the current instance config file
 
 Usage: spotuify config [OPTIONS] <COMMAND>
 

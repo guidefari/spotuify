@@ -63,14 +63,11 @@ pub async fn run_daemon() -> Result<()> {
         SocketState::Missing => {}
     }
 
-    // Preflight: zombie cleanup. A previous `daemon start` run can
-    // crash during init (config error, audio backend failure, etc.)
-    // and orphan a process that still holds the Tantivy index lock.
-    // The next start then fails with `LockBusy` and silently exits.
-    // Detect any spotuify-daemon process other than us, terminate
-    // them, and clear stale tantivy lockfiles. Background: on
-    // 2026-05-17 a fresh daemon couldn't bind because 109 zombie
-    // processes from prior --foreground runs held the lock.
+    // Preflight: current-instance cleanup. A previous `daemon start`
+    // run can crash during init and orphan a process that still holds
+    // this instance's Tantivy index lock. Never kill broad
+    // `spotuify daemon` matches here: dev and prod daemons can
+    // intentionally coexist under different instance paths.
     cleanup_zombie_daemons();
     clear_stale_tantivy_locks();
 
@@ -970,27 +967,45 @@ fn clear_daemon_pid_file() {
     let _ = std::fs::remove_file(DaemonState::pid_path());
 }
 
-/// Kill orphaned spotuify daemon processes before binding the
-/// socket. A fresh start can otherwise fail with `LockBusy` on the
-/// Tantivy index lock because a previous run died during init
-/// without releasing it.
-///
-/// Strategy: walk `ps -ax -o pid,ppid,command`. A daemon is "orphaned"
-/// when its parent is init (PID 1) — that's where launchd / shell
-/// re-parents processes whose original parent already exited. Our
-/// own PID and our actual parent (the CLI that just spawned us)
-/// are skipped to avoid suicide. Send SIGTERM, wait 500 ms, then
-/// SIGKILL stragglers.
+/// Kill an orphaned daemon only when it is named by this instance's
+/// pidfile. A broad `ps | grep spotuify daemon` cleanup can kill a
+/// separately installed prod daemon when a local dev build starts.
 fn cleanup_zombie_daemons() {
     let me = std::process::id();
+    let Some(pid) = read_daemon_pid_file(&DaemonState::pid_path()) else {
+        return;
+    };
+    if pid == me || !is_orphaned_spotuify_daemon(pid) {
+        return;
+    }
+    tracing::warn!(
+        pid,
+        pid_file = %DaemonState::pid_path().display(),
+        "preflight: killing orphaned daemon for current spotuify instance"
+    );
+    let _ = std::process::Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let _ = std::process::Command::new("kill")
+        .args(["-KILL", &pid.to_string()])
+        .status();
+}
+
+fn read_daemon_pid_file(path: &Path) -> Option<u32> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+}
+
+fn is_orphaned_spotuify_daemon(target_pid: u32) -> bool {
     let Ok(output) = std::process::Command::new("ps")
         .args(["-ax", "-o", "pid=,ppid=,command="])
         .output()
     else {
-        return;
+        return false;
     };
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut victims = Vec::new();
     for line in stdout.lines() {
         let mut parts = line.trim_start().splitn(3, char::is_whitespace);
         let Some(pid_str) = parts.next() else {
@@ -1006,41 +1021,12 @@ fn cleanup_zombie_daemons() {
         let Ok(ppid) = ppid_str.trim().parse::<u32>() else {
             continue;
         };
-        if pid == me {
+        if pid != target_pid {
             continue;
         }
-        // Only consider truly orphaned processes (re-parented to
-        // init, PID 1). A spotuify daemon with a live parent is
-        // either the CLI that spawned us (so ppid != 1 — skipped)
-        // or a user-initiated `daemon start --foreground` running
-        // in a terminal (also ppid != 1 — skipped). Killing only
-        // ppid==1 keeps us conservative without needing libc.
-        if ppid != 1 {
-            continue;
-        }
-        if cmd.contains("spotuify") && cmd.contains("daemon") {
-            victims.push(pid);
-        }
+        return ppid == 1 && cmd.contains("spotuify") && cmd.contains("daemon");
     }
-    if victims.is_empty() {
-        return;
-    }
-    tracing::warn!(
-        count = victims.len(),
-        pids = ?victims,
-        "preflight: killing orphaned spotuify daemon processes"
-    );
-    for pid in &victims {
-        let _ = std::process::Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .status();
-    }
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    for pid in &victims {
-        let _ = std::process::Command::new("kill")
-            .args(["-KILL", &pid.to_string()])
-            .status();
-    }
+    false
 }
 
 /// Tantivy uses two `.tantivy-*.lock` files in the index directory.
@@ -1050,12 +1036,9 @@ fn cleanup_zombie_daemons() {
 /// stray daemons above, removing the files is safe — no live
 /// process holds them.
 fn clear_stale_tantivy_locks() {
-    let Some(base) = dirs::data_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join("Library/Application Support")))
-    else {
+    let Ok(index_dir) = spotuify_store::search_index_path() else {
         return;
     };
-    let index_dir = base.join("spotuify").join("search_index");
     for name in [".tantivy-writer.lock", ".tantivy-meta.lock"] {
         let path = index_dir.join(name);
         if path.exists() {

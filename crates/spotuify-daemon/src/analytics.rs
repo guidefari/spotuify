@@ -247,10 +247,7 @@ pub fn analytics_db_path() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("SPOTUIFY_ANALYTICS_DB") {
         return Ok(PathBuf::from(path));
     }
-    dirs::data_local_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join(".local/share")))
-        .map(|dir| dir.join("spotuify/analytics.sqlite3"))
-        .ok_or_else(|| anyhow::anyhow!("could not resolve analytics data directory"))
+    Ok(spotuify_protocol::paths::data_dir().join("analytics.sqlite3"))
 }
 
 // now_ms moved to spotuify_core::analytics; re-exported from this
