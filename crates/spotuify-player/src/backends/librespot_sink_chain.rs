@@ -182,13 +182,16 @@ where
 }
 
 pub fn default_librespot_sink_factory(
+    output_device: Option<String>,
     analyzer: Option<SharedAnalyzer>,
     counter: Arc<AudioCounterHandle>,
 ) -> Option<impl FnOnce() -> Box<dyn Sink> + Send + 'static> {
     let builder = librespot_playback::audio_backend::find(None)?;
     Some(move || {
         build_librespot_sink_chain(
-            move || builder(None, AudioFormat::default()),
+            // `output_device` is the local audio output device (a cpal
+            // output name for the rodio backend); `None` = system default.
+            move || builder(output_device.clone(), AudioFormat::default()),
             analyzer,
             counter,
             SinkBudget::default(),

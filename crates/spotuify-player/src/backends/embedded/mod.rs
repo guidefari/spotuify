@@ -107,6 +107,10 @@ pub struct EmbeddedBackend {
     events_tx: mpsc::UnboundedSender<PlayerEvent>,
     viz_analyzer: Option<SharedAnalyzer>,
     audio_counter: Arc<AudioCounterHandle>,
+    /// Local audio output device name to render to (matched against cpal
+    /// output device names by librespot's backend). `None` = system
+    /// default. Applied when the sink chain is built in `ensure_spirc`.
+    audio_output_device: Option<String>,
     state: Mutex<State>,
 }
 
@@ -134,13 +138,14 @@ impl EmbeddedBackend {
         paths: EmbeddedCachePaths,
         token: Arc<dyn TokenProvider>,
     ) -> PlayerResult<(Arc<Self>, UnboundedReceiverStream<PlayerEvent>)> {
-        Self::new_with_analyzer(paths, token, None)
+        Self::new_with_analyzer(paths, token, None, None)
     }
 
     pub fn new_with_analyzer(
         paths: EmbeddedCachePaths,
         token: Arc<dyn TokenProvider>,
         viz_analyzer: Option<SharedAnalyzer>,
+        audio_output_device: Option<String>,
     ) -> PlayerResult<(Arc<Self>, UnboundedReceiverStream<PlayerEvent>)> {
         // Phase 9.5 — make spotuify show up nicely in pavucontrol on
         // Linux. The env vars are inherited by librespot's audio
@@ -169,6 +174,7 @@ impl EmbeddedBackend {
             events_tx: tx,
             viz_analyzer,
             audio_counter: AudioCounterHandle::new(),
+            audio_output_device,
             state: Mutex::new(State::default()),
         });
         Ok((backend, UnboundedReceiverStream::new(rx)))
@@ -191,8 +197,12 @@ impl EmbeddedBackend {
     pub fn sink_builder(
         &self,
     ) -> PlayerResult<impl FnOnce() -> Box<dyn LibrespotSink> + Send + 'static> {
-        default_librespot_sink_factory(self.viz_analyzer.clone(), self.audio_counter.clone())
-            .ok_or_else(|| PlayerError::Playback("no librespot audio backend available".into()))
+        default_librespot_sink_factory(
+            self.audio_output_device.clone(),
+            self.viz_analyzer.clone(),
+            self.audio_counter.clone(),
+        )
+        .ok_or_else(|| PlayerError::Playback("no librespot audio backend available".into()))
     }
 
     fn credentials(&self) -> PlayerResult<Credentials> {

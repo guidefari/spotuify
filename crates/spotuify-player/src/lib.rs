@@ -24,6 +24,27 @@ pub use config::PlayerSettings;
 pub use events::PlayerEvent;
 pub use spotuify_core::BackendKind;
 
+/// Names of the local audio output devices the embedded player can render
+/// to, for the output-device picker. The names match what librespot's
+/// rodio backend expects (it looks devices up by cpal name). Returns an
+/// empty list when the active audio backend doesn't support enumeration.
+#[cfg(feature = "rodio-backend")]
+pub fn list_audio_outputs() -> Vec<String> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let mut names: Vec<String> = cpal::default_host()
+        .output_devices()
+        .map(|devices| devices.filter_map(|device| device.name().ok()).collect())
+        .unwrap_or_default();
+    names.sort();
+    names.dedup();
+    names
+}
+
+#[cfg(not(feature = "rodio-backend"))]
+pub fn list_audio_outputs() -> Vec<String> {
+    Vec::new()
+}
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 

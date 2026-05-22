@@ -382,6 +382,11 @@ pub(crate) struct PlayerSection {
     bitrate: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     device_name: Option<String>,
+    /// Local audio OUTPUT device the embedded player renders to (the
+    /// macOS/CoreAudio sink), distinct from `device_name` (the Spotify
+    /// Connect device name). `None` = system default output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audio_output_device: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     normalization: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -399,6 +404,9 @@ pub struct PlayerConfig {
     pub backend: BackendKind,
     pub bitrate: u32,
     pub device_name: Option<String>,
+    /// Local audio output device for the embedded player. `None` = system
+    /// default. See [`PlayerSection::audio_output_device`].
+    pub audio_output_device: Option<String>,
     pub normalization: bool,
     pub audio_cache_mib: u32,
     pub pulse_props: bool,
@@ -411,6 +419,7 @@ impl Default for PlayerConfig {
             backend: BackendKind::default(),
             bitrate: 320,
             device_name: None,
+            audio_output_device: None,
             normalization: false,
             audio_cache_mib: 0,
             pulse_props: true,
@@ -444,6 +453,7 @@ impl PlayerConfig {
             backend,
             bitrate,
             device_name: blank_to_none(section.device_name).or(legacy_device_name),
+            audio_output_device: blank_to_none(section.audio_output_device),
             normalization: section.normalization.unwrap_or(false),
             audio_cache_mib: section.audio_cache_mib.unwrap_or(0),
             pulse_props: section.pulse_props.unwrap_or(true),
@@ -496,6 +506,7 @@ impl From<PlayerConfig> for PlayerSection {
             backend: Some(value.backend.label().to_string()),
             bitrate: Some(value.bitrate),
             device_name: value.device_name,
+            audio_output_device: value.audio_output_device,
             normalization: Some(value.normalization),
             audio_cache_mib: Some(value.audio_cache_mib),
             pulse_props: Some(value.pulse_props),
@@ -513,6 +524,7 @@ pub enum ConfigKey {
     PlayerBackend,
     PlayerBitrate,
     PlayerDeviceName,
+    PlayerAudioOutputDevice,
     PlayerNormalization,
     PlayerAudioCacheMib,
     PlayerPulseProps,
@@ -540,6 +552,9 @@ impl ConfigKey {
             "player.backend" => Ok(Self::PlayerBackend),
             "player.bitrate" => Ok(Self::PlayerBitrate),
             "player.device_name" | "player.device-name" => Ok(Self::PlayerDeviceName),
+            "player.audio_output_device" | "player.audio-output-device" => {
+                Ok(Self::PlayerAudioOutputDevice)
+            }
             "player.normalization" => Ok(Self::PlayerNormalization),
             "player.audio_cache_mib" | "player.audio-cache-mib" => Ok(Self::PlayerAudioCacheMib),
             "player.pulse_props" | "player.pulse-props" => Ok(Self::PlayerPulseProps),
@@ -581,6 +596,7 @@ impl ConfigKey {
             "player.backend",
             "player.bitrate",
             "player.device_name",
+            "player.audio_output_device",
             "player.normalization",
             "player.audio_cache_mib",
             "player.pulse_props",
@@ -709,6 +725,7 @@ pub fn get_config_value(key: ConfigKey) -> SpotifyResult<Option<String>> {
         ConfigKey::PlayerBackend => Some(resolved.backend.label().to_string()),
         ConfigKey::PlayerBitrate => Some(resolved.bitrate.to_string()),
         ConfigKey::PlayerDeviceName => resolved.device_name,
+        ConfigKey::PlayerAudioOutputDevice => resolved.audio_output_device,
         ConfigKey::PlayerNormalization => Some(resolved.normalization.to_string()),
         ConfigKey::PlayerAudioCacheMib => Some(resolved.audio_cache_mib.to_string()),
         ConfigKey::PlayerPulseProps => Some(resolved.pulse_props.to_string()),
@@ -756,6 +773,10 @@ pub fn set_config_value(key: ConfigKey, value: &str) -> SpotifyResult<PathBuf> {
         }
         ConfigKey::PlayerDeviceName => {
             player_section_mut(&mut file).device_name = blank_to_none(Some(value.to_string()));
+        }
+        ConfigKey::PlayerAudioOutputDevice => {
+            player_section_mut(&mut file).audio_output_device =
+                blank_to_none(Some(value.to_string()));
         }
         ConfigKey::PlayerNormalization => {
             player_section_mut(&mut file).normalization = Some(parse_bool(value)?);
@@ -1397,6 +1418,7 @@ backend = "embeded"
             backend: BackendKind::Embedded,
             bitrate: 96,
             device_name: Some("kitchen".to_string()),
+            audio_output_device: Some("MacBook Pro Speakers".to_string()),
             normalization: true,
             audio_cache_mib: 128,
             pulse_props: false,
@@ -1488,6 +1510,7 @@ backend = "embeded"
             "player.backend",
             "player.bitrate",
             "player.device_name",
+            "player.audio_output_device",
             "player.normalization",
             "player.audio_cache_mib",
             "player.pulse_props",

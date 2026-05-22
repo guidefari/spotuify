@@ -56,8 +56,13 @@ fn build_embedded(
     let cache_root = spotuify_protocol::paths::cache_dir();
     let paths = EmbeddedCachePaths::under(cache_root, config.player.audio_cache_mib);
     let token = Arc::new(DaemonTokenProvider::new(token_slot));
-    let (backend, stream) = EmbeddedBackend::new_with_analyzer(paths, token, viz_analyzer)
-        .map_err(|err| anyhow::anyhow!("EmbeddedBackend init failed: {err}"))?;
+    let (backend, stream) = EmbeddedBackend::new_with_analyzer(
+        paths,
+        token,
+        viz_analyzer,
+        config.player.audio_output_device.clone(),
+    )
+    .map_err(|err| anyhow::anyhow!("EmbeddedBackend init failed: {err}"))?;
     // Arc<EmbeddedBackend> -> Box<dyn PlayerBackend> requires an owned
     // value. The factory holds the only reference at this point so
     // try_unwrap is infallible in practice.

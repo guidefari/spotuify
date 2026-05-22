@@ -347,6 +347,21 @@ enum Command {
     /// Phase 13 (P13-I) — force the daemon to re-register its active
     /// player backend (after a VPN flap, network change, etc).
     Reconnect,
+    /// List the local audio output devices the embedded player can render
+    /// to (the system speakers/headphones spotuify-hume plays through).
+    AudioOutputs {
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Choose which local audio output the embedded player renders to,
+    /// then reconnect so it takes effect. Pass `default` (or empty) to
+    /// follow the system default output again. Name must match one from
+    /// `spotuify audio-outputs`.
+    AudioOutput {
+        /// Output device name, or `default` to clear.
+        name: String,
+    },
     /// Phase 13 (P13-D) — bundle a redacted diagnostic tarball for
     /// bug reports. Never auto-uploads; the user inspects + shares it.
     BugReport {
@@ -841,6 +856,8 @@ async fn run() -> Result<()> {
         Some(Command::Mpris { command }) => commands::ipc_mpris(command).await,
         Some(Command::Reload) => commands::ipc_reload().await,
         Some(Command::Reconnect) => commands::ipc_reconnect().await,
+        Some(Command::AudioOutputs { format }) => audio_outputs_command(format),
+        Some(Command::AudioOutput { name }) => audio_output_command(&name).await,
         Some(Command::BugReport { log_lines, output }) => bug_report(log_lines, output).await,
         Some(Command::Login { redirect_uri }) => {
             let mut config = Config::load().context("failed to load Spotify config")?;
@@ -1710,6 +1727,69 @@ fn handle_config(command: ConfigCommand) -> Result<()> {
             let path = set_config_value(ConfigKey::parse(&key)?, &value)?;
             println!("updated {}", path.display());
         }
+    }
+    Ok(())
+}
+
+/// List the local audio output devices the embedded player can render to.
+/// Enumerated via the same cpal host librespot uses, so the names are
+/// exactly what `audio-output` / `player.audio_output_device` accept.
+fn audio_outputs_command(format: OutputFormat) -> Result<()> {
+    let current = get_config_value(ConfigKey::PlayerAudioOutputDevice)
+        .ok()
+        .flatten();
+    let outputs = spotuify_player::list_audio_outputs();
+    match format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            let rows: Vec<serde_json::Value> = outputs
+                .iter()
+                .map(|name| {
+                    serde_json::json!({
+                        "name": name,
+                        "current": current.as_deref() == Some(name.as_str()),
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+        }
+        OutputFormat::Ids | OutputFormat::Csv => {
+            for name in &outputs {
+                println!("{name}");
+            }
+        }
+        OutputFormat::Table => {
+            if outputs.is_empty() {
+                println!("No local audio outputs found (or this build can't enumerate them).");
+            } else {
+                println!("Local audio outputs (* = selected; otherwise system default):");
+                for name in &outputs {
+                    let marker = if current.as_deref() == Some(name.as_str()) {
+                        "*"
+                    } else {
+                        " "
+                    };
+                    println!("  {marker} {name}");
+                }
+                if current.is_none() {
+                    println!("  (none selected — following the system default output)");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Set the embedded player's local audio output device and reconnect so
+/// it takes effect. `default`/empty clears the override (system default).
+async fn audio_output_command(name: &str) -> Result<()> {
+    let cleared = name.trim().is_empty() || name.eq_ignore_ascii_case("default");
+    let value = if cleared { "" } else { name };
+    set_config_value(ConfigKey::PlayerAudioOutputDevice, value)?;
+    commands::ipc_reconnect().await?;
+    if cleared {
+        println!("Audio output reset to the system default; player reconnected.");
+    } else {
+        println!("Audio output set to \"{name}\"; player reconnected.");
     }
     Ok(())
 }

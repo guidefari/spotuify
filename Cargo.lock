@@ -5609,6 +5609,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "cpal",
  "dirs",
  "futures",
  "librespot-connect",
