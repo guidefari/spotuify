@@ -847,6 +847,20 @@ pub async fn ensure_daemon_running() -> Result<()> {
                 status.daemon_build_id,
             );
         }
+        // Player-first: never yank audio out from under an active
+        // session. A stale daemon that's mid-playback keeps running; the
+        // user restarts it when convenient (or the TUI's update banner
+        // prompts them). The next relaunch while idle picks up the new
+        // binary automatically.
+        if daemon_is_actively_playing().await {
+            eprintln!(
+                "Note: spotuify {current_version} is installed but the running daemon (v{}) is \
+                 mid-playback — not restarting so audio keeps going. Run `spotuify daemon restart` \
+                 to apply the update.",
+                status.daemon_version.as_deref().unwrap_or("?"),
+            );
+            return Ok(());
+        }
         tracing::info!(
             running_version = ?status.daemon_version,
             running_build_id = ?status.daemon_build_id,
@@ -874,6 +888,24 @@ pub fn no_daemon_start() -> bool {
     std::env::var("SPOTUIFY_NO_DAEMON_START")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+/// Best-effort: is the running daemon actively playing on an active
+/// device? Used to defer a stale-daemon auto-restart so the update can't
+/// cut audio mid-track. Any IPC hiccup answers "no" — safe to restart.
+async fn daemon_is_actively_playing() -> bool {
+    let Ok(mut client) = IpcClient::connect().await else {
+        return false;
+    };
+    matches!(
+        client
+            .request_with_timeout(Request::PlaybackGet, STATUS_REQUEST_TIMEOUT)
+            .await,
+        Ok(Response::Ok {
+            data: ResponseData::Playback { playback },
+        }) if playback.is_playing
+            && playback.device.as_ref().is_some_and(|device| device.is_active)
+    )
 }
 
 pub async fn stop_daemon() -> Result<()> {
