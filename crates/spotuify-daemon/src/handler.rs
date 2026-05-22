@@ -331,14 +331,41 @@ async fn dispatch(
                         tracing::warn!(error = %err, "failed to persist transfer pre-state");
                     }
                     let captured_seq = state_for.current_mutation_seq();
-                    let result = actions::execute(
+                    let device_name = target_device.name.clone();
+                    let device_id = target_device.id.clone();
+                    let result = match actions::execute(
                         &mut client,
                         CommandKind::Transfer {
                             device: target_device,
                             play,
                         },
                     )
-                    .await?;
+                    .await
+                    {
+                        Ok(result) => result,
+                        // Spotify lists Alexa/Echo speakers but routinely
+                        // 404s Web-API transfers to them — they're
+                        // Alexa-controlled and must be started there first.
+                        // Surface that instead of the raw "404 Not found".
+                        Err(err) if is_no_active_device_error(&err) => {
+                            let is_echo =
+                                device_id.as_deref().is_some_and(|id| id.contains("_amzn_"));
+                            let hint = if is_echo {
+                                format!(
+                                    "\"{device_name}\" can't be started from here — Alexa/Echo \
+                                     speakers must be started in Alexa (or the Spotify app) first, \
+                                     then transfer."
+                                )
+                            } else {
+                                format!(
+                                    "\"{device_name}\" is offline or unavailable to Spotify \
+                                     right now."
+                                )
+                            };
+                            return Err(anyhow::anyhow!(hint));
+                        }
+                        Err(err) => return Err(err.into()),
+                    };
                     state_for.viz_coordinator().set_playing(play);
                     // Phase 1: capture any playback/devices snapshot the
                     // Transfer ACK returned so subscribers don't need a
