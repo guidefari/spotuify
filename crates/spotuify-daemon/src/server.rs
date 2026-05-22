@@ -71,6 +71,15 @@ pub async fn run_daemon() -> Result<()> {
     cleanup_zombie_daemons();
     clear_stale_tantivy_locks();
 
+    // Test-only safety net: when a test harness spawns us it sets
+    // `SPOTUIFY_EXIT_WITH_PARENT` to its own PID. Detached daemons
+    // (`process_group(0)`) outlive a `cargo test`/`nextest` process that
+    // is killed mid-run, so without this they orphan (PPID 1) and pile
+    // up across runs. The watchdog exits us once that process is gone.
+    // No-op in normal CLI/dev/prod use (env unset), so a real daemon
+    // still survives the short-lived CLI that launched it.
+    spawn_parent_death_watchdog();
+
     // Phase 0: backend init errors propagate from DaemonState::new.
     // Log them prominently — `spotuify daemon start` redirects stderr
     // to the log file, so an explicit ERROR line with the full
@@ -1015,6 +1024,45 @@ fn write_daemon_pid_file() -> Result<()> {
 
 fn clear_daemon_pid_file() {
     let _ = std::fs::remove_file(DaemonState::pid_path());
+}
+
+/// Test-only watchdog: exit the daemon when the process named by
+/// `SPOTUIFY_EXIT_WITH_PARENT` dies. Test harnesses set it to their own
+/// PID so a daemon they auto-started can't outlive a killed
+/// `cargo test`/`nextest` run and orphan itself. Unset in real use, so
+/// this is inert for dev/prod daemons (which must survive the launching
+/// CLI). Polls with `kill -0` to avoid an `unsafe` libc call under the
+/// workspace's `deny(unsafe_code)`.
+fn spawn_parent_death_watchdog() {
+    let Some(parent_pid) = std::env::var("SPOTUIFY_EXIT_WITH_PARENT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        .filter(|pid| *pid > 1)
+    else {
+        return;
+    };
+    tracing::info!(parent_pid, "parent-death watchdog armed (test mode)");
+    std::thread::spawn(move || {
+        let pid = parent_pid.to_string();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            if !alive {
+                tracing::warn!(
+                    parent_pid,
+                    "parent process gone — exiting to avoid orphaning the daemon"
+                );
+                std::process::exit(0);
+            }
+        }
+    });
 }
 
 /// Kill an orphaned daemon only when it is named by this instance's

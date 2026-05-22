@@ -624,8 +624,14 @@ mod tests {
         assert!(clock.snapshot().device.is_none());
         clock.apply_device_volume(60, || Some(device("dev-embedded", Some(60))), 7);
         let snap = clock.snapshot();
-        assert_eq!(snap.device.as_ref().and_then(|d| d.volume_percent), Some(60));
-        assert_eq!(snap.device.as_ref().and_then(|d| d.id.as_deref()), Some("dev-embedded"));
+        assert_eq!(
+            snap.device.as_ref().and_then(|d| d.volume_percent),
+            Some(60)
+        );
+        assert_eq!(
+            snap.device.as_ref().and_then(|d| d.id.as_deref()),
+            Some("dev-embedded")
+        );
     }
 
     #[test]
@@ -643,7 +649,13 @@ mod tests {
         // in place preserves the richer poll/command device fields.
         clock.apply_device_volume(75, || panic!("seed must not run"), 2);
         let snap = clock.snapshot();
-        assert_eq!(snap.device.as_ref().and_then(|d| d.volume_percent), Some(75));
-        assert_eq!(snap.device.as_ref().and_then(|d| d.id.as_deref()), Some("dev-embedded"));
+        assert_eq!(
+            snap.device.as_ref().and_then(|d| d.volume_percent),
+            Some(75)
+        );
+        assert_eq!(
+            snap.device.as_ref().and_then(|d| d.id.as_deref()),
+            Some("dev-embedded")
+        );
     }
 }

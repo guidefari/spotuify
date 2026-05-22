@@ -16,12 +16,19 @@ struct DaemonGuard {
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
         if let Some(pid) = self.pid {
-            let _ = StdCommand::new("kill").arg(pid.to_string()).status();
+            let pid = pid.to_string();
+            let _ = StdCommand::new("kill").arg(&pid).status();
+            let mut stopped = false;
             for _ in 0..40 {
                 if !self.socket_path.exists() {
+                    stopped = true;
                     break;
                 }
                 sleep(Duration::from_millis(50));
+            }
+            // SIGTERM didn't take in time — don't leave it running.
+            if !stopped {
+                let _ = StdCommand::new("kill").args(["-KILL", &pid]).status();
             }
         }
         let _ = std::fs::remove_file(&self.socket_path);
@@ -210,6 +217,9 @@ fn command(root: &Path) -> Command {
     let mut command = Command::cargo_bin("spotuify").expect("spotuify binary");
     command
         .env("SPOTUIFY_FAKE_SPOTIFY", "1")
+        // Tie any auto-started daemon's lifetime to this test process so a
+        // killed `cargo test`/`nextest` run can't leave an orphaned daemon.
+        .env("SPOTUIFY_EXIT_WITH_PARENT", std::process::id().to_string())
         .env("SPOTUIFY_RUNTIME_DIR", &runtime_dir)
         .env("SPOTUIFY_SOCKET", runtime_dir.join("daemon.sock"))
         .env("SPOTUIFY_CACHE_DB", root.join("cache.sqlite"))

@@ -23,5 +23,18 @@ if [ -n "${stale}" ]; then
   echo "${stale}" | xargs kill -9 2>/dev/null || true
 fi
 
+# Reap orphaned test daemons from prior runs. Integration tests auto-start
+# daemons that detach (process_group); a killed `cargo test` can leave them
+# behind and they pile up across runs. Scoped to this repo's *debug* builds
+# (target/debug + target-cli/debug) so an interactive `target/release` dev
+# daemon and the installed prod daemon are never touched. The in-daemon
+# parent-death watchdog (SPOTUIFY_EXIT_WITH_PARENT) handles same-run cleanup;
+# this is the belt-and-suspenders sweep for anything that slipped through.
+stale_daemons=$(pgrep -f "${REPO_ROOT}/target.*debug.*spotuify daemon" 2>/dev/null || true)
+if [ -n "${stale_daemons}" ]; then
+  echo "reaping orphaned test daemons: ${stale_daemons}" >&2
+  echo "${stale_daemons}" | xargs kill -9 2>/dev/null || true
+fi
+
 export CARGO_TARGET_DIR="${REPO_ROOT}/target-cli"
 exec cargo test "$@"

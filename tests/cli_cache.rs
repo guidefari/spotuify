@@ -4,6 +4,9 @@ fn command(root: &std::path::Path) -> Command {
     let runtime_dir = root.join("runtime");
     let mut command = Command::cargo_bin("spotuify").expect("spotuify binary");
     command
+        // Tie any auto-started daemon's lifetime to this test process so a
+        // killed `cargo test`/`nextest` run can't leave an orphaned daemon.
+        .env("SPOTUIFY_EXIT_WITH_PARENT", std::process::id().to_string())
         .env("SPOTUIFY_RUNTIME_DIR", &runtime_dir)
         .env("SPOTUIFY_SOCKET", runtime_dir.join("daemon.sock"))
         .env("SPOTUIFY_CACHE_DB", root.join("cache.sqlite3"))
