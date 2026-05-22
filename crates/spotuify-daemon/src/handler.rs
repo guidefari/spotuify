@@ -493,35 +493,85 @@ async fn dispatch(
                     let queue_uris: Vec<String> =
                         queued_items.iter().map(|item| item.uri.clone()).collect();
                     let skipped = resolved_items.len() - queue_uris.len();
-                    for queue_uri in &queue_uris {
-                        // Prefer the embedded librespot path
-                        // (Spirc::add_to_queue) — it's instant. Non-embedded
-                        // backends return Unsupported, in which case we
-                        // fall back to the Web API POST.
-                        match state_for_event.queue_add(queue_uri).await {
-                            Ok(()) => {}
-                            Err(spotuify_player::PlayerError::Unsupported(_)) => {
-                                actions::execute(
-                                    &mut client,
-                                    CommandKind::QueueUri {
-                                        uri: queue_uri.clone(),
-                                    },
-                                )
-                                .await?;
-                            }
-                            Err(err) => {
-                                return Err(anyhow::anyhow!(
-                                    "queue add for {} failed: {err}",
-                                    queue_uri
-                                ));
+
+                    // "Queue" needs an active Spotify session. librespot
+                    // 0.8.0 can't originate add-to-queue (embedded
+                    // `queue_add` returns Unsupported), so we fall back to
+                    // the Web API `POST /me/player/queue`, which 404s with
+                    // NO_ACTIVE_DEVICE when nothing is playing. When Spotify
+                    // itself reports no active device for the first item, the
+                    // session is idle: play that item on the embedded device
+                    // to start one, then queue the rest. Keying off Spotify's
+                    // actual error (not the local clock) means a remote
+                    // session the daemon hasn't polled yet is never hijacked.
+                    let mut played_first = false;
+                    // The first item reveals whether a session exists: queue
+                    // it, and if Spotify reports no active device, start one by
+                    // playing it on the embedded device instead.
+                    if let Some(first) = queue_uris.first().cloned() {
+                        match queue_one(state_for_event.as_ref(), &mut client, &first).await? {
+                            QueueAttempt::Queued => {}
+                            QueueAttempt::NoActiveDevice => {
+                                state_for_event
+                                    .transport(crate::state::TransportCmd::PlayUri {
+                                        uri: first.clone(),
+                                        position_ms: 0,
+                                    })
+                                    .await
+                                    .map_err(|err| {
+                                        anyhow::anyhow!(
+                                            "failed to start playback for {first}: {err}"
+                                        )
+                                    })?;
+                                played_first = true;
                             }
                         }
                     }
-                    let queue_snapshot = optimistic_queue_with_appends(queued_items.clone()).await;
+
+                    for queue_uri in queue_uris.iter().skip(1) {
+                        // After an idle auto-play, the new session takes a
+                        // beat to register with Spotify, so retry briefly
+                        // instead of racing it with another 404.
+                        let mut attempt = 0u32;
+                        loop {
+                            match queue_one(state_for_event.as_ref(), &mut client, queue_uri)
+                                .await?
+                            {
+                                QueueAttempt::Queued => break,
+                                QueueAttempt::NoActiveDevice if played_first && attempt < 6 => {
+                                    attempt += 1;
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                }
+                                QueueAttempt::NoActiveDevice => {
+                                    return Err(anyhow::anyhow!(
+                                        "queue add for {queue_uri} failed: no active device"
+                                    ));
+                                }
+                            }
+                        }
+                    }
+
+                    // What actually landed in the queue: the first item too,
+                    // unless we auto-played it to start the session.
+                    let queued_uris: Vec<String> = if played_first {
+                        queue_uris.iter().skip(1).cloned().collect()
+                    } else {
+                        queue_uris.clone()
+                    };
+                    let appended_items: Vec<MediaItem> = if played_first {
+                        queued_items.iter().skip(1).cloned().collect()
+                    } else {
+                        queued_items.clone()
+                    };
+                    let queue_snapshot = optimistic_queue_with_appends(appended_items).await;
                     if let Some(queue) = queue_snapshot.as_ref() {
                         cache_queue(&state_for_event, queue).await;
                     }
-                    let message = if skipped > 0 && queue_uris.is_empty() {
+                    let message = if played_first && queued_uris.is_empty() {
+                        "playing now".to_string()
+                    } else if played_first {
+                        format!("playing now, queued {} item(s)", queued_uris.len())
+                    } else if skipped > 0 && queue_uris.is_empty() {
                         "already in queue".to_string()
                     } else if skipped > 0 {
                         format!(
@@ -534,10 +584,10 @@ async fn dispatch(
                     };
                     state_for_event.emit_event(DaemonEvent::QueueChanged {
                         action: "queue".to_string(),
-                        uris: queue_uris.clone(),
+                        uris: queued_uris.clone(),
                         queue: queue_snapshot,
                     });
-                    state_for_event.warm_queue_uris(queue_uris.clone());
+                    state_for_event.warm_queue_uris(queued_uris.clone());
                     spawn_queue_refresh(state_for_event.clone());
                     emit_mutation_finished(&state_for_event, "queue", &message);
                     Ok(())
@@ -3480,6 +3530,42 @@ fn is_no_active_device_error(err: &spotuify_spotify::SpotifyError) -> bool {
                 || lower.starts_with("not found")
         }
         _ => false,
+    }
+}
+
+/// Outcome of a single queue-add attempt. `NoActiveDevice` is Spotify's
+/// idle-session 404 surfaced as a value (not an error) so the caller can
+/// recover by starting playback rather than failing the whole operation.
+enum QueueAttempt {
+    Queued,
+    NoActiveDevice,
+}
+
+/// One queue-add: embedded Spirc first (instant), Web API fallback when
+/// librespot 0.8.0 can't originate it. Maps Spotify's "no active device"
+/// 404 to [`QueueAttempt::NoActiveDevice`]; all other failures are errors.
+async fn queue_one(
+    state: &DaemonState,
+    client: &mut SpotifyClient,
+    uri: &str,
+) -> anyhow::Result<QueueAttempt> {
+    match state.queue_add(uri).await {
+        Ok(()) => Ok(QueueAttempt::Queued),
+        Err(spotuify_player::PlayerError::Unsupported(_)) => {
+            match actions::execute(
+                client,
+                CommandKind::QueueUri {
+                    uri: uri.to_string(),
+                },
+            )
+            .await
+            {
+                Ok(_) => Ok(QueueAttempt::Queued),
+                Err(err) if is_no_active_device_error(&err) => Ok(QueueAttempt::NoActiveDevice),
+                Err(err) => Err(anyhow::anyhow!("queue add for {uri} failed: {err}")),
+            }
+        }
+        Err(err) => Err(anyhow::anyhow!("queue add for {uri} failed: {err}")),
     }
 }
 
