@@ -156,6 +156,16 @@ pub struct DevicePickerModal {
     pub selected: usize,
 }
 
+/// Modal listing the local audio output devices the embedded player can
+/// render to (the Mac speakers/headphones). Opened with `O`; Enter sets
+/// `player.audio_output_device` + reconnects. Carries its own snapshot of
+/// the device list since it isn't part of normal app state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioOutputPickerModal {
+    pub outputs: Vec<String>,
+    pub selected: usize,
+}
+
 /// Modal that fires when the daemon emits
 /// `DaemonEvent::AuthError { kind: InvalidGrant }` — the user's
 /// refresh token has been revoked and we need them to OAuth again.
@@ -338,6 +348,7 @@ pub struct App {
     pub confirm_modal: Option<ConfirmModal>,
     pub playlist_picker: Option<PlaylistPickerModal>,
     pub device_picker: Option<DevicePickerModal>,
+    pub audio_output_picker: Option<AudioOutputPickerModal>,
     /// Interactive re-authentication modal. Opens automatically when
     /// the daemon emits `DaemonEvent::AuthError { kind: InvalidGrant }`.
     /// Key routing slots it right after the error modal so it blocks
@@ -604,6 +615,7 @@ impl App {
             confirm_modal: None,
             playlist_picker: None,
             device_picker: None,
+            audio_output_picker: None,
             login_modal: None,
             operations: Vec::new(),
             operations_cursor: 0,
@@ -2554,6 +2566,11 @@ fn handle_key(
         return Ok(false);
     }
 
+    if app.audio_output_picker.is_some() {
+        handle_audio_output_picker_key(app, key, async_tx);
+        return Ok(false);
+    }
+
     // Update banner: Shift+R restarts the stale daemon onto the new
     // binary. Contextual — only bound while the banner is showing, so it
     // never shadows the per-page `r` actions.
@@ -2561,6 +2578,26 @@ fn handle_key(
         spawn_restart_daemon(async_tx.clone());
         app.update_available = false;
         app.toast = Some("Restarting daemon to apply update…".to_string());
+        return Ok(false);
+    }
+
+    // Shift+O opens the local audio-output picker (which Mac speaker the
+    // embedded player renders to). Uppercase + contextual-free so it
+    // doesn't clash with lowercase per-page keys.
+    if matches!(key.code, KeyCode::Char('O')) {
+        let outputs = spotuify_daemon::server::list_audio_outputs();
+        if outputs.is_empty() {
+            app.toast = Some("No local audio outputs found.".to_string());
+        } else {
+            let current = Config::load()
+                .ok()
+                .and_then(|c| c.player.audio_output_device.clone());
+            let selected = current
+                .as_deref()
+                .and_then(|name| outputs.iter().position(|o| o == name))
+                .unwrap_or(0);
+            app.audio_output_picker = Some(AudioOutputPickerModal { outputs, selected });
+        }
         return Ok(false);
     }
 
@@ -3272,6 +3309,63 @@ fn handle_device_picker_key(
             transfer_device_picker_selection(app, async_tx);
         }
         _ => {}
+    }
+}
+
+fn handle_audio_output_picker_key(
+    app: &mut App,
+    key: KeyEvent,
+    async_tx: &mpsc::UnboundedSender<AsyncResult>,
+) {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => {
+            app.audio_output_picker = None;
+        }
+        (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+            move_audio_output_picker(app, 1);
+        }
+        (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+            move_audio_output_picker(app, -1);
+        }
+        (KeyCode::Enter, _) => apply_audio_output_picker_selection(app, async_tx),
+        _ => {}
+    }
+}
+
+fn move_audio_output_picker(app: &mut App, delta: isize) {
+    let Some(picker) = app.audio_output_picker.as_mut() else {
+        return;
+    };
+    let len = picker.outputs.len();
+    if len == 0 {
+        return;
+    }
+    picker.selected = (picker.selected as isize + delta).rem_euclid(len as isize) as usize;
+}
+
+fn apply_audio_output_picker_selection(
+    app: &mut App,
+    async_tx: &mpsc::UnboundedSender<AsyncResult>,
+) {
+    let Some(picker) = app.audio_output_picker.take() else {
+        return;
+    };
+    let Some(name) = picker.outputs.get(picker.selected).cloned() else {
+        return;
+    };
+    match spotuify_spotify::config::set_config_value(
+        spotuify_spotify::config::ConfigKey::PlayerAudioOutputDevice,
+        &name,
+    ) {
+        // The output device binds when the backend's sink is built, so a
+        // re-register wouldn't apply it — restart rebuilds from config.
+        Ok(_) => {
+            spawn_restart_daemon(async_tx.clone());
+            app.toast = Some(format!("Audio output → {name}; restarting daemon…"));
+        }
+        Err(err) => {
+            app.toast = Some(format!("Couldn't set audio output: {err}"));
+        }
     }
 }
 
@@ -4760,6 +4854,7 @@ mod tests {
             confirm_modal: None,
             playlist_picker: None,
             device_picker: None,
+            audio_output_picker: None,
             login_modal: None,
             operations: Vec::new(),
             operations_cursor: 0,

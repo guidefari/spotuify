@@ -908,6 +908,21 @@ async fn daemon_is_actively_playing() -> bool {
     )
 }
 
+/// Local audio output device names the embedded player can render to,
+/// for the TUI/CLI output picker. Enumerated in-process via the same
+/// cpal host librespot matches against. Empty when embedded playback
+/// isn't compiled in.
+pub fn list_audio_outputs() -> Vec<String> {
+    #[cfg(feature = "embedded-playback")]
+    {
+        spotuify_player::list_audio_outputs()
+    }
+    #[cfg(not(feature = "embedded-playback"))]
+    {
+        Vec::new()
+    }
+}
+
 pub async fn stop_daemon() -> Result<()> {
     let status = daemon_status().await?;
     if !status.socket_reachable {

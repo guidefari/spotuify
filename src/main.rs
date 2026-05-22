@@ -1785,11 +1785,16 @@ async fn audio_output_command(name: &str) -> Result<()> {
     let cleared = name.trim().is_empty() || name.eq_ignore_ascii_case("default");
     let value = if cleared { "" } else { name };
     set_config_value(ConfigKey::PlayerAudioOutputDevice, value)?;
-    commands::ipc_reconnect().await?;
+    // A full restart is required: the audio device is bound when the
+    // backend's sink chain is built at daemon start, so re-registering the
+    // existing backend (Reconnect) wouldn't pick up the change. Restart
+    // rebuilds the backend from the fresh config. Briefly interrupts
+    // playback, which is expected when switching outputs.
+    daemon::server::restart_daemon().await?;
     if cleared {
-        println!("Audio output reset to the system default; player reconnected.");
+        println!("Audio output reset to the system default; daemon restarted to apply.");
     } else {
-        println!("Audio output set to \"{name}\"; player reconnected.");
+        println!("Audio output set to \"{name}\"; daemon restarted to apply.");
     }
     Ok(())
 }

@@ -66,6 +66,9 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     if app.device_picker.is_some() {
         render_device_picker(frame, area, app);
     }
+    if app.audio_output_picker.is_some() {
+        render_audio_output_picker(frame, area, app);
+    }
     if app.artist_view.is_some() {
         render_artist_view(frame, area, app);
     }
@@ -574,6 +577,63 @@ fn render_playlist_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::raw("  "),
             Span::styled("Esc cancel", Style::default().fg(MUTED)),
         ]))
+        .style(Style::default().bg(PANEL)),
+        body_rows[1],
+    );
+}
+
+fn render_audio_output_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    use crate::widgets::style::focused_card_block;
+    let Some(picker) = app.audio_output_picker.as_ref() else {
+        return;
+    };
+    let area = centered_rect(60, 50, area);
+    let block = focused_card_block(&format!(
+        "Audio output  ·  {} device(s)",
+        picker.outputs.len()
+    ));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+
+    let body_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let rows: Vec<ListItem<'_>> = picker
+        .outputs
+        .iter()
+        .map(|name| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    " 🔊  ",
+                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(name.clone(), Style::default().fg(TEXT)),
+            ]))
+        })
+        .collect();
+    let list = List::new(rows)
+        .highlight_style(
+            Style::default()
+                .fg(TEXT)
+                .bg(crate::widgets::style::GREEN_SOFT)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▌")
+        .style(Style::default().bg(PANEL));
+    let mut state = ListState::default();
+    state.select(Some(
+        picker.selected.min(picker.outputs.len().saturating_sub(1)),
+    ));
+    frame.render_stateful_widget(list, body_rows[0], &mut state);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "↑/↓ select · Enter apply (restarts player) · Esc cancel",
+            Style::default().fg(MUTED),
+        )))
         .style(Style::default().bg(PANEL)),
         body_rows[1],
     );
@@ -4103,6 +4163,7 @@ mod tests {
             confirm_modal: None,
             playlist_picker: None,
             device_picker: None,
+            audio_output_picker: None,
             login_modal: None,
             operations: Vec::new(),
             operations_cursor: 0,
