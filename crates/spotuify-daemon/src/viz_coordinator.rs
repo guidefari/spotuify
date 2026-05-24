@@ -202,8 +202,7 @@ impl VizCoordinator {
             ms => {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(ms);
+                    .map_or(ms, |d| d.as_millis() as u64);
                 Some(now.saturating_sub(ms))
             }
         };
@@ -436,8 +435,7 @@ impl VizTicker {
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// Phase 17 — owns a `cpal::Stream` in a dedicated OS thread so the

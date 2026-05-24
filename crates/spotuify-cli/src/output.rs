@@ -62,11 +62,11 @@ pub fn print_playback(playback: &Playback, format: OutputFormat) -> Result<()> {
                 "{}",
                 csv_row(&[
                     state,
-                    item.map(|item| item.name.as_str()).unwrap_or(""),
-                    item.map(|item| item.subtitle.as_str()).unwrap_or(""),
+                    item.map_or("", |item| item.name.as_str()),
+                    item.map_or("", |item| item.subtitle.as_str()),
                     device.unwrap_or(""),
                     &playback.progress_ms.to_string(),
-                    item.map(|item| item.uri.as_str()).unwrap_or(empty.as_str()),
+                    item.map_or(empty.as_str(), |item| item.uri.as_str()),
                 ])
             );
             Ok(())
@@ -141,8 +141,7 @@ pub fn print_devices(devices: &[Device], format: OutputFormat) -> Result<()> {
                     device.kind,
                     device
                         .volume_percent
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "-".to_string()),
+                        .map_or_else(|| "-".to_string(), |value| value.to_string()),
                     device.name,
                     device.id.as_deref().unwrap_or("-")
                 );
@@ -366,8 +365,8 @@ pub fn print_resolved_track_candidates(
                         &candidate.confidence.to_string(),
                         &candidate.reason,
                         &candidate.source,
-                        candidate.explicit.map(bool_str).unwrap_or(""),
-                        candidate.playable.map(bool_str).unwrap_or(""),
+                        candidate.explicit.map_or("", bool_str),
+                        candidate.playable.map_or("", bool_str),
                     ])
                 );
             }
@@ -417,7 +416,7 @@ pub fn print_playlist_preview(preview: &PlaylistCreatePreview, format: OutputFor
                         &track.uri,
                         &track.name,
                         &track.subtitle,
-                        track.explicit.map(bool_str).unwrap_or(""),
+                        track.explicit.map_or("", bool_str),
                     ])
                 );
             }
@@ -614,7 +613,7 @@ fn csv_mutation_row(receipt: &MutationOutput, uri: &str, error: &str) -> String 
     csv_row(&[
         bool_str(receipt.ok),
         &receipt.action,
-        receipt.dry_run.map(bool_str).unwrap_or(""),
+        receipt.dry_run.map_or("", bool_str),
         receipt.playlist.as_deref().unwrap_or(""),
         &receipt.requested.to_string(),
         &receipt.succeeded.to_string(),
@@ -1285,7 +1284,7 @@ pub fn print_response_data(
                     op.kind.label(),
                     op.status.label(),
                     op.source.label(),
-                    op.subject_uris.first().map(String::as_str).unwrap_or("-"),
+                    op.subject_uris.first().map_or("-", String::as_str),
                 );
             }
         })?,

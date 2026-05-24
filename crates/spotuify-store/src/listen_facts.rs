@@ -151,7 +151,6 @@ impl Store {
              GROUP BY lf.{group_uri}
              ORDER BY total_audible_ms DESC
              LIMIT ?",
-            group_uri = group_uri,
         ))
         .bind(cutoff_ms)
         .bind(limit as i64)

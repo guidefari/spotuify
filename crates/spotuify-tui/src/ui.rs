@@ -178,7 +178,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     ]),
                     Line::from(vec![
                         Span::raw("    "),
-                        Span::styled(context_suffix(a).to_string(), Style::default().fg(MUTED)),
+                        Span::styled(context_suffix(a), Style::default().fg(MUTED)),
                     ]),
                 ])
             })
@@ -208,8 +208,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
         view.album_tracks.len(),
         view.albums
             .get(view.album_selected)
-            .map(|a| a.name.as_str())
-            .unwrap_or("—")
+            .map_or("—", |a| a.name.as_str())
     );
     let tracks_block = if tracks_focused {
         focused_card_block(&tracks_title)
@@ -798,8 +797,7 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .name
             .chars()
             .next()
-            .map(|c| c.to_ascii_uppercase().to_string())
-            .unwrap_or_else(|| "♪".to_string());
+            .map_or_else(|| "♪".to_string(), |c| c.to_ascii_uppercase().to_string());
         frame.render_widget(
             GradientArt::new(&item.uri).with_label(initial),
             hero_cols[0],
@@ -971,8 +969,7 @@ fn render_cover(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 .name
                 .chars()
                 .next()
-                .map(|c| c.to_ascii_uppercase().to_string())
-                .unwrap_or_else(|| "♪".to_string());
+                .map_or_else(|| "♪".to_string(), |c| c.to_ascii_uppercase().to_string());
             (uri.to_string(), first_char)
         } else {
             ("spotuify:empty-state".to_string(), "♪".to_string())
@@ -1296,8 +1293,7 @@ fn viz_status_hint(app: &App) -> Option<String> {
     if !matches!(app.viz_active_source, VizActiveSource::None) {
         let stalled = app
             .viz_last_frame_at
-            .map(|t| t.elapsed().as_millis() > 2_000)
-            .unwrap_or(false);
+            .is_some_and(|t| t.elapsed().as_millis() > 2_000);
         return if stalled {
             Some("viz: frames stalled — source may have hung".to_string())
         } else {
@@ -1752,8 +1748,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .name
             .chars()
             .next()
-            .map(|c| c.to_ascii_uppercase().to_string())
-            .unwrap_or_else(|| "♪".to_string());
+            .map_or_else(|| "♪".to_string(), |c| c.to_ascii_uppercase().to_string());
         frame.render_widget(
             crate::widgets::album_art::GradientArt::new(&item.uri).with_label(initial),
             header_columns[0],
@@ -1857,23 +1852,21 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // active line), not by logical line index — otherwise wrapped lines
     // above the highlight shove it to the bottom of the pane.
     let wrap_width = rows[2].width.max(1) as usize;
-    let scroll_rows: u16 = active
-        .map(|a| {
-            let rows_above: usize = lyrics.lines[..a]
-                .iter()
-                .map(|line| wrapped_row_count(&line.text, wrap_width))
-                .sum();
-            rows_above
-                .saturating_sub(visible / 2)
-                .min(u16::MAX as usize) as u16
-        })
-        .unwrap_or(0);
+    let scroll_rows: u16 = active.map_or(0, |a| {
+        let rows_above: usize = lyrics.lines[..a]
+            .iter()
+            .map(|line| wrapped_row_count(&line.text, wrap_width))
+            .sum();
+        rows_above
+            .saturating_sub(visible / 2)
+            .min(u16::MAX as usize) as u16
+    });
     let body: Vec<Line<'_>> = lyrics
         .lines
         .iter()
         .enumerate()
         .map(|(index, line)| {
-            let distance = active.map(|a| a.abs_diff(index)).unwrap_or(usize::MAX);
+            let distance = active.map_or(usize::MAX, |a| a.abs_diff(index));
             let style = if Some(index) == active {
                 Style::default()
                     .fg(TEXT)
@@ -2041,9 +2034,7 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
         let selected_uri = items.get(app.selected).map(|item| item.uri.as_str());
         for (idx, (kind, title, icon, group_items)) in groups.iter().enumerate() {
             let area = columns[idx];
-            let focused = selected_uri
-                .map(|uri| group_items.iter().any(|i| i.uri == uri))
-                .unwrap_or(false);
+            let focused = selected_uri.is_some_and(|uri| group_items.iter().any(|i| i.uri == uri));
             let title_with_count = format!("{icon}  {title}  {}", group_items.len());
             let block = if focused {
                 focused_card_block(&title_with_count)
@@ -2908,7 +2899,7 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
             let summary = format!(
                 " {:<16}  {}",
                 op.kind.label(),
-                op.subject_uris.first().map(String::as_str).unwrap_or("-"),
+                op.subject_uris.first().map_or("-", String::as_str),
             );
             right.push(Line::from(vec![
                 cursor,
@@ -4007,8 +3998,7 @@ fn device_name(app: &App) -> String {
     app.playback
         .device
         .as_ref()
-        .map(|device| device.name.clone())
-        .unwrap_or_else(|| "no device".to_string())
+        .map_or_else(|| "no device".to_string(), |device| device.name.clone())
 }
 
 fn truncate(value: &str, max: usize) -> String {

@@ -40,7 +40,7 @@ fn fake_daemon_cli_journey_covers_json_ids_and_mutation_receipts() {
     let temp = TempDir::new().expect("temp dir");
     let socket_path = temp.path().join("runtime/daemon.sock");
     let mut daemon = DaemonGuard {
-        socket_path: socket_path.clone(),
+        socket_path,
         pid: None,
     };
 

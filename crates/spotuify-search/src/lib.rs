@@ -7,7 +7,7 @@ pub mod reindex;
 use std::path::Path;
 
 use anyhow::Result;
-use tantivy::collector::{Count, TopDocs};
+use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, TermQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, Schema, Value, FAST, INDEXED, STORED, STRING, TEXT,
@@ -317,7 +317,6 @@ impl SearchIndex {
         };
 
         let searcher = self.reader.searcher();
-        let _total = searcher.search(&*query, &Count)?;
         let top_docs = searcher.search(&*query, &TopDocs::with_limit(limit))?;
         let mut hits = Vec::with_capacity(top_docs.len());
         for (score, doc_address) in top_docs {

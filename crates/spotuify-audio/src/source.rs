@@ -96,8 +96,7 @@ mod tests {
             assert_eq!(
                 VizSourceKind::from_config_str(kind.as_config_str()),
                 kind,
-                "roundtrip failed for {:?}",
-                kind
+                "roundtrip failed for {kind:?}"
             );
         }
     }

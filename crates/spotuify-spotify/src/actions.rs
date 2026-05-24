@@ -249,7 +249,7 @@ pub async fn execute(
                 serde_json::json!({"position_ms": position_ms}),
             )
             .await;
-            result.message = Some(format!("Seeked to {}ms", position_ms));
+            result.message = Some(format!("Seeked to {position_ms}ms"));
             result.request_refresh = true;
             refresh_playback(client, &mut result).await;
         }

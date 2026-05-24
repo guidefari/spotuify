@@ -339,10 +339,7 @@ fn tool_input_schema(tool: &str) -> Value {
         properties.insert((*prop).to_string(), json!({ "type": "string" }));
     }
     // Confirm is universal for destructive tools.
-    if ToolCatalogue::by_name(tool)
-        .map(|t| t.destructive)
-        .unwrap_or(false)
-    {
+    if ToolCatalogue::by_name(tool).is_some_and(|t| t.destructive) {
         properties.insert(
             "confirm".into(),
             json!({ "type": "boolean", "default": false }),

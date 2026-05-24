@@ -967,7 +967,7 @@ async fn dispatch(
                         }
                     };
                     let result = actions::execute(&mut client, command).await?;
-                    let message = result.message.clone().unwrap_or_else(|| "save".to_string());
+                    let message = result.message.unwrap_or_else(|| "save".to_string());
                     state_for.emit_event(DaemonEvent::LibraryChanged {
                         action: "save".to_string(),
                         uris: event_uris,
@@ -1244,7 +1244,7 @@ async fn dispatch(
         Request::SetVizFocus { focused } => {
             state.viz_coordinator().set_focused(focused).await;
             Ok(ResponseData::Ack {
-                message: format!("viz focus = {}", focused),
+                message: format!("viz focus = {focused}"),
             })
         }
     }
@@ -1545,8 +1545,7 @@ async fn handle_ops_redo(
                 && o.kind != OperationKind::Redo
                 && o.kind != OperationKind::Undo
         })
-        .map(|o| o.operation_id)
-        .unwrap_or_else(OperationId::new_v7);
+        .map_or_else(OperationId::new_v7, |o| o.operation_id);
 
     let _ = state
         .store()
@@ -2243,8 +2242,7 @@ fn spawn_playback_refresh(state: Arc<DaemonState>) {
                     fetched_uri = playback
                         .item
                         .as_ref()
-                        .map(|i| i.uri.as_str())
-                        .unwrap_or(""),
+                        .map_or("", |i| i.uri.as_str()),
                     is_playing = playback.is_playing,
                     "playback refresh"
                 );
@@ -2332,8 +2330,7 @@ fn spawn_queue_refresh(state: Arc<DaemonState>) {
                     fetched_uri = queue
                         .currently_playing
                         .as_ref()
-                        .map(|i| i.uri.as_str())
-                        .unwrap_or(""),
+                        .map_or("", |i| i.uri.as_str()),
                     items = queue.items.len(),
                     "queue refresh"
                 );
@@ -2445,8 +2442,7 @@ async fn persist_command_result(
                 fetched_uri = playback
                     .item
                     .as_ref()
-                    .map(|item| item.uri.as_str())
-                    .unwrap_or(""),
+                    .map_or("", |item| item.uri.as_str()),
                 fetched_is_playing = playback.is_playing,
                 expected_uri = expected_playback
                     .and_then(|expected| expected.uri.as_deref())

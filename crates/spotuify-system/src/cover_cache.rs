@@ -345,8 +345,7 @@ fn is_stale(path: &Path, ttl: Duration) -> bool {
     };
     SystemTime::now()
         .duration_since(mtime)
-        .map(|elapsed| elapsed > ttl)
-        .unwrap_or(true)
+        .map_or(true, |elapsed| elapsed > ttl)
 }
 
 fn hash_url(url: &str) -> String {
@@ -355,7 +354,7 @@ fn hash_url(url: &str) -> String {
     let digest = hasher.finalize();
     digest.iter().take(16).fold(String::new(), |mut acc, b| {
         use std::fmt::Write;
-        let _ = write!(&mut acc, "{:02x}", b);
+        let _ = write!(&mut acc, "{b:02x}");
         acc
     })
 }

@@ -7,6 +7,8 @@
 //!
 //! Pure function — testable without spinning up the daemon.
 
+use std::collections::VecDeque;
+
 use crate::{DaemonEvent, DoctorFinding, DoctorFindingCategory, DoctorFindingSeverity};
 
 /// One event remembered in the daemon's ring buffer. We don't store the
@@ -58,7 +60,7 @@ impl LoggedEvent {
                 scope: scope.clone(),
             },
             DaemonEvent::AuthError { kind } => LoggedKind::AuthError {
-                kind_str: format!("{:?}", kind),
+                kind_str: format!("{kind:?}"),
             },
             DaemonEvent::SchemaCompat {
                 endpoint,
@@ -220,29 +222,33 @@ pub fn findings_from(events: &[LoggedEvent], now_ms: i64) -> Vec<DoctorFinding> 
 
 /// Simple bounded FIFO. Append `push` adds; oldest entry drops when
 /// the buffer exceeds `cap`. Used by the daemon's event tap.
+///
+/// Backed by a `VecDeque` so eviction of the oldest entry is O(1)
+/// (`pop_front`) instead of the O(n) element shift `Vec::remove(0)`
+/// would incur on every push once the buffer is full.
 #[derive(Debug, Clone)]
 pub struct EventLog {
     cap: usize,
-    items: Vec<LoggedEvent>,
+    items: VecDeque<LoggedEvent>,
 }
 
 impl EventLog {
     pub fn new(cap: usize) -> Self {
         Self {
             cap,
-            items: Vec::with_capacity(cap),
+            items: VecDeque::with_capacity(cap),
         }
     }
 
     pub fn push(&mut self, event: LoggedEvent) {
         if self.items.len() >= self.cap {
-            self.items.remove(0);
+            self.items.pop_front();
         }
-        self.items.push(event);
+        self.items.push_back(event);
     }
 
     pub fn snapshot(&self) -> Vec<LoggedEvent> {
-        self.items.clone()
+        self.items.iter().cloned().collect()
     }
 
     pub fn len(&self) -> usize {

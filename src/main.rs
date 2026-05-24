@@ -1133,8 +1133,7 @@ async fn cache_reset(confirm: bool, format: OutputFormat) -> Result<()> {
 
     if daemon::server::daemon_status()
         .await
-        .map(|status| status.socket_reachable)
-        .unwrap_or(false)
+        .is_ok_and(|status| status.socket_reachable)
     {
         daemon::server::stop_daemon()
             .await
@@ -1175,10 +1174,10 @@ fn reset_cache_files(db_path: &Path, index_path: &Path) -> Result<()> {
 
 fn sqlite_sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
     let mut path = db_path.to_path_buf();
-    let file_name = db_path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "cache.sqlite3".to_string());
+    let file_name = db_path.file_name().map_or_else(
+        || "cache.sqlite3".to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
     path.set_file_name(format!("{file_name}{suffix}"));
     path
 }
@@ -1227,8 +1226,7 @@ fn install_platform_service() -> Result<()> {
             .status()?;
         if !status.success() {
             eprintln!(
-                "warning: launchctl bootstrap returned {}; you may need to `launchctl bootout` first",
-                status
+                "warning: launchctl bootstrap returned {status}; you may need to `launchctl bootout` first"
             );
         }
         println!("Installed launchd agent for {instance}: {dest:?}");
@@ -1550,8 +1548,7 @@ async fn initial_sync(config: Config) -> Result<()> {
             let now_playing = playback
                 .item
                 .as_ref()
-                .map(|item| item.name.as_str())
-                .unwrap_or("nothing playing");
+                .map_or("nothing playing", |item| item.name.as_str());
             println!("playback: {now_playing}");
         }
         Err(err) => println!("playback: skipped ({err})"),
@@ -1688,7 +1685,7 @@ fn emit_log_line(line: &str, json_mode: bool) {
 fn follow_log_file(json_mode: bool) -> Result<()> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
     let path = logging::active_log_path()?;
-    let mut pos = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let mut pos = std::fs::metadata(&path).map_or(0, |m| m.len());
     if !json_mode {
         println!("--- Following {} (Ctrl-C to stop) ---", path.display());
     }
@@ -2027,8 +2024,7 @@ async fn bug_report(log_lines: usize, output: Option<PathBuf>) -> Result<()> {
     let target = output.unwrap_or_else(|| {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         PathBuf::from(format!("./spotuify-bug-report-{ts}.tar"))
     });
 
@@ -2180,9 +2176,8 @@ fn write_tar_entry(buf: &mut impl std::io::Write, name: &str, body: &[u8]) -> Re
     // mtime in octal, 12 bytes
     let mtime = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let mtime_oct = format!("{:011o}", mtime);
+        .map_or(0, |d| d.as_secs());
+    let mtime_oct = format!("{mtime:011o}");
     header[136..136 + 11].copy_from_slice(mtime_oct.as_bytes());
     // Pre-checksum field: 8 spaces, per ustar.
     header[148..156].copy_from_slice(b"        ");
@@ -2193,7 +2188,7 @@ fn write_tar_entry(buf: &mut impl std::io::Write, name: &str, body: &[u8]) -> Re
     header[263..265].copy_from_slice(b"00");
     // Compute checksum.
     let chksum: u32 = header.iter().map(|b| *b as u32).sum();
-    let chk_oct = format!("{:06o}\0 ", chksum);
+    let chk_oct = format!("{chksum:06o}\0 ");
     header[148..148 + 8].copy_from_slice(chk_oct.as_bytes());
 
     buf.write_all(&header)?;
@@ -3227,6 +3222,6 @@ support_email = "user@example.com"
     }
 
     fn exit_code_for_message(message: &str) -> i32 {
-        super::exit_code_for_error(&anyhow::anyhow!("{}", message))
+        super::exit_code_for_error(&anyhow::anyhow!("{message}"))
     }
 }

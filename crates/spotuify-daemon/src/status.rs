@@ -37,15 +37,13 @@ pub fn print_status(status: &DaemonStatus, format: OutputFormat) -> Result<()> {
                 "pid\t{}",
                 status
                     .daemon_pid
-                    .map(|pid| pid.to_string())
-                    .unwrap_or_else(|| "-".to_string())
+                    .map_or_else(|| "-".to_string(), |pid| pid.to_string())
             );
             println!(
                 "uptime_secs\t{}",
                 status
                     .uptime_secs
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "-".to_string())
+                    .map_or_else(|| "-".to_string(), |value| value.to_string())
             );
             println!("socket\t{}", status.socket_path);
             println!("socket_reachable\t{}", yes_no(status.socket_reachable));

@@ -159,17 +159,14 @@ impl SystemIntegration {
         #[cfg(not(feature = "media-controls"))]
         let (media_controls_enabled, media_controls_bus_name) = (false, None);
 
-        let (hooks_enabled, hook_command, hook_timeout_ms) = self
-            .hooks
-            .as_ref()
-            .map(|hooks| {
+        let (hooks_enabled, hook_command, hook_timeout_ms) =
+            self.hooks.as_ref().map_or((false, None, None), |hooks| {
                 (
                     !hooks.hook_command().trim().is_empty(),
                     Some(hooks.hook_command().to_string()),
                     Some(hooks.timeout_ms()),
                 )
-            })
-            .unwrap_or((false, None, None));
+            });
 
         #[cfg(feature = "notifications")]
         let notifications_enabled = self

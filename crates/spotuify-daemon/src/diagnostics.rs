@@ -30,22 +30,23 @@ pub async fn collect_report_with_events(
     daemon: DaemonStatus,
     recent_events: Vec<spotuify_protocol::LoggedEvent>,
 ) -> Result<DoctorReport> {
-    let config_path = config_path()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|err| format!("unresolved: {err}"));
-    let logs_path = logging::log_path()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|err| format!("unresolved: {err}"));
+    let config_path = config_path().map_or_else(
+        |err| format!("unresolved: {err}"),
+        |path| path.display().to_string(),
+    );
+    let logs_path = logging::log_path().map_or_else(
+        |err| format!("unresolved: {err}"),
+        |path| path.display().to_string(),
+    );
 
     let config_result = Config::load();
     let (config_ok, config_error, config) = match config_result {
         Ok(config) => (true, None, Some(config)),
         Err(err) => (false, Some(err.to_string()), None),
     };
-    let config_path = config
-        .as_ref()
-        .map(|config| config.config_path.display().to_string())
-        .unwrap_or(config_path);
+    let config_path = config.as_ref().map_or(config_path, |config| {
+        config.config_path.display().to_string()
+    });
 
     let fake_spotify = std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some();
     let keychain_token = if fake_spotify {
@@ -223,7 +224,7 @@ fn keychain_check() -> DoctorCheck {
         Some(Err(err)) => DoctorCheck {
             name: "keychain token".to_string(),
             ok: false,
-            message: err.to_string(),
+            message: err,
             elapsed_ms,
         },
         None => DoctorCheck {
@@ -533,8 +534,7 @@ fn print_report_table(report: &DoctorReport) {
         "Client secret: {}",
         report
             .client_secret_present
-            .map(|present| if present { "present" } else { "missing" })
-            .unwrap_or("-")
+            .map_or("-", |present| if present { "present" } else { "missing" })
     );
     println!(
         "Redirect URI: {}",
@@ -592,8 +592,7 @@ fn print_report_table(report: &DoctorReport) {
             devices
                 .active_device
                 .as_ref()
-                .map(|device| device.name.as_str())
-                .unwrap_or("none")
+                .map_or("none", |device| device.name.as_str())
         );
         println!(
             "Restricted devices:          {}",

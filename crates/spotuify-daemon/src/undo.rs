@@ -168,8 +168,7 @@ pub fn render_plan_summary(plan: &ReversalPlan, pre: &PreState) -> String {
             },
             _,
         ) => format!(
-            "Reverse playlist {} reorder ({}..+{} → before {})",
-            playlist_id, range_start, range_length, insert_before
+            "Reverse playlist {playlist_id} reorder ({range_start}..+{range_length} → before {insert_before})"
         ),
         (ReversalPlan::LibraryUnsave { uri }, _) => format!("Unsave {uri} from library"),
         (ReversalPlan::LibrarySave { uri, .. }, _) => format!("Re-save {uri} to library"),

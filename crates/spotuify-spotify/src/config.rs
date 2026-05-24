@@ -929,8 +929,7 @@ fn apply_single_override(root: &mut toml::Value, raw: &str) -> Result<()> {
         // Intermediate segment: navigate/create.
         let entry_is_table = cursor
             .as_table()
-            .map(|t| t.get(*key).map(|v| v.is_table()).unwrap_or(false))
-            .unwrap_or(false);
+            .is_some_and(|t| t.get(*key).is_some_and(|v| v.is_table()));
         if !entry_is_table {
             // Create or overwrite-as-table.
             let table = cursor.as_table_mut().ok_or_else(|| {

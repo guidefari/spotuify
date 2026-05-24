@@ -11,10 +11,10 @@ use std::path::PathBuf;
 pub fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let location = info
-            .location()
-            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-            .unwrap_or_else(|| "<unknown>".to_string());
+        let location = info.location().map_or_else(
+            || "<unknown>".to_string(),
+            |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
+        );
         if let Some(path) = write_panic_backtrace(&panic_payload(info), &location) {
             eprintln!("spotuify panicked. trace: {}", path.display());
         }
@@ -34,8 +34,7 @@ fn write_panic_backtrace(payload: &str, location: &str) -> Option<PathBuf> {
          backtrace:\n{backtrace}\n",
         now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
+            .map_or(0, |d| d.as_secs()),
         pid = std::process::id(),
         version = env!("CARGO_PKG_VERSION"),
     );
@@ -59,8 +58,7 @@ pub fn backtrace_log_path() -> Option<PathBuf> {
     let dir = backtrace_dir()?;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     Some(dir.join(format!("{ts}-{pid}.log", pid = std::process::id())))
 }
 
@@ -85,8 +83,7 @@ pub fn surface_prior_panic_if_any() {
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         match latest {
             Some((m, _)) if modified > m => latest = Some((modified, path)),
             None => latest = Some((modified, path)),

@@ -195,9 +195,7 @@ pub fn playlist_tracks_from_candidates(
         tracks.push(PlaylistTrackSelection {
             position: tracks.len() + 1,
             uri: uri.to_string(),
-            name: chosen
-                .map(|item| item.name.clone())
-                .unwrap_or_else(|| uri.to_string()),
+            name: chosen.map_or_else(|| uri.to_string(), |item| item.name.clone()),
             subtitle: chosen.map(|item| item.subtitle.clone()).unwrap_or_default(),
             explicit: candidate
                 .explicit

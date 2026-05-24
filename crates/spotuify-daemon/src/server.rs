@@ -152,7 +152,19 @@ pub async fn run_daemon() -> Result<()> {
                 }
             }
             accepted = listener.accept() => {
-                let (stream, _) = accepted?;
+                let (stream, _) = match accepted {
+                    Ok(conn) => conn,
+                    Err(err) => {
+                        // A transient accept error (e.g. EMFILE/ENFILE under
+                        // load) must not take down the whole daemon and skip
+                        // graceful drain. Log, back off briefly so a
+                        // persistent error can't hot-spin the loop, then keep
+                        // serving.
+                        tracing::warn!(error = %err, "daemon accept failed; continuing");
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        continue;
+                    }
+                };
                 let connection_state = state.clone();
                 let request_semaphore = request_semaphore.clone();
                 let transport_semaphore = transport_semaphore.clone();
@@ -633,7 +645,7 @@ async fn guard_ipc_response(
         request_kind = request_kind,
         command = command_label,
         category = request_category,
-        source = source.as_ref().map(|s| s.label()).unwrap_or("client"),
+        source = source.as_ref().map_or("client", |s| s.label()),
         duration_ms = tracing::field::Empty,
         outcome = tracing::field::Empty,
         error_kind = tracing::field::Empty,
@@ -768,9 +780,10 @@ pub async fn start_daemon(foreground: bool) -> Result<Option<DaemonStatus>> {
         {
             anyhow::bail!(
                 "spotuify daemon exited during startup with {status}; inspect {}",
-                crate::logging::active_log_path()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|_| "the daemon log".to_string())
+                crate::logging::active_log_path().map_or_else(
+                    |_| "the daemon log".to_string(),
+                    |path| path.display().to_string()
+                )
             );
         }
         match daemon_status().await {
@@ -786,9 +799,10 @@ pub async fn start_daemon(foreground: bool) -> Result<Option<DaemonStatus>> {
                 {
                     anyhow::bail!(
                         "spotuify daemon exited during startup with {exit_status}; inspect {}",
-                        crate::logging::active_log_path()
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_else(|_| "the daemon log".to_string())
+                        crate::logging::active_log_path().map_or_else(
+                            |_| "the daemon log".to_string(),
+                            |path| path.display().to_string()
+                        )
                     );
                 }
                 let stable = daemon_status().await?;
@@ -886,8 +900,7 @@ pub async fn ensure_daemon_running() -> Result<()> {
 /// a signature change.
 pub fn no_daemon_start() -> bool {
     std::env::var("SPOTUIFY_NO_DAEMON_START")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
 /// Best-effort: is the running daemon actively playing on an active
@@ -1099,8 +1112,7 @@ fn spawn_parent_death_watchdog() {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()
-                .map(|status| status.success())
-                .unwrap_or(false);
+                .is_ok_and(|status| status.success());
             if !alive {
                 tracing::warn!(
                     parent_pid,
@@ -1210,8 +1222,7 @@ pub(crate) fn current_build_id() -> String {
         .modified()
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |duration| duration.as_secs());
     format!("{version}:{}:{}:{modified}", path.display(), meta.len())
 }
 
@@ -1244,7 +1255,7 @@ fn spawn_retention_loop(state: Arc<DaemonState>) -> JoinHandle<()> {
     // dedicated bg runtime means even when retention is mid-DELETE
     // the main runtime's workers are free for IPC + handler dispatch.
     let bg_handle = state.bg_runtime_handle();
-    let state_for_task = state.clone();
+    let state_for_task = state;
     bg_handle.spawn(async move {
         let state = state_for_task;
         let mut shutdown_rx = state.shutdown_receiver();

@@ -20,7 +20,7 @@
 //! (Retry-After parsing).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -185,8 +185,7 @@ impl BackoffState {
         self.scopes
             .get(scope)
             .and_then(|s| s.next_eligible_at_ms)
-            .map(|target| (target - now_ms).max(0))
-            .unwrap_or(0)
+            .map_or(0, |target| (target - now_ms).max(0))
     }
 
     pub fn record_rate_limit(&mut self, scope: &str, now_ms: i64, retry_after: Duration) {
@@ -201,14 +200,14 @@ impl BackoffState {
         }
     }
 
-    pub fn load(path: &PathBuf) -> Self {
+    pub fn load(path: &Path) -> Self {
         std::fs::read_to_string(path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default()
     }
 
-    pub fn save(&self, path: &PathBuf) -> std::io::Result<()> {
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }

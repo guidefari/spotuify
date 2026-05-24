@@ -78,9 +78,7 @@ pub fn missing_required_scopes(token: &StoredToken) -> Vec<&'static str> {
 /// (not logged in yet) and a fully-scoped token both return `false` —
 /// neither case warrants a banner.
 pub fn token_needs_scope_reauth(token: Option<&StoredToken>) -> bool {
-    token
-        .map(|t| !missing_required_scopes(t).is_empty())
-        .unwrap_or(false)
+    token.is_some_and(|t| !missing_required_scopes(t).is_empty())
 }
 
 #[derive(Debug, Deserialize)]
@@ -459,8 +457,7 @@ fn atomic_write_mode_0600(path: &std::path::Path, bytes: &[u8]) -> std::io::Resu
     std::fs::create_dir_all(parent)?;
     let file_name = path
         .file_name()
-        .map(|name| name.to_string_lossy())
-        .unwrap_or_else(|| "token".into());
+        .map_or_else(|| "token".into(), |name| name.to_string_lossy());
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

@@ -101,7 +101,7 @@ async fn free_account_yields_denied_and_does_not_invoke_init() {
     let init_was_called = Arc::new(AtomicBool::new(false));
     let flag = init_was_called.clone();
     let decision = check_premium_then_init(&client(&server), move || {
-        let flag = flag.clone();
+        let flag = flag;
         async move {
             flag.store(true, Ordering::SeqCst);
             Ok::<_, PlayerError>(())
@@ -190,7 +190,7 @@ async fn allowed_path_invokes_init_closure() {
     let init_was_called = Arc::new(AtomicBool::new(false));
     let flag = init_was_called.clone();
     let _ = check_premium_then_init(&client(&server), move || {
-        let flag = flag.clone();
+        let flag = flag;
         async move {
             flag.store(true, Ordering::SeqCst);
             Ok::<_, PlayerError>(())

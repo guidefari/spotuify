@@ -7,7 +7,7 @@ description = "Phase 11 cross-platform credential storage: macOS Keychain, Linux
 
 [dependencies]
 anyhow = { workspace = true }
-thiserror = "1"
+thiserror = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }

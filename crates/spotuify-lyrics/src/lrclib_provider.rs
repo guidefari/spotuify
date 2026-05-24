@@ -158,8 +158,7 @@ fn retry_after_duration(header: Option<&HeaderValue>) -> Duration {
     header
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(1))
+        .map_or_else(|| Duration::from_secs(1), Duration::from_secs)
 }
 
 #[cfg(test)]

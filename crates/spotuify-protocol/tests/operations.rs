@@ -59,11 +59,11 @@ fn reversal_plan_round_trips_every_variant() {
             playlist_id: pid.clone(),
         },
         ReversalPlan::PlaylistReorder {
-            playlist_id: pid.clone(),
+            playlist_id: pid,
             range_start: 0,
             insert_before: 5,
             range_length: 3,
-            snapshot_id: snap.clone(),
+            snapshot_id: snap,
         },
         ReversalPlan::LibraryUnsave {
             uri: "spotify:album:1".into(),
@@ -113,7 +113,7 @@ fn pre_state_round_trips_every_variant() {
             playlist_id: pid.clone(),
         },
         PreState::PlaylistReorder {
-            playlist_id: pid.clone(),
+            playlist_id: pid,
             snapshot_id: Some("snap".into()),
             range_start: 1,
             insert_before: 4,
@@ -235,7 +235,7 @@ fn operation_kind_reversibility_matches_doc() {
         OperationKind::Like,
         OperationKind::Unlike,
     ] {
-        assert!(kind.is_reversible(), "{:?} must be reversible", kind);
+        assert!(kind.is_reversible(), "{kind:?} must be reversible");
     }
     // Transport kinds are non-reversible:
     for kind in [
@@ -250,7 +250,7 @@ fn operation_kind_reversibility_matches_doc() {
         OperationKind::Shuffle,
         OperationKind::Repeat,
     ] {
-        assert!(!kind.is_reversible(), "{:?} must NOT be reversible", kind);
+        assert!(!kind.is_reversible(), "{kind:?} must NOT be reversible");
     }
 }
 

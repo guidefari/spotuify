@@ -1341,7 +1341,7 @@ impl Store {
                 .bind(track_uri)
                 .fetch_optional(&self.reader)
                 .await?;
-        Ok(row.map(|(offset_ms,)| offset_ms).unwrap_or(0))
+        Ok(row.map_or(0, |(offset_ms,)| offset_ms))
     }
 
     pub async fn set_lyrics_offset_ms(&self, track_uri: &str, offset_ms: i64) -> Result<()> {

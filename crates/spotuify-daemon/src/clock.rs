@@ -424,9 +424,7 @@ mod tests {
         let after = clock.snapshot().progress_ms;
         assert!(
             after >= frozen + 30 && after < frozen + 200,
-            "expected ~{}+40, got {}",
-            frozen,
-            after
+            "expected ~{frozen}+40, got {after}"
         );
     }
 

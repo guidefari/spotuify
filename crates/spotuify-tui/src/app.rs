@@ -535,14 +535,11 @@ impl App {
         // region still draws a flat baseline so the layout stays stable.
         // Override with `[viz] enabled = false` in spotuify.toml.
         let loaded_config = Config::load().ok();
-        let viz_color_scheme = loaded_config
-            .as_ref()
-            .map(|c| c.viz.color_scheme.clone())
-            .unwrap_or_else(|| "spotify-green".to_string());
-        let viz_enabled_default = loaded_config
-            .as_ref()
-            .map(|c| c.viz.enabled)
-            .unwrap_or(true);
+        let viz_color_scheme = loaded_config.as_ref().map_or_else(
+            || "spotify-green".to_string(),
+            |c| c.viz.color_scheme.clone(),
+        );
+        let viz_enabled_default = loaded_config.as_ref().is_none_or(|c| c.viz.enabled);
 
         Ok(Self {
             playback: Playback::default(),
@@ -2591,7 +2588,7 @@ fn handle_key(
         } else {
             let current = Config::load()
                 .ok()
-                .and_then(|c| c.player.audio_output_device.clone());
+                .and_then(|c| c.player.audio_output_device);
             let selected = current
                 .as_deref()
                 .and_then(|name| outputs.iter().position(|o| o == name))
@@ -3949,8 +3946,7 @@ fn maybe_trigger_search_page(app: &mut App, async_tx: &mpsc::UnboundedSender<Asy
     let should_fire = app
         .search_panes
         .get(&kind)
-        .map(|p| !p.loading && !p.exhausted)
-        .unwrap_or(false);
+        .is_some_and(|p| !p.loading && !p.exhausted);
     if should_fire {
         fetch_search_page(app, kind, async_tx);
     }
@@ -4062,7 +4058,7 @@ fn open_artist_view(
         error: None,
     });
     let async_tx = async_tx.clone();
-    let artist_uri = artist.uri.clone();
+    let artist_uri = artist.uri;
     tokio::spawn(async move {
         let result = request_data(Request::ArtistAlbums {
             artist: artist_uri.clone(),
@@ -4129,7 +4125,7 @@ fn spawn_playlist_tracks_request(
     playlist_name: String,
     expected_total: u64,
 ) {
-    let async_tx = async_tx.clone();
+    let async_tx = async_tx;
     tokio::spawn(async move {
         let result = match time::timeout(
             TUI_PLAYLIST_TIMEOUT,
@@ -5379,7 +5375,7 @@ mod tests {
         let first = app
             .filtered_devices()
             .into_iter()
-            .map(|d| d.id.clone().unwrap_or_default())
+            .map(|d| d.id.unwrap_or_default())
             .collect::<Vec<_>>();
 
         // Second poll: active flag flipped to a different device, also
@@ -5392,7 +5388,7 @@ mod tests {
         let second = app
             .filtered_devices()
             .into_iter()
-            .map(|d| d.id.clone().unwrap_or_default())
+            .map(|d| d.id.unwrap_or_default())
             .collect::<Vec<_>>();
 
         assert_eq!(
@@ -6139,7 +6135,7 @@ mod tests {
         let ids = app
             .filtered_devices()
             .into_iter()
-            .map(|device| device.id.clone().unwrap_or_default())
+            .map(|device| device.id.unwrap_or_default())
             .collect::<Vec<_>>();
 
         assert_eq!(
@@ -6269,7 +6265,7 @@ mod tests {
         app.apply_async_result(AsyncResult::DaemonEvent(DaemonEvent::QueueChanged {
             action: "queue".to_string(),
             uris: vec!["spotify:track:first".to_string()],
-            queue: Some(queue.clone()),
+            queue: Some(queue),
         }));
 
         // Push-only contract: event is the sole writer for self.queue.
@@ -6514,7 +6510,7 @@ mod tests {
         // Local clock ticked forward to 10.5s.
         app.playback.progress_ms = 10_500;
         // Incoming refresh reports 10.2s — small drift, should preserve.
-        let mut incoming = original.clone();
+        let mut incoming = original;
         incoming.progress_ms = 10_200;
         app.merge_playback(incoming);
         assert_eq!(
@@ -6530,7 +6526,7 @@ mod tests {
         app.merge_playback(original.clone());
         app.playback.progress_ms = 10_500;
         // Big drift: remote seek to 60s on same track.
-        let mut incoming = original.clone();
+        let mut incoming = original;
         incoming.progress_ms = 60_000;
         app.merge_playback(incoming);
         assert_eq!(
@@ -6565,7 +6561,7 @@ mod tests {
         app.merge_playback(original.clone());
         app.playback.progress_ms = 10_500;
         // Tiny "drift" but marked PlayerEvent — authoritative.
-        let mut incoming = original.clone();
+        let mut incoming = original;
         incoming.progress_ms = 10_200;
         incoming.source = Some(spotuify_core::PlaybackStateSource::PlayerEvent);
         app.merge_playback(incoming);

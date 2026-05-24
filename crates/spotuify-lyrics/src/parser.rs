@@ -52,8 +52,7 @@ pub fn is_rtl(text: &str) -> bool {
     BidiInfo::new(text, None)
         .paragraphs
         .first()
-        .map(|paragraph| paragraph.level.is_rtl())
-        .unwrap_or(false)
+        .is_some_and(|paragraph| paragraph.level.is_rtl())
 }
 
 fn split_timestamps(line: &str) -> Option<(Vec<u64>, &str)> {

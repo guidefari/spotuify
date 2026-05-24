@@ -62,8 +62,7 @@ fn resolve_app_instance_name(
 
 fn allow_prod_instance_from_target_build() -> bool {
     std::env::var("SPOTUIFY_ALLOW_PROD_INSTANCE_FROM_TARGET")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
 fn current_exe_is_cargo_target_build() -> bool {
@@ -156,7 +155,7 @@ pub fn runtime_dir() -> PathBuf {
     {
         // Any other Unix-like (BSDs etc.): mirror Linux fallback.
         let user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
-        PathBuf::from(format!("/tmp/{}-{}", instance, user))
+        PathBuf::from(format!("/tmp/{instance}-{user}"))
     }
 }
 
@@ -251,10 +250,10 @@ pub fn pid_path() -> PathBuf {
         return runtime_dir().join("daemon.pid");
     }
     let mut p = socket_path();
-    let file = p
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "daemon".to_string());
+    let file = p.file_name().map_or_else(
+        || "daemon".to_string(),
+        |s| s.to_string_lossy().into_owned(),
+    );
     p.set_file_name(format!("{file}.pid"));
     p
 }

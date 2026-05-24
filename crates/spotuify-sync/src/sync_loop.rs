@@ -99,7 +99,7 @@ where
             tokio::select! {
                 _ = interval.tick() => {
                     let has_subscribers = fast_ctx.event_subscriber_count() > 0;
-                    let elapsed = last_sync.map(|t| t.elapsed()).unwrap_or(IDLE_CADENCE);
+                    let elapsed = last_sync.map_or(IDLE_CADENCE, |t| t.elapsed());
                     if !has_subscribers && elapsed < IDLE_CADENCE {
                         continue;
                     }
@@ -125,8 +125,7 @@ where
                     log_background_result(SyncTargetData::Devices, d);
 
                     let recent_due = last_recent_sync
-                        .map(|last| last.elapsed() >= RECENT_ACTIVE_CADENCE)
-                        .unwrap_or(true);
+                        .is_none_or(|last| last.elapsed() >= RECENT_ACTIVE_CADENCE);
                     if recent_due {
                         let r = sync_target_with_backoff(
                             fast_ctx.as_ref(),

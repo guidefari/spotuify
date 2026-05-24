@@ -950,7 +950,7 @@ impl DaemonState {
     /// can spawn their long-running loops on the bg runtime without
     /// re-implementing the wiring.
     pub(crate) fn bg_runtime_handle(&self) -> RuntimeHandle {
-        self.bg_runtime.handle().clone()
+        self.bg_runtime.handle()
     }
 
     pub(crate) async fn shutdown_background_tasks(&self, timeout: Duration) {

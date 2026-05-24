@@ -78,9 +78,7 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
             let query = required_str(args, tool, "query")?.to_string();
             let scope = parse_scope(optional_str(args, "kind"));
             let source = parse_source(optional_str(args, "source"));
-            let limit = optional_u64(args, "limit")
-                .map(|n| n.min(50) as u32)
-                .unwrap_or(20);
+            let limit = optional_u64(args, "limit").map_or(20, |n| n.min(50) as u32);
             Ok(TranslatedCall::Request(R::Search {
                 query,
                 scope,
@@ -100,9 +98,7 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
             }))
         }
         "library_list" => {
-            let limit = optional_u64(args, "limit")
-                .map(|n| n.min(500) as u32)
-                .unwrap_or(100);
+            let limit = optional_u64(args, "limit").map_or(100, |n| n.min(500) as u32);
             Ok(TranslatedCall::Request(R::LibraryList { limit }))
         }
         "playlist_plan" => {
@@ -289,9 +285,7 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
                     SinceWindow::Days(n)
                 }
             };
-            let limit = optional_u64(args, "limit")
-                .map(|n| n.min(100) as u32)
-                .unwrap_or(25);
+            let limit = optional_u64(args, "limit").map_or(25, |n| n.min(100) as u32);
             Ok(TranslatedCall::Request(R::AnalyticsTop {
                 kind,
                 since_window,
@@ -316,9 +310,7 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
                 "normalized" => SearchMode::Normalized,
                 _ => SearchMode::Raw,
             };
-            let limit = optional_u64(args, "limit")
-                .map(|n| n.min(200) as u32)
-                .unwrap_or(50);
+            let limit = optional_u64(args, "limit").map_or(50, |n| n.min(200) as u32);
             Ok(TranslatedCall::Request(R::AnalyticsSearch { mode, limit }))
         }
         "analytics_rediscovery" => {
@@ -333,9 +325,7 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
         // Phase 12 — ops_log + undo_last route to typed daemon Requests.
         "ops_log" => {
             use spotuify_protocol::{OperationSource, Request as R};
-            let limit = optional_u64(args, "limit")
-                .map(|n| n.min(200) as u32)
-                .unwrap_or(20);
+            let limit = optional_u64(args, "limit").map_or(20, |n| n.min(200) as u32);
             let source = optional_str(args, "source").and_then(OperationSource::from_label);
             Ok(TranslatedCall::Request(R::OpsLog {
                 limit,

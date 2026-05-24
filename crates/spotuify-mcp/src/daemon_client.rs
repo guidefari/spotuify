@@ -53,7 +53,7 @@ pub async fn round_trip(socket_path: &Path, request: Request) -> Result<Response
 
     let resp = tokio::time::timeout(REQUEST_TIMEOUT, framed.next())
         .await
-        .map_err(|_| anyhow!("daemon did not respond within {:?}", REQUEST_TIMEOUT))?;
+        .map_err(|_| anyhow!("daemon did not respond within {REQUEST_TIMEOUT:?}"))?;
 
     match resp {
         Some(Ok(msg)) => match msg.payload {

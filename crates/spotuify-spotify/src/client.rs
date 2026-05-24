@@ -451,7 +451,7 @@ impl SpotifyClient {
             .flatten()
             .filter_map(|raw| {
                 let id = raw.id?;
-                let total = raw.followers.map(|f| f.total).unwrap_or(0);
+                let total = raw.followers.map_or(0, |f| f.total);
                 Some((id, total))
             })
             .collect();
@@ -1983,8 +1983,7 @@ impl RawEpisode {
     fn into_media_item(self) -> MediaItem {
         let show = self
             .show
-            .map(|show| show.name)
-            .unwrap_or_else(|| "Podcast episode".to_string());
+            .map_or_else(|| "Podcast episode".to_string(), |show| show.name);
         MediaItem {
             id: self.id,
             uri: self.uri,
@@ -2121,7 +2120,7 @@ struct RawPlaylist {
 impl RawPlaylist {
     fn into_playlist(self) -> Option<Playlist> {
         let id = self.id?;
-        let tracks_total = self.tracks.as_ref().map(|tracks| tracks.total).unwrap_or(0);
+        let tracks_total = self.tracks.as_ref().map_or(0, |tracks| tracks.total);
         let snapshot_id = self.snapshot_id.clone();
         Some(Playlist {
             id,
@@ -2135,7 +2134,7 @@ impl RawPlaylist {
 
     fn into_media_item(self) -> Option<MediaItem> {
         let id = self.id?;
-        let tracks_total = self.tracks.as_ref().map(|tracks| tracks.total).unwrap_or(0);
+        let tracks_total = self.tracks.as_ref().map_or(0, |tracks| tracks.total);
         Some(MediaItem {
             uri: self.uri.unwrap_or_else(|| format!("spotify:playlist:{id}")),
             id: Some(id),
@@ -2190,19 +2189,19 @@ fn format_followers(total: u64) -> String {
     if total >= 1_000_000 {
         let m = total as f64 / 1_000_000.0;
         if m >= 10.0 {
-            format!("{:.0}M followers", m)
+            format!("{m:.0}M followers")
         } else {
-            format!("{:.1}M followers", m)
+            format!("{m:.1}M followers")
         }
     } else if total >= 1_000 {
         let k = total as f64 / 1_000.0;
         if k >= 100.0 {
-            format!("{:.0}K followers", k)
+            format!("{k:.0}K followers")
         } else {
-            format!("{:.1}K followers", k)
+            format!("{k:.1}K followers")
         }
     } else {
-        format!("{} followers", total)
+        format!("{total} followers")
     }
 }
 
