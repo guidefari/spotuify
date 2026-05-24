@@ -2,7 +2,7 @@
 
 spotuify is a Spotify player you drive from your terminal: a keyboard-native TUI and a fully scriptable CLI for the same thing. Search, play, queue, switch devices, build playlists, read synced lyrics, see album art, all without leaving the shell. It also ships an MCP server so a coding agent can run your music the way you do, but that's a bonus. The TUI and CLI are the point.
 
-<p align="center"><img src="assets/spotuify-demo.gif" alt="spotuify terminal demo: search, play, queue, and device control" /></p>
+<p align="center"><img src="site/public/spotuify-demo.gif" alt="spotuify terminal demo: search, play, queue, and device control" /></p>
 
 Run `spotuify` and you're in. If your Spotify credentials or OAuth aren't set up yet, it walks you through them: paste your app credentials, authorize in the browser, land in a synced UI. No config files to hand-edit.
 
