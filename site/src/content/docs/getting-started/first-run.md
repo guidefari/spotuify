@@ -1,6 +1,6 @@
 ---
 title: "First Run"
-description: "Understand onboarding, config, OAuth, daemon startup, and doctor."
+description: "Understand onboarding, the browser login, config, daemon startup, and doctor."
 ---
 
 The first run should either open the app or tell you exactly what is missing. No blank screens, no silent auth failure.
@@ -11,7 +11,9 @@ The first run should either open the app or tell you exactly what is missing. No
 spotuify onboard
 ```
 
-What you get: config creation, Spotify OAuth, and the first sync path in one flow.
+What you get: config creation, a browser login, and the first sync path in one flow.
+
+There is no Spotify Developer app to register and no Client ID to paste. spotuify logs in with Spotify's first-party flow and mints a full-access Web API token from your session, so creating playlists and saving tracks work out of the box. Premium is required for playback. (Power users can point spotuify at their own Spotify app with `SPOTUIFY_CLIENT_ID`; see [Install](/getting-started/install/).)
 
 ## Inspect the config path
 

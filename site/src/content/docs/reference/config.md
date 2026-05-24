@@ -18,9 +18,9 @@ These keys are accepted by `spotuify config get` and `spotuify config set`.
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `client_id` | string | none | Spotify app client id |
-| `client_secret` | string | none | optional for PKCE-first setups |
-| `redirect_uri` | string | `http://127.0.0.1:8888/callback` | must match Spotify app |
+| `client_id` | string | first-party | only set this to use your own Spotify app instead of the built-in first-party login |
+| `client_secret` | string | none | only for your own Spotify app (dev-app flow) |
+| `redirect_uri` | string | `http://127.0.0.1:8888/callback` | only used with your own Spotify app; must match its settings |
 | `player.backend` | enum | `embedded` | only `embedded` (in-process librespot); Spotifyd/Connect-only backends were removed |
 | `player.bitrate` | number | `320` | `96`, `160`, or `320` |
 | `player.device_name` | string | none | preferred embedded/connect device name |
@@ -73,6 +73,11 @@ playing the spectrum draws a flat baseline. Toggle it off if you want
 the player to use that vertical space for queue items instead.
 
 ## Environment variables
+
+By default no auth env vars are needed; `spotuify login` opens a browser
+and uses Spotify's first-party flow. The variables below only apply when
+you opt into your own Spotify app, where `SPOTUIFY_CLIENT_ID` is the
+switch that activates the dev-app flow.
 
 ```bash
 SPOTUIFY_CLIENT_ID=... spotuify login

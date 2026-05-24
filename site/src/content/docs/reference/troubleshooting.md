@@ -28,33 +28,44 @@ spotuify --no-daemon-start status
 
 ## Auth failure
 
+If you see `not logged in; run spotuify login`, do exactly that:
+
 ```bash
-spotuify config get client_id
-spotuify config get redirect_uri
+spotuify login
+spotuify doctor
+```
+
+`spotuify login` opens the browser, and the daemon mints a Web API token
+from your session. No Client ID or redirect URI to configure.
+
+### 403 on playlist writes
+
+If you set `SPOTUIFY_CLIENT_ID` to use your own Spotify app and creating
+a playlist returns `403`, that app is in Spotify's Development Mode,
+which blocks playlist and library writes. Unset it to fall back to the
+first-party login, which can write:
+
+```bash
+unset SPOTUIFY_CLIENT_ID
 spotuify login
 ```
 
-If you changed app credentials, login again.
-
 ## Permissions out of date
 
+This banner only applies to the legacy dev-app login (when you set
+`SPOTUIFY_CLIENT_ID`). The default first-party login always grants the
+full scope set, so it never fires there.
+
 The TUI shows the banner *"Spotify permissions out of date. Quit,
-run `spotuify logout && spotuify login`, then restart."* when your
-stored token was issued before a scope that newer features require
-(like follow/unfollow or playlist add). The fix is exactly what the
-banner says:
+run `spotuify logout && spotuify login`, then restart."* when a dev-app
+token was issued before a scope that newer features require (like
+follow/unfollow or playlist add). The fix is exactly what the banner
+says:
 
 ```bash
 spotuify logout
 spotuify login
 ```
-
-```bash
-spotuify status
-```
-
-The status line under `tokens.scopes_missing` lists which scopes you
-still need to grant on next login.
 
 ## macOS keychain prompt storm
 

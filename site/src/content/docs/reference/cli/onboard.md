@@ -1,13 +1,13 @@
 ---
 title: "spotuify onboard"
-description: "Guided first-run setup: config, OAuth, and initial Spotify sync"
+description: "Guided first-run setup: config, browser login, and initial Spotify sync"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Guided first-run setup: config, OAuth, and initial Spotify sync
+Guided first-run setup: config, browser login, and initial Spotify sync
 
 ## Examples
 
@@ -18,7 +18,7 @@ spotuify onboard
 ## Help
 
 ```text
-Guided first-run setup: config, OAuth, and initial Spotify sync
+Guided first-run setup: config, browser login, and initial Spotify sync
 
 Usage: spotuify onboard [OPTIONS]
 

@@ -25,8 +25,8 @@ A keyboard-native Spotify TUI
 Usage: spotuify [OPTIONS] [COMMAND]
 
 Commands:
-  onboard         Guided first-run setup: config, OAuth, and initial Spotify sync
-  login           Authorize Spotify and store a refresh token in macOS Keychain
+  onboard         Guided first-run setup: config, browser login, and initial Spotify sync
+  login           Log in to Spotify in your browser and store a refresh token in the keychain
   logout          Remove the stored Spotify token from macOS Keychain
   doctor          Check config, auth, Spotify API access, and visible devices
   daemon          Manage the local spotuify daemon

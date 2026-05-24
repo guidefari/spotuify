@@ -253,3 +253,50 @@ Why:
 - Phase 6's two-stage receipts already capture mutation intent; the operations table extends it with persistent reversal plans plus snapshot_id concurrency tokens for safe rollback
 
 Implementation lands in Phase 12; not part of the current Phase 6/7/8 batch.
+
+## D015: First-party (keymaster) Web API auth (2026-05-24)
+
+Chosen: drop the per-user Spotify Developer app as the default. spotuify
+logs in with librespot's first-party "keymaster" client id
+(`65b708073fc0480ea92a077233ca87bd`) via `librespot-oauth`, and mints the
+Web API bearer from the live librespot session with
+`Session::login5().auth_token()`.
+
+Why:
+
+- Spotify put dev-mode apps behind a 5-user allow-list AND blocked
+  playlist writes for them (Feb 2026). Verified 2026-05-24: a dev-app
+  token gets `403 Forbidden` on `POST /users/{id}/playlists` and
+  `POST /playlists/{id}/tracks`; the keymaster token gets `429`
+  (authorized, only rate-limited). Allow-listing + re-login did not help.
+- This is what every working terminal client does (spotify-player,
+  ncspot). The keymaster client is never in Development Mode.
+- It also deletes spotuify's worst onboarding step — there's no client_id
+  to register/paste. One browser login and you're in.
+
+How (as built):
+
+- `login5().auth_token()` is the primary bearer source (full scope,
+  re-mintable from the live session without a browser, survives
+  keymaster-OAuth-endpoint outages). The raw `librespot-oauth` access
+  token (refreshed via `refresh_token_async`) is the bootstrap +
+  fallback — it's a valid full-scope bearer on its own (probe-proven).
+- The bearer reaches the Web API client through a `WebApiBearerProvider`
+  trait (`spotuify-spotify`), implemented in the daemon by minting via
+  the player actor's `PlayerBackend::web_api_token()` (login5). The
+  entire legacy dev-app PKCE path is left intact behind this seam.
+- Persistence: only the librespot-oauth refresh token is stored
+  (`FirstPartyCredentials`, keychain account `spotify-first-party` +
+  0600 disk mirror). The bearer is never persisted; reusable native
+  playback credentials live in librespot's own cache.
+- Opt-out: set `SPOTUIFY_CLIENT_ID` (env) to use your own Spotify app
+  (legacy dev-app flow). The opt-out is the **env var**, not a config
+  client_id — the old onboarding wrote the user's dev-app id into the
+  config, so keying off the config value would strand existing users on
+  the broken flow. Env-only opt-out migrates everyone to the fix and
+  lets the next launch send them through the browser login.
+- Scope-drift banner is suppressed in first-party mode: login5 tokens
+  always report empty scopes, so the check would fire a permanent false
+  "run spotuify login".
+
+Full staged plan: `docs/blueprint/auth-rework-plan.md`.

@@ -19,8 +19,8 @@ Want the most polished desktop experience? Use the official app. Want Spotify as
 
 ## Features
 
-- Guided first-run onboarding with Spotify Dashboard instructions.
-- OAuth PKCE login with tokens stored in the platform's native credential vault under service `spotuify`.
+- One-step first-run login. No Spotify Developer app to register; just log in through the browser.
+- Browser login with the refresh token stored in the platform's native credential vault under service `spotuify`.
 - Owned config file at `~/.config/spotuify/spotuify.toml`.
 - Config commands for `path`, `init`, `get`, and `set`.
 - Embedded librespot registers spotuify as a Spotify Connect device at daemon start.
@@ -206,16 +206,11 @@ spotuify onboard
 The onboarding flow does this in order:
 
 1. Creates `~/.config/spotuify/spotuify.toml` if it does not exist.
-2. Reuses saved Spotify app credentials if they already exist.
-3. Opens the Spotify Developer Dashboard when credentials are missing.
-4. Shows the exact Spotify app settings you need.
-5. Prompts for `Client ID`.
-6. Prompts for `Client Secret`.
-7. Prompts for the redirect URI, defaulting to `http://127.0.0.1:8888/callback`.
-8. Saves credentials into `spotuify.toml`.
-9. Starts OAuth login in your browser.
-10. Stores the resulting refresh token in macOS Keychain.
-11. Immediately syncs playback, devices, queue, and playlists.
+2. Opens your browser to log in to Spotify.
+3. Stores the resulting refresh token in the system keychain.
+4. The daemon mints a full-access Web API token from your session and starts syncing.
+
+There is no Client ID or Client Secret to enter. spotuify uses Spotify's first-party login (the same mechanism librespot, spotify-player, and ncspot use), so playback and library writes (creating playlists, saving tracks) work without registering a Developer app. Premium is required for playback.
 
 After setup succeeds, plain `spotuify` opens the TUI directly on later runs:
 
@@ -223,54 +218,26 @@ After setup succeeds, plain `spotuify` opens the TUI directly on later runs:
 spotuify
 ```
 
-## Spotify OAuth App Setup
+## Logging in
 
-Plain `spotuify` walks you through this when needed, but these are the full steps if you want to understand what is happening.
-
-Open the Spotify Developer Dashboard:
-
-```text
-https://developer.spotify.com/dashboard
-```
-
-Create a new app:
-
-```text
-App name: spotuify
-App description: Terminal Spotify client
-Website: leave blank or use your own site
-Redirect URI: http://127.0.0.1:8888/callback
-API/SDK: Web API
-```
-
-Important redirect URI details:
-
-- Put `http://127.0.0.1:8888/callback` in Redirect URIs under App -> Settings.
-- Do not put it in the Website field.
-- Do not use `localhost`.
-- Do not add a trailing slash.
-- Spotify permits HTTP for explicit loopback IP redirect URIs.
-
-If Spotify rejects the fixed-port URI, add this redirect URI instead:
-
-```text
-http://127.0.0.1/callback
-```
-
-Then run login with the matching redirect URI:
+Plain `spotuify` and `spotuify onboard` open the browser for you. To rerun the login by hand:
 
 ```sh
-spotuify login --redirect-uri http://127.0.0.1/callback
+spotuify login
 ```
 
-After the app is created, copy values from Basic Information:
+That opens Spotify in your browser, and once you approve, spotuify stores the refresh token in the system keychain. Nothing else to configure.
 
-```text
-Client ID
-Client Secret
+### Use your own Spotify app (optional)
+
+Most people should skip this. If you specifically want spotuify to authenticate with your own Spotify Developer app instead of the first-party login, set `SPOTUIFY_CLIENT_ID` (and create the app at https://developer.spotify.com/dashboard with redirect URI `http://127.0.0.1:8888/callback`):
+
+```sh
+export SPOTUIFY_CLIENT_ID=your-app-client-id
+spotuify login
 ```
 
-Paste them into the onboarding prompts. `spotuify` writes them to `~/.config/spotuify/spotuify.toml`.
+Note: apps in Spotify's Development Mode cannot create playlists or save tracks (Spotify returns `403`). That is exactly why the default login does not use one.
 
 ## Configuration
 
@@ -284,9 +251,11 @@ Default config template:
 
 ```toml
 # spotuify config
-client_id = ""
-client_secret = ""
-redirect_uri = "http://127.0.0.1:8888/callback"
+# Nothing to set here to get started: run `spotuify` and log in via the
+# browser. Set client_id only if you want to use your own Spotify app
+# (see "Use your own Spotify app").
+# client_id = ""
+# redirect_uri = "http://127.0.0.1:8888/callback"
 
 [player]
 backend = "embedded"
@@ -307,6 +276,7 @@ Supported environment overrides:
 
 ```sh
 SPOTUIFY_CONFIG=/path/to/spotuify.toml
+# Optional: use your own Spotify app instead of the first-party login.
 SPOTUIFY_CLIENT_ID=...
 SPOTUIFY_CLIENT_SECRET=...
 SPOTUIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
@@ -624,23 +594,19 @@ spotuify config get redirect_uri
 
 Make sure the exact value is listed in Spotify Dashboard -> App -> Settings -> Redirect URIs. Use `127.0.0.1`, not `localhost`, and avoid trailing slashes.
 
-Missing client ID:
+Not logged in:
 
 ```text
-client_id missing
+not logged in; run `spotuify login`
 ```
 
 Fix:
 
 ```sh
-spotuify
+spotuify login
 ```
 
-That restarts setup automatically. Or set it manually:
-
-```sh
-spotuify config set client_id "..."
-```
+That opens the browser login. Plain `spotuify` does the same automatically on first run. (If you set `SPOTUIFY_CLIENT_ID` to use your own app and see a `403` on playlist writes, that app is in Development Mode; unset `SPOTUIFY_CLIENT_ID` to use the first-party login instead.)
 
 No token or expired token:
 
@@ -681,10 +647,10 @@ The daemon panics at startup when librespot can't bind an audio backend. Rebuild
 
 ## Security Notes
 
-- OAuth refresh tokens are stored in macOS Keychain under service `spotuify`.
-- Spotify app credentials are stored in `~/.config/spotuify/spotuify.toml` unless provided through environment variables.
-- `spotuify logout` removes the stored OAuth token from Keychain.
-- To rotate credentials, create a new Spotify app secret in the dashboard and rerun `spotuify onboard` or `spotuify config set client_secret "..."`.
+- The login refresh token is stored in macOS Keychain under service `spotuify`. The Web API access token is minted on demand and never written to disk.
+- `spotuify logout` removes the stored token from Keychain.
+- To re-authenticate, run `spotuify login` again.
+- If you use your own Spotify app (`SPOTUIFY_CLIENT_ID`), those credentials live in `~/.config/spotuify/spotuify.toml` or the environment.
 
 ## Development
 

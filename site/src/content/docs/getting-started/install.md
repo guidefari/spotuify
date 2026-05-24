@@ -39,20 +39,9 @@ cargo build --release
 
 ## Configure Spotify
 
-Create the config file and set the keys you need.
+There is nothing to configure to get started. spotuify uses Spotify's first-party login, so there is no Client ID or Client Secret to create or paste. Premium is required for playback.
 
-```bash
-spotuify config init
-spotuify config path
-spotuify config set client_id "$SPOTIFY_CLIENT_ID"
-spotuify config set redirect_uri "http://127.0.0.1:8888/callback"
-```
-
-If your app still needs a client secret, set it too:
-
-```bash
-spotuify config set client_secret "$SPOTIFY_CLIENT_SECRET"
-```
+If you would rather authenticate with your own Spotify Developer app, that is the one case where you set keys (see [Use your own Spotify app](#use-your-own-spotify-app)).
 
 ## Login
 
@@ -61,7 +50,18 @@ spotuify login
 spotuify doctor
 ```
 
-What you get: an OAuth token stored in the OS credential vault and a doctor report that tells you whether config, auth, daemon, device visibility, and Spotify API access work.
+What you get: a browser opens, you approve, and the refresh token is stored in the OS credential vault. The daemon then mints a full-access Web API token from your session. The doctor report tells you whether auth, daemon, device visibility, and Spotify API access work.
+
+## Use your own Spotify app
+
+Optional, and most people should skip it. To authenticate with your own Spotify Developer app instead of the first-party login, create an app at the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) with redirect URI `http://127.0.0.1:8888/callback`, then set the client id before logging in:
+
+```bash
+export SPOTUIFY_CLIENT_ID=your-app-client-id
+spotuify login
+```
+
+Apps in Spotify's Development Mode cannot create playlists or save tracks (Spotify returns `403`). That restriction is the reason the default login does not use one.
 
 ## Start the daemon
 
