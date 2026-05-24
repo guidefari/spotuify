@@ -28,6 +28,22 @@ pub trait SchemaCompatReporter: Send + Sync {
     fn report_schema_compat(&self, endpoint: &str, missing_keys: &[String]);
 }
 
+/// Source of the Web API bearer when running in first-party (keymaster)
+/// mode. The daemon implements this by minting via `login5` over the
+/// live librespot session (with an OAuth-refresh bootstrap/fallback).
+///
+/// When a provider is attached, the client takes the bearer from it
+/// instead of the dev-app PKCE refresh path in [`crate::auth`]. This is
+/// the cutover seam: it leaves the entire legacy dev-app flow intact and
+/// untouched (provider `None` == legacy behaviour), so a user who sets
+/// `SPOTUIFY_CLIENT_ID` still gets their own-app token.
+#[async_trait::async_trait]
+pub trait WebApiBearerProvider: Send + Sync {
+    /// Return a Web API bearer. `force_refresh` asks for a freshly
+    /// minted token (used after a 401 so a stale bearer is replaced).
+    async fn bearer(&self, force_refresh: bool) -> SpotifyResult<String>;
+}
+
 #[derive(Clone, Debug)]
 pub struct SavedTracksPage {
     pub total: u64,
@@ -62,6 +78,9 @@ pub struct SpotifyClient {
     default_priority: Priority,
     fake: bool,
     token_cache: Arc<Mutex<Option<StoredToken>>>,
+    /// When set, the Web API bearer is minted by this provider
+    /// (first-party / login5) instead of the dev-app PKCE refresh path.
+    bearer_provider: Option<Arc<dyn WebApiBearerProvider>>,
     /// SHA-1-hex device_id our embedded librespot publishes (deterministic,
     /// derived from the registered device name). Optional because pure
     /// CLI / tests construct clients without an embedded session.
@@ -133,6 +152,7 @@ impl SpotifyClient {
             default_priority: Priority::Foreground,
             fake: false,
             token_cache: Arc::new(Mutex::new(None)),
+            bearer_provider: None,
             own_device_id: None,
         }
     }
@@ -170,6 +190,34 @@ impl SpotifyClient {
         self
     }
 
+    /// Attach a first-party bearer provider (login5). When set, the
+    /// client mints its bearer through `provider` instead of the dev-app
+    /// PKCE refresh path.
+    pub fn with_bearer_provider(mut self, provider: Arc<dyn WebApiBearerProvider>) -> Self {
+        self.bearer_provider = Some(provider);
+        self
+    }
+
+    /// Current Web API bearer: from the first-party provider when one is
+    /// attached, otherwise the legacy dev-app PKCE cache/refresh path.
+    async fn current_bearer(&self) -> SpotifyResult<String> {
+        match &self.bearer_provider {
+            Some(provider) => provider.bearer(false).await,
+            None => auth::access_token_cached(&self.config, &self.http, &self.token_cache).await,
+        }
+    }
+
+    /// Force a freshly minted bearer after a 401. First-party: re-mint
+    /// via the provider; legacy: dev-app refresh.
+    async fn refresh_bearer(&self) -> SpotifyResult<String> {
+        match &self.bearer_provider {
+            Some(provider) => provider.bearer(true).await,
+            None => {
+                auth::refresh_access_token_cached(&self.config, &self.http, &self.token_cache).await
+            }
+        }
+    }
+
     pub fn with_default_priority(mut self, priority: Priority) -> Self {
         self.default_priority = priority;
         self
@@ -202,7 +250,7 @@ impl SpotifyClient {
     }
 
     pub async fn access_token(&self) -> SpotifyResult<String> {
-        auth::access_token_cached(&self.config, &self.http, &self.token_cache).await
+        self.current_bearer().await
     }
 
     pub async fn record_analytics_event(&self, event: AnalyticsEvent) {
@@ -1171,7 +1219,7 @@ impl SpotifyClient {
         path: &str,
         body: Option<T>,
     ) -> AnyResult<()> {
-        let token = auth::access_token_cached(&self.config, &self.http, &self.token_cache).await?;
+        let token = self.current_bearer().await?;
         let url = format!("{}{path}", self.api_base);
         let body = body.map(serde_json::to_value).transpose()?;
         let priority = request_priority(&method, path, self.default_priority);
@@ -1247,8 +1295,7 @@ impl SpotifyClient {
         path: &str,
         body: Option<impl Serialize>,
     ) -> AnyResult<Option<T>> {
-        let mut token =
-            auth::access_token_cached(&self.config, &self.http, &self.token_cache).await?;
+        let mut token = self.current_bearer().await?;
         let url = format!("{}{path}", self.api_base);
         let body = body.map(serde_json::to_value).transpose()?;
         let priority = request_priority(&method, path, self.default_priority);
@@ -1279,12 +1326,7 @@ impl SpotifyClient {
                 Ok(response) => break response,
                 Err(SpotifyError::AuthExpired) if auth_attempt == 0 => {
                     auth_attempt += 1;
-                    token = auth::refresh_access_token_cached(
-                        &self.config,
-                        &self.http,
-                        &self.token_cache,
-                    )
-                    .await?;
+                    token = self.refresh_bearer().await?;
                 }
                 Err(err) => {
                     self.record_spotify_api_finished(

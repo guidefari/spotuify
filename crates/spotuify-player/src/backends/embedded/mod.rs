@@ -463,6 +463,37 @@ impl PlayerBackend for EmbeddedBackend {
             .is_some_and(|session| !session.is_invalid())
     }
 
+    /// Mint a full-scope Web API bearer from the live librespot session
+    /// via `login5`. This is the first-party token source that replaces
+    /// the dev-app PKCE flow: the keymaster session is never in
+    /// Development Mode, so this bearer can write playlists where a
+    /// dev-app token gets a 403.
+    ///
+    /// `login5`'s `Login5Manager` caches the token internally and only
+    /// re-mints when within seconds of expiry, so calling this on every
+    /// daemon auth-health tick is cheap. Returns `None` (rather than an
+    /// error) when no session can be established yet — the daemon treats
+    /// that as "not authenticated".
+    async fn web_api_token(&self) -> Option<String> {
+        let session = match self.session().await {
+            Ok(session) => session,
+            Err(err) => {
+                tracing::debug!(
+                    error = %err,
+                    "web_api_token: no librespot session for login5 mint yet"
+                );
+                return None;
+            }
+        };
+        match crate::backends::first_party_auth::mint_via_login5(&session).await {
+            Ok(token) => Some(token.access_token),
+            Err(err) => {
+                tracing::warn!(error = %err, "web_api_token: login5 mint failed");
+                None
+            }
+        }
+    }
+
     async fn mercury_get(&self, uri: &str) -> PlayerResult<Bytes> {
         let session = self.session().await?;
         let future = session

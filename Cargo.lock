@@ -5671,6 +5671,7 @@ name = "spotuify-spotify"
 version = "0.1.14"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64",
  "chrono",
  "dirs",

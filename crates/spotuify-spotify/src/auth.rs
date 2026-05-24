@@ -20,9 +20,15 @@ use tokio::sync::Mutex;
 use crate::client::user_agent_string;
 use crate::config::Config;
 use crate::error::{SpotifyError, SpotifyResult};
+use crate::first_party::{classify_credential, FirstPartyCredentials, StoredCredential};
 use url::form_urlencoded;
 
 const KEYCHAIN_USER: &str = "spotify";
+/// Keychain account for first-party (keymaster) credentials. Kept
+/// separate from the legacy `KEYCHAIN_USER` slot so the two coexist
+/// during migration and the legacy dev-app reader never sees a
+/// first-party blob it can't parse.
+const KEYCHAIN_USER_FIRST_PARTY: &str = "spotify-first-party";
 const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(20);
 const TOKEN_LOCK_TIMEOUT: Duration = Duration::from_secs(15);
 const TOKEN_LOCK_POLL: Duration = Duration::from_millis(50);
@@ -52,7 +58,7 @@ const SCOPES: &[&str] = &[
     "app-remote-control",
 ];
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct StoredToken {
     pub access_token: String,
     pub refresh_token: String,
@@ -307,6 +313,177 @@ pub async fn refresh_access_token_cached(
 /// user isn't logged in yet.
 pub fn stored_token_snapshot() -> SpotifyResult<Option<StoredToken>> {
     Ok(load_token_bounded()?)
+}
+
+// ---------------------------------------------------------------------
+// First-party (keymaster) credential persistence.
+//
+// Mirrors the StoredToken machinery (bounded keychain reads, disk cache
+// to avoid the macOS prompt storm, atomic 0600 writes) but stores a
+// `FirstPartyCredentials` blob under a distinct keychain account/disk
+// file. The Web API bearer is never persisted here — only the long-lived
+// librespot-oauth refresh token. The bearer is minted live (login5).
+// ---------------------------------------------------------------------
+
+fn keychain_get_account(account: &str) -> Result<String, keychain::KeychainError> {
+    #[cfg(test)]
+    {
+        Err(keychain::KeychainError::NoEntry {
+            service: keychain_service(),
+            account: account.to_string(),
+        })
+    }
+    #[cfg(not(test))]
+    {
+        keychain::get_password(&keychain_service(), account)
+    }
+}
+
+fn keychain_set_account(account: &str, raw: &str) -> Result<(), keychain::KeychainError> {
+    #[cfg(test)]
+    {
+        let _ = (account, raw);
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        keychain::set_password(&keychain_service(), account, raw)
+    }
+}
+
+fn keychain_delete_account(account: &str) -> Result<(), keychain::KeychainError> {
+    #[cfg(test)]
+    {
+        let _ = account;
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        keychain::delete_password(&keychain_service(), account)
+    }
+}
+
+fn first_party_cache_file() -> PathBuf {
+    token_cache_dir().join("first-party.json")
+}
+
+fn load_first_party_from_disk() -> Option<FirstPartyCredentials> {
+    let path = first_party_cache_file();
+    let raw = std::fs::read_to_string(&path).ok()?;
+    match serde_json::from_str::<FirstPartyCredentials>(&raw) {
+        Ok(creds) if creds.is_first_party() && !creds.refresh_token.is_empty() => Some(creds),
+        _ => None,
+    }
+}
+
+fn save_first_party_to_disk(creds: &FirstPartyCredentials) {
+    let path = first_party_cache_file();
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if let Err(err) = std::fs::create_dir_all(parent) {
+        tracing::warn!(path = %parent.display(), error = %err, "failed to create first-party cache dir");
+        return;
+    }
+    let raw = match creds.to_json() {
+        Ok(raw) => raw,
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to encode first-party credentials for disk cache");
+            return;
+        }
+    };
+    if let Err(err) = atomic_write_mode_0600(&path, raw.as_bytes()) {
+        tracing::warn!(path = %path.display(), error = %err, "failed to write first-party cache");
+    }
+}
+
+fn delete_first_party_from_disk() {
+    let _ = std::fs::remove_file(first_party_cache_file());
+}
+
+fn save_first_party(creds: &FirstPartyCredentials) -> AnyResult<()> {
+    let raw = creds
+        .to_json()
+        .context("failed to encode first-party credentials")?;
+    keychain_set_account(KEYCHAIN_USER_FIRST_PARTY, &raw)
+        .map_err(|err| anyhow!("failed to save first-party credentials to keychain: {err}"))?;
+    save_first_party_to_disk(creds);
+    Ok(())
+}
+
+/// Persist first-party credentials to the keychain (and disk mirror),
+/// serialized through the shared token-store lock so a concurrent login
+/// can't interleave with a read.
+pub fn save_first_party_credentials(creds: &FirstPartyCredentials) -> SpotifyResult<()> {
+    let _lock = acquire_token_store_lock_bounded()?;
+    let creds = creds.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(save_first_party(&creds));
+    });
+    Ok(recv_keychain_result(rx, "save first-party credentials")?)
+}
+
+/// Load first-party credentials. Disk-first (no keychain prompt), then
+/// keychain. Returns `Ok(None)` when no first-party login has happened.
+pub fn load_first_party_credentials() -> SpotifyResult<Option<FirstPartyCredentials>> {
+    if let Some(creds) = load_first_party_from_disk() {
+        return Ok(Some(creds));
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = match keychain_get_account(KEYCHAIN_USER_FIRST_PARTY) {
+            Ok(raw) => match serde_json::from_str::<FirstPartyCredentials>(&raw) {
+                Ok(creds) if creds.is_first_party() && !creds.refresh_token.is_empty() => {
+                    save_first_party_to_disk(&creds);
+                    Ok(Some(creds))
+                }
+                Ok(_) => Ok(None),
+                Err(err) => Err(anyhow!(
+                    "stored first-party credentials are invalid JSON: {err}"
+                )),
+            },
+            Err(err) if err.is_no_entry() => Ok(None),
+            Err(err) => Err(anyhow!("failed to read first-party credentials: {err}")),
+        };
+        let _ = tx.send(result);
+    });
+    Ok(recv_keychain_result(rx, "read first-party credentials")?)
+}
+
+/// Remove first-party credentials from keychain + disk.
+pub fn delete_first_party_credentials() -> SpotifyResult<()> {
+    let _lock = acquire_token_store_lock_bounded()?;
+    delete_first_party_from_disk();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = match keychain_delete_account(KEYCHAIN_USER_FIRST_PARTY) {
+            Ok(()) => Ok(()),
+            Err(err) if err.is_no_entry() => Ok(()),
+            Err(err) => Err(anyhow!("failed to delete first-party credentials: {err}")),
+        };
+        let _ = tx.send(result);
+    });
+    Ok(recv_keychain_result(rx, "delete first-party credentials")?)
+}
+
+/// Classify whatever credential is on this machine. Prefers first-party;
+/// falls back to a legacy dev-app token (which the daemon surfaces as
+/// "re-login required" so the user switches to the first-party flow).
+/// `None` means no usable credential is stored at all.
+pub fn stored_credential_snapshot() -> SpotifyResult<Option<StoredCredential>> {
+    if let Some(creds) = load_first_party_credentials()? {
+        return Ok(Some(StoredCredential::FirstParty(creds)));
+    }
+    // Fall back to the raw legacy blob so we can distinguish "legacy
+    // dev-app token present" (needs re-login) from "nothing stored".
+    if let Some(token) = load_token_bounded()? {
+        let raw = serde_json::to_string(&token).unwrap_or_default();
+        if let Some(StoredCredential::LegacyDevApp(token)) = classify_credential(&raw) {
+            return Ok(Some(StoredCredential::LegacyDevApp(token)));
+        }
+    }
+    Ok(None)
 }
 
 pub fn disk_token_cache_status() -> String {
@@ -1287,6 +1464,74 @@ mod tests {
                 err.to_string()
                     .contains("timed out waiting for Spotify token lock"),
                 "{err:#}"
+            );
+        });
+    }
+
+    #[test]
+    fn first_party_credentials_round_trip_via_disk() {
+        with_auth_env(|| {
+            let creds = crate::first_party::FirstPartyCredentials::new(
+                "refresh-token-xyz",
+                vec!["playlist-modify-private".to_string()],
+            );
+            super::save_first_party_credentials(&creds).expect("save first-party");
+
+            let loaded = super::load_first_party_credentials()
+                .expect("load first-party")
+                .expect("first-party credentials present");
+            assert_eq!(loaded, creds);
+
+            // The persisted blob must carry only the refresh token, never
+            // a Web API bearer.
+            let raw = std::fs::read_to_string(super::first_party_cache_file())
+                .expect("first-party cache file exists");
+            assert!(raw.contains("refresh-token-xyz"));
+            assert!(!raw.contains("access_token"));
+        });
+    }
+
+    #[test]
+    fn stored_credential_snapshot_prefers_first_party() {
+        with_auth_env(|| {
+            let creds = crate::first_party::FirstPartyCredentials::new("rt-first-party", vec![]);
+            super::save_first_party_credentials(&creds).expect("save first-party");
+            // A legacy token also present must NOT shadow the first-party one.
+            super::save_token_to_disk(&existing_token());
+
+            match super::stored_credential_snapshot().expect("snapshot") {
+                Some(crate::first_party::StoredCredential::FirstParty(c)) => {
+                    assert_eq!(c.refresh_token, "rt-first-party");
+                }
+                other => panic!("expected first-party, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn stored_credential_snapshot_reports_legacy_dev_app_when_only_legacy_present() {
+        with_auth_env(|| {
+            super::save_token_to_disk(&existing_token());
+            match super::stored_credential_snapshot().expect("snapshot") {
+                Some(crate::first_party::StoredCredential::LegacyDevApp(token)) => {
+                    assert_eq!(token.access_token, "old-access");
+                }
+                other => panic!("expected legacy dev-app, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn delete_first_party_clears_disk() {
+        with_auth_env(|| {
+            let creds = crate::first_party::FirstPartyCredentials::new("rt-del", vec![]);
+            super::save_first_party_credentials(&creds).expect("save first-party");
+            super::delete_first_party_credentials().expect("delete first-party");
+            assert!(
+                super::load_first_party_credentials()
+                    .expect("load after delete")
+                    .is_none(),
+                "first-party credentials should be gone after delete"
             );
         });
     }

@@ -89,6 +89,12 @@ enum PlayerCommand {
         uri: String,
         resp: oneshot::Sender<Result<bytes::Bytes>>,
     },
+    /// Mint the first-party Web API bearer from the backend's live
+    /// librespot session (login5). `None` when no session is available
+    /// yet. See `DaemonState::mint_web_api_token`.
+    WebApiToken {
+        resp: oneshot::Sender<Option<String>>,
+    },
     QueueAdd {
         uri: String,
         resp: oneshot::Sender<PlayerResult<()>>,
@@ -786,13 +792,17 @@ impl DaemonState {
         }
 
         let config = Config::load().context("failed to load Spotify config")?;
+        let first_party = cfg!(feature = "embedded-playback") && config.is_first_party();
         let client =
             SpotifyClient::new_with_rate_limiter(config, self.shared_spotify_rate_limiter().await?)
                 .with_token_cache(self.token_cache.clone());
+        let client = self.attach_bearer(client, first_party);
 
         match client.access_token().await {
             Ok(token) => {
-                self.update_player_token(Some(token));
+                if !first_party {
+                    self.update_player_token(Some(token));
+                }
                 if self
                     .auth_required
                     .swap(false, std::sync::atomic::Ordering::AcqRel)
@@ -809,9 +819,10 @@ impl DaemonState {
                         "Spotify auth recovered after token replacement; cleared revoked latch"
                     );
                 }
-                if !self
-                    .scope_reauth_emitted
-                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+                if !first_party
+                    && !self
+                        .scope_reauth_emitted
+                        .swap(true, std::sync::atomic::Ordering::AcqRel)
                 {
                     let cached = self.token_cache.lock().await;
                     if emit_scope_reauth_event_if_needed(cached.as_ref(), &self.event_tx) {
@@ -1028,6 +1039,21 @@ impl DaemonState {
         Ok(rate_limiter)
     }
 
+    /// Attach the first-party login5 bearer provider when running in
+    /// keymaster mode. No-op in legacy (dev-app) mode or in builds
+    /// without the embedded backend.
+    fn attach_bearer(&self, client: SpotifyClient, first_party: bool) -> SpotifyClient {
+        let _ = first_party;
+        #[cfg(feature = "embedded-playback")]
+        if first_party {
+            return client.with_bearer_provider(Arc::new(FirstPartyBearerProvider {
+                player_tx: self.player_tx.clone(),
+                token_slot: self.player_token_slot.clone(),
+            }));
+        }
+        client
+    }
+
     pub(crate) async fn spotify_client(&self) -> Result<SpotifyClient> {
         if let Some(err) = self.auth_gate_error() {
             return Err(anyhow::Error::new(err));
@@ -1044,6 +1070,13 @@ impl DaemonState {
             };
         }
         let config = Config::load().context("failed to load Spotify config")?;
+        // First-party (keymaster) mode is the default: the bearer is
+        // minted via login5 through the attached provider, and librespot
+        // bootstraps from its own cached native credentials, so we must
+        // NOT clobber the player token slot with the (Web-API-only)
+        // login5 bearer here. Legacy dev-app mode keeps the old
+        // slot-publish + scope-drift behaviour.
+        let first_party = cfg!(feature = "embedded-playback") && config.is_first_party();
         // Only claim our own device for selection when the librespot
         // session is actually connected. Otherwise Spotify still
         // lists our `spotuify` device by SHA-1 id from a prior daemon
@@ -1067,9 +1100,12 @@ impl DaemonState {
                     seen: self.schema_compat_seen.clone(),
                 }))
                 .with_own_device_id(own_device_id);
+        let client = self.attach_bearer(client, first_party);
         match client.access_token().await {
             Ok(token) => {
-                self.update_player_token(Some(token));
+                if !first_party {
+                    self.update_player_token(Some(token));
+                }
                 // Self-healing: clear the latch if a previously revoked
                 // token has been replaced (e.g. user ran `spotuify login`
                 // in another shell). The TUI/CLI auto-reauth flow also
@@ -1091,12 +1127,14 @@ impl DaemonState {
                 tracing::debug!(error = %err, "spotify access token unavailable for player bridge")
             }
         }
-        // Scope-drift surface — reuses the token that's now in
-        // `self.token_cache` (no extra keychain read). Fires at most
-        // once per daemon process via the atomic latch.
-        if !self
-            .scope_reauth_emitted
-            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        // Scope-drift surface — legacy dev-app only. login5 tokens always
+        // report empty scopes, so the drift check would fire a permanent
+        // false "re-login" banner in first-party mode. Reuses the token
+        // that's now in `self.token_cache` (no extra keychain read).
+        if !first_party
+            && !self
+                .scope_reauth_emitted
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
         {
             let cached = self.token_cache.lock().await;
             if emit_scope_reauth_event_if_needed(cached.as_ref(), &self.event_tx) {
@@ -1128,6 +1166,69 @@ fn derive_device_id_for_name(name: &str) -> String {
         out.push_str(&format!("{byte:02x}"));
     }
     out
+}
+
+/// First-party Web API bearer provider (login5).
+///
+/// Attached to the `SpotifyClient` in `spotify_client()` /
+/// `refresh_auth_health()` when running in keymaster mode. Mints the
+/// bearer from the live librespot session; if no session is up yet it
+/// refreshes the stored OAuth token, publishes it as session-bootstrap
+/// material, and re-mints. The OAuth access token is itself a valid
+/// full-scope bearer, so it's the final fallback when login5 can't run.
+#[cfg(feature = "embedded-playback")]
+struct FirstPartyBearerProvider {
+    player_tx: mpsc::Sender<PlayerCommand>,
+    token_slot: PlayerTokenSlot,
+}
+
+#[cfg(feature = "embedded-playback")]
+impl FirstPartyBearerProvider {
+    async fn mint(&self) -> Option<String> {
+        let (resp, rx) = oneshot::channel();
+        if self
+            .player_tx
+            .send(PlayerCommand::WebApiToken { resp })
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        rx.await.unwrap_or(None)
+    }
+}
+
+#[cfg(feature = "embedded-playback")]
+#[async_trait::async_trait]
+impl spotuify_spotify::WebApiBearerProvider for FirstPartyBearerProvider {
+    async fn bearer(&self, force_refresh: bool) -> spotuify_spotify::SpotifyResult<String> {
+        use spotuify_spotify::SpotifyError;
+        // Primary: mint from the live librespot session (login5). Cheap;
+        // login5 caches internally and only re-mints near expiry.
+        if !force_refresh {
+            if let Some(bearer) = self.mint().await {
+                return Ok(bearer);
+            }
+        }
+        // No session yet (or forced): refresh the OAuth token so
+        // librespot can (re)connect, publish it as bootstrap material,
+        // then mint again.
+        let creds = spotuify_spotify::auth::load_first_party_credentials()?
+            .ok_or(SpotifyError::AuthRequired)?;
+        let oauth =
+            spotuify_player::backends::first_party_auth::refresh_oauth(&creds.refresh_token)
+                .await
+                .map_err(|err| {
+                    SpotifyError::from(anyhow::anyhow!("first-party OAuth refresh failed: {err}"))
+                })?;
+        *self.token_slot.write() = Some(oauth.access_token.clone());
+        if let Some(bearer) = self.mint().await {
+            return Ok(bearer);
+        }
+        // login5 still unavailable (session can't establish): the OAuth
+        // access token is a valid full-scope bearer on its own.
+        Ok(oauth.access_token)
+    }
 }
 
 fn spawn_player_actor(
@@ -1169,6 +1270,9 @@ fn spawn_player_actor(
                         }
                         PlayerCommand::MercuryGet { uri, resp } => {
                             let _ = resp.send(player_result(player.mercury_get(&uri).await));
+                        }
+                        PlayerCommand::WebApiToken { resp } => {
+                            let _ = resp.send(player.web_api_token().await);
                         }
                         PlayerCommand::QueueAdd { uri, resp } => {
                             let _ = resp.send(player.queue_add(&uri).await);

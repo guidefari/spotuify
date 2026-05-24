@@ -18,6 +18,9 @@ pub mod visualization_tap;
 pub mod worker;
 
 #[cfg(feature = "embedded-playback")]
+pub mod first_party_auth;
+
+#[cfg(feature = "embedded-playback")]
 pub mod librespot_sink_chain;
 
 // Mock backend is exposed unconditionally — the daemon uses it as a

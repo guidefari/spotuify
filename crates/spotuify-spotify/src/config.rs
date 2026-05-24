@@ -7,6 +7,14 @@ use spotuify_core::BackendKind;
 
 use crate::error::{SpotifyError, SpotifyResult};
 
+/// librespot's first-party "keymaster" client id. This is the default
+/// `client_id` — a first-party login is never in Spotify's Development
+/// Mode, so it can write playlists where a per-user dev app gets a 403.
+/// Users who prefer their own Spotify app set `SPOTUIFY_CLIENT_ID` (or
+/// `client_id` in the config) to override it; that switches the auth
+/// flow back to the legacy dev-app PKCE path.
+pub const KEYMASTER_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub client_id: String,
@@ -638,11 +646,14 @@ impl Config {
         let discord = DiscordConfig::from_file(&file);
         let viz = VizConfig::from_file(&file);
 
+        // client_id defaults to the first-party keymaster id. A user only
+        // needs to set this if they want to use their own Spotify app
+        // (the legacy dev-app flow). No more "paste your client_id" step.
         let client_id = std::env::var("SPOTUIFY_CLIENT_ID")
             .ok()
             .or(file.client_id)
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| anyhow!("client_id missing in {}", config_path.display()))?;
+            .unwrap_or_else(|| KEYMASTER_CLIENT_ID.to_string());
         let client_secret = std::env::var("SPOTUIFY_CLIENT_SECRET")
             .ok()
             .or(file.client_secret)
@@ -665,6 +676,23 @@ impl Config {
             discord,
             viz,
         })
+    }
+
+    /// True when running in first-party (keymaster) mode — the default.
+    ///
+    /// The opt-out is the explicit `SPOTUIFY_CLIENT_ID` env var, NOT a
+    /// `client_id` left in the config file. The old onboarding wrote the
+    /// user's dev-app id into the config, so keying off the config value
+    /// would strand every existing user on the broken dev-app flow
+    /// (which 403s on playlist writes). Treating only the env var as a
+    /// deliberate opt-out migrates existing users to the first-party fix
+    /// automatically; power users who want their own app export
+    /// `SPOTUIFY_CLIENT_ID`.
+    pub fn is_first_party(&self) -> bool {
+        std::env::var("SPOTUIFY_CLIENT_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .is_none()
     }
 
     pub fn redacted_client_id(&self) -> String {
@@ -858,12 +886,11 @@ fn ensure_config_exists(path: &Path) -> Result<()> {
     if path.exists() {
         return Ok(());
     }
-
-    write_template(path)?;
-    bail!(
-        "created {}; add your Spotify client_id and client_secret, then rerun spotuify",
-        path.display()
-    )
+    // First-party default: a fresh config is immediately usable (no
+    // client_id to paste). We write the template and continue; the
+    // onboarding flow handles the browser login. Users who want their
+    // own app set SPOTUIFY_CLIENT_ID / client_id afterwards.
+    write_template(path)
 }
 
 fn read_config_file(path: &Path) -> Result<FileConfig> {
@@ -1029,10 +1056,15 @@ fn parse_bool(value: &str) -> Result<bool> {
 }
 
 const CONFIG_TEMPLATE: &str = r#"# spotuify config
-# Copy your Spotify app credentials from https://developer.spotify.com/dashboard.
-client_id = ""
-client_secret = ""
-redirect_uri = "http://127.0.0.1:8888/callback"
+# spotuify logs in with Spotify's first-party flow, so there's nothing to
+# paste here to get started — just run `spotuify` and log in via the
+# browser. Premium is required for playback.
+#
+# Power users who'd rather use their own Spotify Developer app can set a
+# client_id below (or the SPOTUIFY_CLIENT_ID env var). That switches to
+# the dev-app login; note dev-mode apps can't create playlists.
+# client_id = ""
+# redirect_uri = "http://127.0.0.1:8888/callback"
 
 [player]
 # Backend that registers spotuify as a Spotify Connect device.

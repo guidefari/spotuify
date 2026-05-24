@@ -68,11 +68,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Guided first-run setup: config, OAuth, and initial Spotify sync.
+    /// Guided first-run setup: config, browser login, and initial Spotify sync.
     Onboard,
-    /// Authorize Spotify and store a refresh token in macOS Keychain.
+    /// Log in to Spotify in your browser and store a refresh token in the keychain.
     Login {
-        /// Override the redirect URI registered in Spotify's Developer Dashboard.
+        /// Override the redirect URI (only used with your own SPOTUIFY_CLIENT_ID app).
         #[arg(long)]
         redirect_uri: Option<String>,
     },
@@ -778,6 +778,30 @@ fn cli_login_progress(event: spotuify_spotify::auth::LoginProgress) {
     }
 }
 
+/// First-party (keymaster) browser login. Opens the browser via
+/// librespot-oauth and persists the long-lived refresh token. The
+/// daemon mints the Web API bearer from the live session on demand
+/// (login5), so nothing else needs to be stored. No Spotify Developer
+/// app required — and unlike a dev-app token, this one can create
+/// playlists.
+#[cfg(feature = "embedded-playback")]
+async fn first_party_login() -> Result<()> {
+    println!("Opening your browser to log in to Spotify (Premium required)...");
+    println!("If it doesn't open, copy the URL printed below into any browser.\n");
+    let token = spotuify_player::backends::first_party_auth::login()
+        .await
+        .map_err(|err| anyhow::anyhow!("Spotify login failed: {err}"))?;
+    let creds = spotuify_player::backends::first_party_auth::credentials_from_oauth_token(&token);
+    crate::auth::save_first_party_credentials(&creds)?;
+    println!("\nLogged in. spotuify mints a full-access token from your session.");
+    Ok(())
+}
+
+#[cfg(not(feature = "embedded-playback"))]
+async fn first_party_login() -> Result<()> {
+    anyhow::bail!("first-party login requires a build with --features embedded-playback")
+}
+
 /// Best-effort: tell the running daemon to drop its in-memory token
 /// cache and clear the `auth_revoked` latch after the user has just
 /// completed `spotuify login` / `spotuify logout`. Without this, the
@@ -864,7 +888,12 @@ async fn run() -> Result<()> {
             if let Some(redirect_uri) = redirect_uri {
                 config.redirect_uri = redirect_uri;
             }
-            login(&config, cli_login_progress).await?;
+            if config.is_first_party() {
+                first_party_login().await?;
+            } else {
+                // Legacy dev-app login (user set their own SPOTUIFY_CLIENT_ID).
+                login(&config, cli_login_progress).await?;
+            }
             // The running daemon (if any) is still holding the
             // previous, now-revoked token in its in-memory cache and
             // has its `auth_revoked` latch set. Without nudging it,
@@ -880,7 +909,13 @@ async fn run() -> Result<()> {
             Ok(())
         }
         Some(Command::Logout) => {
+            // Clear both credential kinds: the legacy dev-app token and
+            // the first-party refresh token, so `logout` is a clean slate
+            // regardless of which flow the user is on.
             logout()?;
+            if let Err(err) = crate::auth::delete_first_party_credentials() {
+                tracing::debug!(error = %err, "clearing first-party credentials on logout");
+            }
             // Same rationale as Login above — the daemon may still
             // have a cached access token in memory. ReloadAuth drops
             // it so the next command fails fast with "not logged in"
@@ -1467,9 +1502,25 @@ async fn spotify_client(config: Config, source: AnalyticsSource) -> Result<Spoti
 
 async fn onboard() -> Result<()> {
     println!("spotuify setup\n");
-    println!("This will create your config, save Spotify app credentials, open OAuth, then sync Spotify data.");
     println!("Config: {}\n", init_config()?.display());
 
+    // First-party is the default: one browser login, no Spotify Developer
+    // app to register. The daemon mints the Web API token from the
+    // session, so the initial sync runs there once the daemon is up.
+    let config = Config::load().context("failed to load saved config")?;
+    if config.is_first_party() {
+        first_party_login().await?;
+        if let Err(err) = nudge_daemon_reload_auth().await {
+            tracing::debug!(error = %err, "post-onboard daemon reload-auth skipped");
+        }
+        println!("\nSetup complete. Run `spotuify` to open the player.");
+        return Ok(());
+    }
+
+    // Legacy dev-app onboarding — only when the user has set their own
+    // SPOTUIFY_CLIENT_ID / client_id (a custom Spotify app). Dev-mode
+    // apps cannot create playlists; the default first-party flow can.
+    println!("Using your own Spotify app (SPOTUIFY_CLIENT_ID is set).");
     let existing_client_id = std::env::var("SPOTUIFY_CLIENT_ID")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -1525,6 +1576,18 @@ async fn onboard() -> Result<()> {
 }
 
 fn needs_onboarding() -> Result<bool> {
+    // First-party (default): onboarded once a first-party refresh token is
+    // stored. The disk-first read is fast and never triggers a keychain
+    // prompt for a not-logged-in user.
+    let first_party = Config::load().map(|c| c.is_first_party()).unwrap_or(true);
+    if first_party {
+        let creds_present = crate::auth::load_first_party_credentials()
+            .map(|creds| creds.is_some())
+            .unwrap_or(false);
+        return Ok(!creds_present);
+    }
+
+    // Legacy dev-app: needs a client_id and a stored token.
     let path = config_path()?;
     let client_id_present = std::env::var("SPOTUIFY_CLIENT_ID")
         .ok()

@@ -15,10 +15,11 @@ pub mod client;
 pub mod compat;
 pub mod config;
 pub mod error;
+pub mod first_party;
 pub mod rate_limit;
 pub mod refresh_planner;
 pub mod selection;
 
-pub use client::SpotifyClient;
+pub use client::{SpotifyClient, WebApiBearerProvider};
 
 pub use error::{AuthErrorKind, SpotifyError, SpotifyResult};

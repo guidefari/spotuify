@@ -190,11 +190,14 @@ pub fn classify_response(
                 SpotifyError::Forbidden { scope }
             } else {
                 let message = spotify_error_message(body);
-                let message = if message.is_empty() {
+                let mut message = if message.is_empty() {
                     "Spotify refused the request (403)".to_string()
                 } else {
                     message
                 };
+                if let Some(hint) = dev_app_write_hint(endpoint) {
+                    message.push_str(&hint);
+                }
                 SpotifyError::Api {
                     status: 403,
                     endpoint: endpoint.to_string(),
@@ -238,6 +241,34 @@ pub fn classify_response(
             body: body.to_string(),
         },
     }
+}
+
+/// A user-facing hint appended to a write 403 when the user has opted
+/// into their own Spotify app (`SPOTUIFY_CLIENT_ID`). Such apps are in
+/// Spotify's Development Mode, which blocks playlist/library writes —
+/// the exact reason spotuify defaults to the first-party login. Returns
+/// `None` for the default (first-party) setup, where this 403 shouldn't
+/// happen, and for non-write endpoints.
+fn dev_app_write_hint(endpoint: &str) -> Option<String> {
+    let using_own_app = std::env::var("SPOTUIFY_CLIENT_ID")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty());
+    if !using_own_app {
+        return None;
+    }
+    // `endpoint` is a "VERB /path" scope label; only nudge on writes.
+    let is_write = endpoint.starts_with("POST")
+        || endpoint.starts_with("PUT")
+        || endpoint.starts_with("DELETE");
+    if !is_write {
+        return None;
+    }
+    Some(
+        "\n  Hint: your own Spotify app (SPOTUIFY_CLIENT_ID) is in Development Mode, \
+         which blocks playlist/library writes. Unset SPOTUIFY_CLIENT_ID and run \
+         `spotuify login` to use the first-party login, which can write."
+            .to_string(),
+    )
 }
 
 /// Extract Spotify's machine-readable `error.message` from the body when
@@ -286,5 +317,90 @@ fn deprecated_label(endpoint: &str) -> &'static str {
         "featured-playlists"
     } else {
         "unknown-deprecated"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_response, dev_app_write_hint, SpotifyError};
+    use chrono::Utc;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_client_id_env<R>(value: Option<&str>, f: impl FnOnce() -> R) -> R {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let prev = std::env::var_os("SPOTUIFY_CLIENT_ID");
+        match value {
+            Some(v) => std::env::set_var("SPOTUIFY_CLIENT_ID", v),
+            None => std::env::remove_var("SPOTUIFY_CLIENT_ID"),
+        }
+        let out = f();
+        match prev {
+            Some(p) => std::env::set_var("SPOTUIFY_CLIENT_ID", p),
+            None => std::env::remove_var("SPOTUIFY_CLIENT_ID"),
+        }
+        out
+    }
+
+    #[test]
+    fn dev_app_write_hint_only_with_own_app_and_on_writes() {
+        with_client_id_env(Some("my-dev-app"), || {
+            assert!(dev_app_write_hint("POST /playlists/{id}/tracks").is_some());
+            assert!(dev_app_write_hint("PUT /me/player/play").is_some());
+            // Reads never get the write hint.
+            assert!(dev_app_write_hint("GET /me/playlists").is_none());
+        });
+        with_client_id_env(None, || {
+            // First-party (default): no dev-app hint at all.
+            assert!(dev_app_write_hint("POST /playlists/{id}/tracks").is_none());
+        });
+    }
+
+    #[test]
+    fn classify_403_write_appends_hint_for_own_app() {
+        // Adversarial: a dev-app user creating a playlist must be told
+        // *why* it's blocked, not just "403".
+        with_client_id_env(Some("my-dev-app"), || {
+            let err = classify_response(
+                403,
+                None,
+                "POST /users/me/playlists",
+                r#"{"error":{"status":403,"message":"Forbidden"}}"#,
+                Utc::now(),
+            );
+            match err {
+                SpotifyError::Api {
+                    status: 403,
+                    message,
+                    ..
+                } => {
+                    assert!(message.contains("Forbidden"));
+                    assert!(
+                        message.contains("SPOTUIFY_CLIENT_ID"),
+                        "expected dev-app hint, got: {message}"
+                    );
+                }
+                other => panic!("expected Api 403, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn classify_403_first_party_has_no_dev_app_hint() {
+        with_client_id_env(None, || {
+            let err = classify_response(
+                403,
+                None,
+                "POST /users/me/playlists",
+                r#"{"error":{"status":403,"message":"Forbidden"}}"#,
+                Utc::now(),
+            );
+            match err {
+                SpotifyError::Api { message, .. } => {
+                    assert!(!message.contains("SPOTUIFY_CLIENT_ID"));
+                }
+                other => panic!("expected Api 403, got {other:?}"),
+            }
+        });
     }
 }
