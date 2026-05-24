@@ -1,4 +1,7 @@
-@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@10..48,75..100,300..800&family=Sometype+Mono:wght@400;500;600;700&display=swap');
+/* Brand fonts are loaded non-render-blocking from astro.config head (a
+   top-of-file `@import` of Google Fonts blocks all rendering until the
+   request returns, which white-screens the page when Google Fonts is slow
+   or blocked). The fallback stack below renders instantly meanwhile. */
 
 :root {
   --oxide-0: oklch(11% 0.018 135);
