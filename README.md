@@ -1,10 +1,21 @@
 # spotuify
 
-`spotuify` is a keyboard-native Spotify TUI, CLI, and MCP server. It uses embedded `librespot` for Connect playback (sub-100ms control), your operating system's credential store for OAuth tokens (macOS Keychain, Linux Secret Service, Windows Credential Manager), Spotify's Web API for metadata + library, and `ratatui-image` for album and podcast artwork in capable terminals.
-
-The goal is simple: run `spotuify`. If credentials or OAuth are missing, setup starts automatically. Paste your Spotify app credentials, authorize in the browser, and land in a synced terminal UI without hand-editing config files.
+spotuify is a Spotify player you drive from your terminal: a keyboard-native TUI and a fully scriptable CLI for the same thing. Search, play, queue, switch devices, build playlists, read synced lyrics, see album art, all without leaving the shell. It also ships an MCP server so a coding agent can run your music the way you do, but that's a bonus. The TUI and CLI are the point.
 
 <p align="center"><img src="assets/spotuify-demo.gif" alt="spotuify terminal demo: search, play, queue, and device control" /></p>
+
+Run `spotuify` and you're in. If your Spotify credentials or OAuth aren't set up yet, it walks you through them: paste your app credentials, authorize in the browser, land in a synced UI. No config files to hand-edit.
+
+## Why another Spotify TUI?
+
+Fair question. `spotify-player`, `ncspot`, and the original `spotify-tui` already proved a terminal Spotify client is worth living in, and spotuify builds on what they shipped: embedded `librespot` for playback, a keyboard TUI, local library search. It pushes hard in one direction the others treat as a side feature. The CLI is the product, not a wrapper around the TUI.
+
+- **Pipeable everywhere, not just on one command.** Every read, list, status, and search surface speaks `--format json`, `jsonl`, `csv`, or `ids`. `spotuify search "lo-fi beats" --type playlist --format ids` returns bare URIs you can pipe into anything, in any language. Other terminal clients give you JSON on a command or two, or an interactive UI you can't script at all.
+- **Your agents can run it.** Because the CLI is the contract, an LLM controls Spotify through ordinary commands (or the built-in MCP server). Writes are preview-first: `--dry-run` shows what would change, `--yes` commits, and `spotuify ops undo` reverses the last one. A back button for your library, which you want the moment an agent is the one clicking.
+- **The music keeps playing after you close the window.** A background daemon owns playback, queue, and devices; the TUI, CLI, and agents are all just views of it. Quit the TUI and the song keeps going. Run a command from another shell and it shows up instantly.
+- **Search runs off a local cache.** A SQLite store plus a rebuildable index answer library and search queries from disk, so navigation is instant and an agent gets the same results twice.
+
+Want the most polished desktop experience? Use the official app. Want Spotify as something you can type at, pipe, script, and hand to an agent? That's this.
 
 ## Features
 
@@ -32,7 +43,7 @@ The goal is simple: run `spotuify`. If credentials or OAuth are missing, setup s
 
 ## Install
 
-Spotuify ships pre-built binaries for macOS (Apple Silicon + Intel), Linux gnu / musl, and Windows on each [GitHub Release](https://github.com/planetaryescape/spotuify/releases). Pick the right path for your platform:
+Prebuilt binaries ship for macOS (Apple Silicon and Intel) and Linux x86_64 on each [GitHub Release](https://github.com/planetaryescape/spotuify/releases); the Homebrew tap is the quickest path. Other targets (Windows, Linux musl or arm, other distros) build from source with `cargo install` or Nix. Pick your platform:
 
 ### macOS (Apple Silicon or Intel)
 
@@ -55,28 +66,32 @@ Binaries are unsigned today. If Gatekeeper blocks the first launch:
 xattr -d com.apple.quarantine /opt/homebrew/bin/spotuify
 ```
 
-### Linux (Debian / Ubuntu)
+### Linux (x86_64)
+
+Grab the `linux-x86_64` tarball from [Releases](https://github.com/planetaryescape/spotuify/releases) and put `spotuify` on your `PATH`:
 
 ```sh
-sudo dpkg -i spotuify_*_amd64.deb     # from a GH Releases asset
+tar xzf spotuify-v*-linux-x86_64.tar.gz
+install -Dm755 spotuify ~/.local/bin/spotuify
 spotuify daemon install-service       # registers a systemd --user unit
 spotuify
 ```
 
 Spotuify uses Secret Service (GNOME Keyring / KWallet) for credential storage. Headless encrypted-file credential fallback is planned but not exposed as a stable login flag yet.
 
-### Linux (Arch / Fedora / other)
+### Linux (other arch / distro) or from source
 
 ```sh
-cargo install --git https://github.com/planetaryescape/spotuify --locked
+cargo install --git https://github.com/planetaryescape/spotuify --locked spotuify
 spotuify daemon install-service
 ```
 
 ### Windows
 
+No prebuilt Windows binary yet. Build from source (the Windows paths exist, including Credential Manager storage):
+
 ```sh
-scoop install planetaryescape/spotuify   # (Scoop bucket — pending)
-# or grab the .zip from GitHub Releases and add it to %PATH%
+cargo install --git https://github.com/planetaryescape/spotuify --locked spotuify
 spotuify daemon install-service          # registers a Task Scheduler logon trigger
 ```
 
