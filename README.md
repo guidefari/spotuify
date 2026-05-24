@@ -4,7 +4,7 @@ spotuify is a Spotify player you drive from your terminal: a keyboard-native TUI
 
 <p align="center"><img src="site/public/spotuify-demo.gif" alt="spotuify terminal demo: search, play, queue, and device control" /></p>
 
-Run `spotuify` and you're in. If your Spotify credentials or OAuth aren't set up yet, it walks you through them: paste your app credentials, authorize in the browser, land in a synced UI. No config files to hand-edit.
+Run `spotuify` and you're in. If you're not logged in yet, it walks you through it: log in through the browser, land in a synced UI. No Spotify app to register, no config files to hand-edit.
 
 ## Why another Spotify TUI?
 
@@ -377,8 +377,8 @@ spotuify mcp
 Command behavior:
 
 - `spotuify` opens the TUI. If config or OAuth are missing, it starts setup first, syncs, then opens the TUI.
-- `spotuify onboard` runs the same setup flow intentionally. It reuses saved credentials when they already exist.
-- `spotuify login` reruns OAuth using existing config.
+- `spotuify onboard` runs the same setup flow intentionally: a browser login, then the first sync.
+- `spotuify login` opens the browser to log in and stores the refresh token in the keychain.
 - `spotuify logout` removes the Keychain token.
 - `spotuify doctor` checks config, token status, API access timings, visible devices, recent playback, queue, playlists, logs, cache version, lyrics, MCP, and player backend state.
 - `spotuify logs path` prints the log file path.
@@ -465,14 +465,14 @@ Audio cache (disk), bitrate, normalization, and PulseAudio property hints are al
 
 ## What Sync Means
 
-During onboarding, after OAuth completes, `spotuify` immediately calls Spotify and fetches:
+After you log in, the daemon mints a Web API token from your session and pulls your Spotify state into the local cache:
 
 - Current playback state.
 - Visible Spotify Connect devices.
 - Queue state.
 - User playlists.
 
-This verifies the token, scopes, and API access before you enter the TUI. If one non-critical endpoint is unavailable, onboarding prints the skipped endpoint and continues so you can still open the app.
+Run `spotuify doctor` any time to confirm auth, daemon, device visibility, and Spotify API access are working.
 
 ## Use with an LLM agent (MCP)
 
@@ -614,7 +614,7 @@ No token or expired token:
 spotuify
 ```
 
-That restarts OAuth automatically when the Keychain token is missing. Use `spotuify login` if you only want to rerun OAuth without the full setup flow.
+That opens the browser login automatically when no token is stored. Use `spotuify login` if you only want to re-run the login without the full setup flow.
 
 No devices visible:
 
