@@ -1954,6 +1954,22 @@ impl spotuify_sync::SyncContext for DaemonState {
     fn snapshot_playback(&self) -> spotuify_core::Playback {
         DaemonState::snapshot_playback(self)
     }
+    fn embedded_is_active_playback(&self) -> bool {
+        // Our embedded device is the live source iff the clock shows it
+        // playing on our own device id. In that state librespot player
+        // events keep the clock fresh, so the Web API playback poll is
+        // redundant. Pure clock + name lookups — no actor round-trip.
+        let Some(own) = self.own_device_id() else {
+            return false;
+        };
+        let playback = self.playback_clock.snapshot();
+        playback.is_playing
+            && playback
+                .device
+                .as_ref()
+                .and_then(|device| device.id.as_deref())
+                == Some(own.as_str())
+    }
     async fn snapshot_queue(&self) -> spotuify_spotify::client::Queue {
         self.store
             .latest_queue(500)

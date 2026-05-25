@@ -116,6 +116,15 @@ pub trait SyncContext: Send + Sync {
         0
     }
 
+    /// Returns `true` when the daemon's own embedded librespot device is
+    /// the active player. In that state librespot's player events feed
+    /// the clock live, so the Web API `/me/player` poll is redundant and
+    /// the scheduler downgrades it to a slow reconciliation. Default
+    /// `false` keeps full polling for hosts without an embedded session.
+    fn embedded_is_active_playback(&self) -> bool {
+        false
+    }
+
     /// Returns `true` when the host's mutation counter has not
     /// advanced since `captured_seq`. When `false`, the caller should
     /// discard whatever it just read from Spotify because a newer

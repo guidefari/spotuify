@@ -29,6 +29,13 @@ const ACTIVE_CADENCE: Duration = Duration::from_secs(3);
 /// rate limiter over a long TUI session, so the devices lane is the slowest.
 const QUEUE_CADENCE: Duration = Duration::from_secs(15);
 const DEVICES_CADENCE: Duration = Duration::from_secs(60);
+/// When our own embedded device is the active player, librespot's player
+/// events already feed the daemon's clock live, so the Web API `/me/player`
+/// poll is redundant. Downgrade it from every-tick to a slow
+/// reconciliation that only exists to catch playback moving to another
+/// device or an external shuffle/repeat change. This is the single
+/// biggest reduction in Web API spend on the shared first-party token.
+const PLAYBACK_RECONCILE_CADENCE: Duration = Duration::from_secs(30);
 const SLOW_CADENCE: Duration = Duration::from_secs(15 * 60);
 const SLOW_INITIAL_DELAY: Duration = Duration::from_secs(60);
 const PER_TARGET_TIMEOUT: Duration = Duration::from_secs(10);
@@ -96,6 +103,7 @@ where
         // at process boot, so we can't construct an Instant in the
         // past to satisfy `elapsed >= IDLE_CADENCE` on first tick.)
         let mut last_sync: Option<tokio::time::Instant> = None;
+        let mut last_playback_sync: Option<tokio::time::Instant> = None;
         let mut last_queue_sync: Option<tokio::time::Instant> = None;
         let mut last_devices_sync: Option<tokio::time::Instant> = None;
         let mut last_recent_sync: Option<tokio::time::Instant> = None;
@@ -103,6 +111,14 @@ where
         let mut queue_backoff = TargetBackoff::default();
         let mut devices_backoff = TargetBackoff::default();
         let mut recent_backoff = TargetBackoff::default();
+        // Shared cooldown across every fast lane: a 429 on any one of
+        // playback/queue/devices/recent pauses ALL of them until the
+        // provider's Retry-After elapses. Per-lane backoff alone leaves
+        // the lanes staggered so something hits Spotify every few
+        // seconds and its rolling rate-limit window never drains — which
+        // is exactly what kept foreground writes (e.g. playlist create)
+        // perpetually 429'd. One global gate lets the window clear.
+        let mut global_backoff = TargetBackoff::default();
         loop {
             tokio::select! {
                 _ = interval.tick() => {
@@ -112,51 +128,81 @@ where
                         continue;
                     }
                     let now = tokio::time::Instant::now();
-                    // Playback drives the live progress UI, so it polls every
-                    // tick. Queue and devices poll on slower lanes: both change
-                    // rarely, local queue edits are already applied
-                    // optimistically, and polling devices every tick is what
-                    // rate-limits the account over a long session.
-                    let pb = sync_target_with_backoff(
-                        fast_ctx.as_ref(),
-                        SyncTargetData::Playback,
-                        &mut playback_backoff,
-                    )
-                    .await;
-                    log_background_result(SyncTargetData::Playback, pb);
+                    if !global_backoff.should_run(now) {
+                        tracing::debug!("fast sync paused: global Spotify rate-limit cooldown");
+                        continue;
+                    }
+                    // Playback. When our own embedded device is the active
+                    // player, librespot's player events already drive the
+                    // clock live, so the `/me/player` Web API poll is
+                    // redundant — drop it to a slow reconciliation. When
+                    // playback is elsewhere (a phone, etc.) keep polling
+                    // every tick so cross-device changes stay live.
+                    let playback_due = if fast_ctx.embedded_is_active_playback() {
+                        last_playback_sync
+                            .is_none_or(|t| t.elapsed() >= PLAYBACK_RECONCILE_CADENCE)
+                    } else {
+                        true
+                    };
+                    if playback_due {
+                        let pb = sync_target_with_backoff(
+                            fast_ctx.as_ref(),
+                            SyncTargetData::Playback,
+                            &mut playback_backoff,
+                        )
+                        .await;
+                        if let Some(retry) = rate_limit_retry_after(&pb) {
+                            global_backoff.note_rate_limit(now, retry);
+                        }
+                        log_background_result(SyncTargetData::Playback, &pb);
+                        last_playback_sync = Some(now);
+                    }
 
-                    if last_queue_sync.is_none_or(|t| t.elapsed() >= QUEUE_CADENCE) {
+                    if global_backoff.should_run(now)
+                        && last_queue_sync.is_none_or(|t| t.elapsed() >= QUEUE_CADENCE)
+                    {
                         let q = sync_target_with_backoff(
                             fast_ctx.as_ref(),
                             SyncTargetData::Queue,
                             &mut queue_backoff,
                         )
                         .await;
-                        log_background_result(SyncTargetData::Queue, q);
+                        if let Some(retry) = rate_limit_retry_after(&q) {
+                            global_backoff.note_rate_limit(now, retry);
+                        }
+                        log_background_result(SyncTargetData::Queue, &q);
                         last_queue_sync = Some(now);
                     }
 
-                    if last_devices_sync.is_none_or(|t| t.elapsed() >= DEVICES_CADENCE) {
+                    if global_backoff.should_run(now)
+                        && last_devices_sync.is_none_or(|t| t.elapsed() >= DEVICES_CADENCE)
+                    {
                         let d = sync_target_with_backoff(
                             fast_ctx.as_ref(),
                             SyncTargetData::Devices,
                             &mut devices_backoff,
                         )
                         .await;
-                        log_background_result(SyncTargetData::Devices, d);
+                        if let Some(retry) = rate_limit_retry_after(&d) {
+                            global_backoff.note_rate_limit(now, retry);
+                        }
+                        log_background_result(SyncTargetData::Devices, &d);
                         last_devices_sync = Some(now);
                     }
 
                     let recent_due = last_recent_sync
                         .is_none_or(|last| last.elapsed() >= RECENT_ACTIVE_CADENCE);
-                    if recent_due {
+                    if global_backoff.should_run(now) && recent_due {
                         let r = sync_target_with_backoff(
                             fast_ctx.as_ref(),
                             SyncTargetData::Recent,
                             &mut recent_backoff,
                         )
                         .await;
-                        log_background_result(SyncTargetData::Recent, r);
+                        if let Some(retry) = rate_limit_retry_after(&r) {
+                            global_backoff.note_rate_limit(now, retry);
+                        }
+                        log_background_result(SyncTargetData::Recent, &r);
                         last_recent_sync = Some(now);
                     }
                     last_sync = Some(now);
@@ -218,6 +264,14 @@ impl TargetBackoff {
         self.next_allowed = None;
     }
 
+    /// Trip the backoff for `retry_after` unconditionally (no failure
+    /// counting). Used by the shared global cooldown when any lane hits a
+    /// 429, so the whole fast loop pauses long enough for Spotify's
+    /// rolling rate-limit window to drain.
+    fn note_rate_limit(&mut self, now: tokio::time::Instant, retry_after: Duration) {
+        self.next_allowed = Some(now + retry_after);
+    }
+
     fn record_failure(&mut self, now: tokio::time::Instant, err: &anyhow::Error) {
         self.failures = self.failures.saturating_add(1);
         if let Some(SpotifyError::RateLimited { retry_after, scope }) =
@@ -258,10 +312,24 @@ async fn sync_target_with_backoff<C: SyncContext>(
     Some(result)
 }
 
-fn log_background_result(target: SyncTargetData, result: Option<Result<CacheSyncSummary>>) {
+fn log_background_result(target: SyncTargetData, result: &Option<Result<CacheSyncSummary>>) {
     if let Some(Err(err)) = result {
         tracing::debug!(target = target.label(), error = %err, "background sync failed");
     }
+}
+
+/// Spotify's `Retry-After` from a sync result that failed with a 429,
+/// if any. Fed into the shared global cooldown so one rate-limited lane
+/// pauses every lane.
+fn rate_limit_retry_after(result: &Option<Result<CacheSyncSummary>>) -> Option<Duration> {
+    if let Some(Err(err)) = result {
+        if let Some(SpotifyError::RateLimited { retry_after, .. }) =
+            err.downcast_ref::<SpotifyError>()
+        {
+            return Some(*retry_after);
+        }
+    }
+    None
 }
 
 /// Run one sync pass for the given target. Used both by the background
@@ -894,6 +962,34 @@ mod tests {
 
         backoff.record_success();
         assert!(backoff.should_run(now + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn note_rate_limit_pauses_until_retry_after() {
+        // The shared global cooldown trips for the full Retry-After
+        // regardless of failure count, so one 429 pauses every lane.
+        let now = tokio::time::Instant::now();
+        let mut global = TargetBackoff::default();
+        global.note_rate_limit(now, Duration::from_secs(45));
+        assert!(!global.should_run(now + Duration::from_secs(44)));
+        assert!(global.should_run(now + Duration::from_secs(45)));
+    }
+
+    #[test]
+    fn rate_limit_retry_after_extracts_429_only() {
+        let rate_limited: Option<Result<CacheSyncSummary>> =
+            Some(Err(anyhow::Error::new(SpotifyError::RateLimited {
+                retry_after: Duration::from_secs(30),
+                scope: "GET /me/player".to_string(),
+            })));
+        assert_eq!(
+            rate_limit_retry_after(&rate_limited),
+            Some(Duration::from_secs(30))
+        );
+
+        let other: Option<Result<CacheSyncSummary>> = Some(Err(anyhow::anyhow!("network blip")));
+        assert_eq!(rate_limit_retry_after(&other), None);
+        assert_eq!(rate_limit_retry_after(&None), None);
     }
 
     #[test]
