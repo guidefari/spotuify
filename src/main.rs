@@ -1594,9 +1594,9 @@ async fn onboard() -> Result<()> {
     println!("spotuify setup\n");
     println!("Config: {}\n", init_config()?.display());
 
-    // First-party is the default: one browser login, no Spotify Developer
-    // app to register. The daemon mints the Web API token from the
-    // session, so the initial sync runs there once the daemon is up.
+    // First-party (keymaster) is opt-in via SPOTUIFY_USE_FIRST_PARTY=1.
+    // The default below is the dev-app onboarding (paste client_id,
+    // dev-app OAuth, sync). See `is_first_party` for the rationale.
     let config = Config::load().context("failed to load saved config")?;
     if config.is_first_party() {
         first_party_login().await?;
@@ -1666,10 +1666,11 @@ async fn onboard() -> Result<()> {
 }
 
 fn needs_onboarding() -> Result<bool> {
-    // First-party (default): onboarded once a first-party refresh token is
-    // stored. The disk-first read is fast and never triggers a keychain
-    // prompt for a not-logged-in user.
-    let first_party = Config::load().map(|c| c.is_first_party()).unwrap_or(true);
+    // First-party is now opt-in (SPOTUIFY_USE_FIRST_PARTY=1). On a
+    // config-load failure (first run, no client_id yet) fall through to
+    // the dev-app onboarding branch so the user gets the "add your
+    // client_id" prompt.
+    let first_party = Config::load().map(|c| c.is_first_party()).unwrap_or(false);
     if first_party {
         let creds_present = crate::auth::load_first_party_credentials()
             .map(|creds| creds.is_some())

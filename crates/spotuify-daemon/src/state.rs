@@ -1345,22 +1345,13 @@ fn first_party_refresh_error(err: spotuify_player::PlayerError) -> spotuify_spot
     }
 }
 
-/// Decide first-party (keymaster) vs legacy dev-app mode from what is
-/// actually stored, so the daemon agrees with whatever the user logged
-/// in with regardless of per-process env. A service-managed daemon does
-/// not inherit an interactive shell's `SPOTUIFY_CLIENT_ID`, so keying
-/// purely off env would diverge from the CLI; the stored credential is
-/// the authoritative signal. Env is consulted only when nothing is
-/// stored yet (to pick the flow for the eventual login).
+/// First-party (keymaster) mode is now opt-in via
+/// `SPOTUIFY_USE_FIRST_PARTY=1` (see `Config::is_first_party`). Default
+/// is the dev-app flow. The stored-credential snapshot is no longer
+/// consulted — a leftover `first-party.json` from the rework era must
+/// not override the opt-in.
 fn first_party_mode(config: &Config) -> bool {
-    if !cfg!(feature = "embedded-playback") {
-        return false;
-    }
-    match spotuify_spotify::auth::stored_credential_snapshot() {
-        Ok(Some(spotuify_spotify::first_party::StoredCredential::FirstParty(_))) => true,
-        Ok(Some(spotuify_spotify::first_party::StoredCredential::LegacyDevApp(_))) => false,
-        _ => config.is_first_party(),
-    }
+    cfg!(feature = "embedded-playback") && config.is_first_party()
 }
 
 fn spawn_player_actor(

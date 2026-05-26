@@ -647,13 +647,16 @@ impl Config {
         let viz = VizConfig::from_file(&file);
 
         // client_id defaults to the first-party keymaster id. A user only
-        // needs to set this if they want to use their own Spotify app
-        // (the legacy dev-app flow). No more "paste your client_id" step.
+        // needs to set this if they want their own Spotify app. After the
+        // 2026-05-26 revert, the dev-app flow is the default: keymaster
+        // gets policed far harder under spotuify's Web API polling than
+        // a per-user dev app. First-party will return as the default
+        // once spotuify routes reads through librespot's native session.
         let client_id = std::env::var("SPOTUIFY_CLIENT_ID")
             .ok()
             .or(file.client_id)
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| KEYMASTER_CLIENT_ID.to_string());
+            .ok_or_else(|| anyhow!("client_id missing in {}", config_path.display()))?;
         let client_secret = std::env::var("SPOTUIFY_CLIENT_SECRET")
             .ok()
             .or(file.client_secret)
@@ -678,21 +681,24 @@ impl Config {
         })
     }
 
-    /// True when running in first-party (keymaster) mode — the default.
+    /// True when running in first-party (keymaster) mode. Now **opt-in**
+    /// via `SPOTUIFY_USE_FIRST_PARTY=1`. The default is the dev-app flow
+    /// driven by `client_id` in the config (or `SPOTUIFY_CLIENT_ID`).
     ///
-    /// The opt-out is the explicit `SPOTUIFY_CLIENT_ID` env var, NOT a
-    /// `client_id` left in the config file. The old onboarding wrote the
-    /// user's dev-app id into the config, so keying off the config value
-    /// would strand every existing user on the broken dev-app flow
-    /// (which 403s on playlist writes). Treating only the env var as a
-    /// deliberate opt-out migrates existing users to the first-party fix
-    /// automatically; power users who want their own app export
-    /// `SPOTUIFY_CLIENT_ID`.
+    /// The keymaster token is meant for librespot's *auth*, not heavy
+    /// Web API polling, and Spotify pushes back hard on accounts that
+    /// drive sustained `api.spotify.com` traffic through it. Until
+    /// spotuify routes reads through librespot's native session
+    /// (Mercury/dealer), keep the per-user dev-app budget as the
+    /// default. First-party will return as the default once that lands.
     pub fn is_first_party(&self) -> bool {
-        std::env::var("SPOTUIFY_CLIENT_ID")
+        std::env::var("SPOTUIFY_USE_FIRST_PARTY")
             .ok()
-            .filter(|value| !value.trim().is_empty())
-            .is_none()
+            .map(|v| {
+                let s = v.trim();
+                !s.is_empty() && s != "0" && !s.eq_ignore_ascii_case("false")
+            })
+            .unwrap_or(false)
     }
 
     pub fn redacted_client_id(&self) -> String {
@@ -886,11 +892,12 @@ fn ensure_config_exists(path: &Path) -> Result<()> {
     if path.exists() {
         return Ok(());
     }
-    // First-party default: a fresh config is immediately usable (no
-    // client_id to paste). We write the template and continue; the
-    // onboarding flow handles the browser login. Users who want their
-    // own app set SPOTUIFY_CLIENT_ID / client_id afterwards.
-    write_template(path)
+
+    write_template(path)?;
+    bail!(
+        "created {}; add your Spotify client_id and client_secret, then rerun spotuify",
+        path.display()
+    )
 }
 
 fn read_config_file(path: &Path) -> Result<FileConfig> {
@@ -1056,15 +1063,12 @@ fn parse_bool(value: &str) -> Result<bool> {
 }
 
 const CONFIG_TEMPLATE: &str = r#"# spotuify config
-# spotuify logs in with Spotify's first-party flow, so there's nothing to
-# paste here to get started — just run `spotuify` and log in via the
-# browser. Premium is required for playback.
-#
-# Power users who'd rather use their own Spotify Developer app can set a
-# client_id below (or the SPOTUIFY_CLIENT_ID env var). That switches to
-# the dev-app login; note dev-mode apps can't create playlists.
-# client_id = ""
-# redirect_uri = "http://127.0.0.1:8888/callback"
+# Copy your Spotify app credentials from https://developer.spotify.com/dashboard.
+# Apply for Extended Quota Mode on the dashboard to lift the dev-app
+# 25-user cap and unlock playlist/library writes.
+client_id = ""
+client_secret = ""
+redirect_uri = "http://127.0.0.1:8888/callback"
 
 [player]
 # Backend that registers spotuify as a Spotify Connect device.
