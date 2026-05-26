@@ -14,6 +14,7 @@ pub mod auth;
 pub mod client;
 pub mod compat;
 pub mod config;
+pub mod endpoints;
 pub mod error;
 pub mod first_party;
 pub mod rate_limit;

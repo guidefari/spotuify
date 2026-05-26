@@ -15,6 +15,7 @@ use spotuify_core::{now_ms, spotify_api_finished_event, AnalyticsEvent, Analytic
 use crate::auth::{self, StoredToken};
 use crate::compat::{compat_normalize, NormalizeHint};
 use crate::config::Config;
+use crate::endpoints;
 use crate::error::{SpotifyError, SpotifyResult};
 use crate::rate_limit::{Priority, RateLimitedClient};
 
@@ -288,7 +289,7 @@ impl SpotifyClient {
             return Ok(fake_playback());
         }
         match self
-            .request_json::<PlaybackResponse>(Method::GET, "/me/player", None::<()>)
+            .request_json::<PlaybackResponse>(Method::GET, endpoints::PLAYBACK, None::<()>)
             .await
         {
             Ok(Some(raw)) => Ok(raw.into_playback()),
@@ -302,7 +303,7 @@ impl SpotifyClient {
             return Ok(vec![fake_device()]);
         }
         let response = self
-            .request_json::<DevicesResponse>(Method::GET, "/me/player/devices", None::<()>)
+            .request_json::<DevicesResponse>(Method::GET, endpoints::DEVICES, None::<()>)
             .await?
             .ok_or_else(|| anyhow!("Spotify returned no devices response"))?;
         Ok(response.devices)
@@ -318,7 +319,7 @@ impl SpotifyClient {
             });
         }
         let response = self
-            .request_json::<QueueResponse>(Method::GET, "/me/player/queue", None::<()>)
+            .request_json::<QueueResponse>(Method::GET, endpoints::QUEUE, None::<()>)
             .await?
             .ok_or_else(|| anyhow!("Spotify returned no queue response"))?;
         let currently_playing = response
@@ -478,7 +479,11 @@ impl SpotifyClient {
         if ids.is_empty() {
             return;
         }
-        let path = format!("/artists?ids={}", encode_component(&ids.join(",")));
+        let path = format!(
+            "{}?ids={}",
+            endpoints::ARTISTS_LOOKUP,
+            encode_component(&ids.join(","))
+        );
         let response = match self
             .request_json::<ArtistsBatchResponse>(Method::GET, &path, None::<()>)
             .await
@@ -542,7 +547,7 @@ impl SpotifyClient {
                 .find(|item| item.uri == uri && item.kind == MediaKind::Track));
         }
 
-        let path = format!("/tracks/{}", encode_component(track_id.as_str()));
+        let path = endpoints::track(track_id.as_str());
         Ok(self
             .request_json::<RawTrack>(Method::GET, &path, None::<()>)
             .await?
@@ -556,7 +561,7 @@ impl SpotifyClient {
         let mut offset = 0;
         let mut playlists = Vec::new();
         loop {
-            let path = format!("/me/playlists?limit=50&offset={offset}");
+            let path = format!("{}?limit=50&offset={offset}", endpoints::MY_PLAYLISTS);
             let response = self
                 .request_json::<Paging<Option<RawPlaylist>>>(Method::GET, &path, None::<()>)
                 .await?
@@ -582,7 +587,7 @@ impl SpotifyClient {
             return Ok("fake-user".to_string());
         }
         let response = self
-            .request_json::<CurrentUserResponse>(Method::GET, "/me", None::<()>)
+            .request_json::<CurrentUserResponse>(Method::GET, endpoints::ME, None::<()>)
             .await?
             .ok_or_else(|| anyhow!("Spotify returned no current user response"))?;
         Ok(response.id)
@@ -617,7 +622,7 @@ impl SpotifyClient {
             "public": public,
         });
         Ok(self
-            .request_json::<RawPlaylist>(Method::POST, "/me/playlists", Some(body))
+            .request_json::<RawPlaylist>(Method::POST, endpoints::MY_PLAYLISTS, Some(body))
             .await?
             .and_then(RawPlaylist::into_playlist)
             .ok_or_else(|| anyhow!("Spotify returned no created playlist"))?)
@@ -630,7 +635,7 @@ impl SpotifyClient {
         let response = self
             .request_json::<RecentlyPlayedResponse>(
                 Method::GET,
-                "/me/player/recently-played?limit=20",
+                format!("{}?limit=20", endpoints::RECENTLY_PLAYED).as_str(),
                 None::<()>,
             )
             .await?
@@ -671,7 +676,7 @@ impl SpotifyClient {
                 .collect::<Vec<_>>();
             return Ok(SavedTracksPage { total: 2, items });
         }
-        let path = format!("/me/tracks?limit={limit}&offset={offset}");
+        let path = format!("{}?limit={limit}&offset={offset}", endpoints::SAVED_TRACKS);
         let response = self
             .request_json::<Paging<SavedTrackItem>>(Method::GET, &path, None::<()>)
             .await?
@@ -693,7 +698,7 @@ impl SpotifyClient {
         let mut offset = 0;
         let mut items = Vec::new();
         loop {
-            let path = format!("/me/albums?limit=50&offset={offset}");
+            let path = format!("{}?limit=50&offset={offset}", endpoints::SAVED_ALBUMS);
             let response = self
                 .request_json::<Paging<SavedAlbumItem>>(Method::GET, &path, None::<()>)
                 .await?
@@ -724,7 +729,7 @@ impl SpotifyClient {
         let mut offset = 0;
         let mut items = Vec::new();
         loop {
-            let path = format!("/me/shows?limit=50&offset={offset}");
+            let path = format!("{}?limit=50&offset={offset}", endpoints::SAVED_SHOWS);
             let response = self
                 .request_json::<Paging<SavedShowItem>>(Method::GET, &path, None::<()>)
                 .await?
@@ -757,7 +762,10 @@ impl SpotifyClient {
         let mut offset = 0;
         let mut tracks = Vec::new();
         loop {
-            let path = format!("/playlists/{playlist_id}/items?limit=50&offset={offset}");
+            let path = format!(
+                "{}?limit=50&offset={offset}",
+                endpoints::playlist_items(playlist_id)
+            );
             let response = self
                 .request_json::<Paging<PlaylistTrackItem>>(Method::GET, &path, None::<()>)
                 .await?
@@ -786,11 +794,14 @@ impl SpotifyClient {
             }
             return Err(SpotifyError::NotFound);
         }
-        let album_id = encode_component(album_id.trim_start_matches("spotify:album:"));
+        let album_id = album_id.trim_start_matches("spotify:album:");
         let mut offset = 0;
         let mut tracks = Vec::new();
         loop {
-            let path = format!("/albums/{album_id}/tracks?limit=50&offset={offset}");
+            let path = format!(
+                "{}?limit=50&offset={offset}",
+                endpoints::album_tracks(album_id)
+            );
             let response = self
                 .request_json::<Paging<RawAlbumTrack>>(Method::GET, &path, None::<()>)
                 .await?
@@ -817,7 +828,7 @@ impl SpotifyClient {
         if self.fake {
             return Ok(vec![fake_album()]);
         }
-        let artist_id = encode_component(artist_id.trim_start_matches("spotify:artist:"));
+        let artist_id = artist_id.trim_start_matches("spotify:artist:");
         let mut offset = 0u32;
         let mut albums = Vec::new();
         // Empirical cap for this account/app: limit>10 → 400 "Invalid limit".
@@ -825,7 +836,8 @@ impl SpotifyClient {
         const PAGE: u32 = 10;
         loop {
             let path = format!(
-                "/artists/{artist_id}/albums?include_groups=album%2Csingle&limit={PAGE}&offset={offset}"
+                "{}?include_groups=album%2Csingle&limit={PAGE}&offset={offset}",
+                endpoints::artist_albums(artist_id)
             );
             let response = self
                 .request_json::<Paging<RawAlbum>>(Method::GET, &path, None::<()>)
@@ -847,10 +859,10 @@ impl SpotifyClient {
             return Ok(());
         }
         if is_playing {
-            self.empty(Method::PUT, "/me/player/pause", None::<()>)
+            self.empty(Method::PUT, endpoints::PAUSE, None::<()>)
                 .await?;
         } else {
-            self.empty(Method::PUT, "/me/player/play", Some(serde_json::json!({})))
+            self.empty(Method::PUT, endpoints::PLAY, Some(serde_json::json!({})))
                 .await?;
         }
         Ok(())
@@ -867,8 +879,7 @@ impl SpotifyClient {
             }
             _ => serde_json::json!({ "uris": [uri] }),
         };
-        self.empty(Method::PUT, "/me/player/play", Some(body))
-            .await?;
+        self.empty(Method::PUT, endpoints::PLAY, Some(body)).await?;
         Ok(())
     }
 
@@ -876,7 +887,7 @@ impl SpotifyClient {
         if self.fake {
             return Ok(());
         }
-        self.empty(Method::POST, "/me/player/next", None::<()>)
+        self.empty(Method::POST, endpoints::NEXT, None::<()>)
             .await?;
         Ok(())
     }
@@ -885,7 +896,7 @@ impl SpotifyClient {
         if self.fake {
             return Ok(());
         }
-        self.empty(Method::POST, "/me/player/previous", None::<()>)
+        self.empty(Method::POST, endpoints::PREVIOUS, None::<()>)
             .await?;
         Ok(())
     }
@@ -897,7 +908,7 @@ impl SpotifyClient {
         }
         self.empty(
             Method::PUT,
-            &format!("/me/player/seek?position_ms={position_ms}"),
+            &format!("{}?position_ms={position_ms}", endpoints::SEEK),
             None::<()>,
         )
         .await?;
@@ -912,7 +923,7 @@ impl SpotifyClient {
         let volume_percent = volume_percent.min(100);
         self.empty(
             Method::PUT,
-            &format!("/me/player/volume?volume_percent={volume_percent}"),
+            &format!("{}?volume_percent={volume_percent}", endpoints::VOLUME),
             None::<()>,
         )
         .await?;
@@ -926,7 +937,7 @@ impl SpotifyClient {
         }
         self.empty(
             Method::PUT,
-            &format!("/me/player/shuffle?state={state}"),
+            &format!("{}?state={state}", endpoints::SHUFFLE),
             None::<()>,
         )
         .await?;
@@ -940,7 +951,7 @@ impl SpotifyClient {
         }
         self.empty(
             Method::PUT,
-            &format!("/me/player/repeat?state={state}"),
+            &format!("{}?state={state}", endpoints::REPEAT),
             None::<()>,
         )
         .await?;
@@ -955,7 +966,7 @@ impl SpotifyClient {
         let encoded = url::form_urlencoded::byte_serialize(uri.as_bytes()).collect::<String>();
         self.empty(
             Method::POST,
-            &format!("/me/player/queue?uri={encoded}"),
+            &format!("{}?uri={encoded}", endpoints::QUEUE),
             None::<()>,
         )
         .await?;
@@ -972,7 +983,7 @@ impl SpotifyClient {
         }
         self.empty(
             Method::PUT,
-            "/me/player",
+            endpoints::PLAYBACK,
             Some(serde_json::json!({ "device_ids": [device_id], "play": play })),
         )
         .await?;
@@ -1004,11 +1015,11 @@ impl SpotifyClient {
         if uris.is_empty() {
             return Ok(());
         }
-        let playlist_id = encode_component(playlist_id);
+        let path = endpoints::playlist_items(playlist_id);
         for chunk in uris.chunks(100) {
             self.empty(
                 Method::POST,
-                &format!("/playlists/{playlist_id}/tracks"),
+                &path,
                 Some(serde_json::json!({ "uris": chunk })),
             )
             .await?;
@@ -1060,16 +1071,12 @@ impl SpotifyClient {
             // can decide not to persist.
             return Ok(snapshot_id.unwrap_or_default().to_string());
         }
-        let encoded = encode_component(playlist_id);
+        let path = endpoints::playlist_items(playlist_id);
         let mut current_snapshot = snapshot_id.map(str::to_string);
         for chunk in uris.chunks(100) {
             let body = playlist_remove_items_body(chunk, current_snapshot.as_deref());
             let resp = self
-                .request_json::<SnapshotResponse>(
-                    Method::DELETE,
-                    &format!("/playlists/{encoded}/tracks"),
-                    Some(body),
-                )
+                .request_json::<SnapshotResponse>(Method::DELETE, &path, Some(body))
                 .await?
                 .ok_or_else(|| anyhow!("Spotify returned no response for playlist-remove"))?;
             current_snapshot = Some(resp.snapshot_id);
@@ -1097,7 +1104,7 @@ impl SpotifyClient {
         if items.is_empty() {
             return Ok(String::new());
         }
-        let encoded = encode_component(playlist_id);
+        let base = endpoints::playlist_items(playlist_id);
         let groups = group_items_by_position(items);
         let mut last_snapshot = String::new();
         for (position, uris) in groups {
@@ -1106,7 +1113,7 @@ impl SpotifyClient {
                 let resp = self
                     .request_json::<SnapshotResponse>(
                         Method::POST,
-                        &format!("/playlists/{encoded}/tracks?position={position}"),
+                        &format!("{base}?position={position}"),
                         Some(body),
                     )
                     .await?
@@ -1134,14 +1141,10 @@ impl SpotifyClient {
             }
             return Err(SpotifyError::NotFound);
         }
-        let encoded = encode_component(playlist_id);
+        let path = endpoints::playlist_items(playlist_id);
         let body = playlist_reorder_body(range_start, insert_before, range_length, snapshot_id);
         let resp = self
-            .request_json::<SnapshotResponse>(
-                Method::PUT,
-                &format!("/playlists/{encoded}/tracks"),
-                Some(body),
-            )
+            .request_json::<SnapshotResponse>(Method::PUT, &path, Some(body))
             .await?
             .ok_or_else(|| anyhow!("Spotify returned no response for playlist-reorder"))?;
         Ok(resp.snapshot_id)
@@ -1156,13 +1159,8 @@ impl SpotifyClient {
             }
             return Err(SpotifyError::NotFound);
         }
-        let encoded = encode_component(playlist_id);
-        self.empty(
-            Method::DELETE,
-            &format!("/playlists/{encoded}/followers"),
-            None::<()>,
-        )
-        .await?;
+        let path = endpoints::playlist_followers(playlist_id);
+        self.empty(Method::DELETE, &path, None::<()>).await?;
         Ok(())
     }
 
@@ -1394,10 +1392,16 @@ fn search_path(query: &str, kinds: &[MediaKind], limit: u8, offset: u32) -> Stri
     // that Spotify returns 400 "Limit + Offset exceeds maximum of 1000"
     // — handled in `search_single_type` as an exhausted pane.
     let limit = limit.min(10);
-    format!("/search?q={encoded}&type={types}&limit={limit}&offset={offset}")
+    format!(
+        "{}?q={encoded}&type={types}&limit={limit}&offset={offset}",
+        endpoints::SEARCH
+    )
 }
 
-fn encode_component(value: &str) -> String {
+/// URL-encode a path segment (or query value) the way Spotify expects.
+/// Exposed `pub(crate)` so `crate::endpoints` can compose paths with
+/// safely-encoded ids in one place.
+pub(crate) fn encode_component(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
 }
 
@@ -1414,7 +1418,7 @@ fn endpoint_scope(method: &Method, path: &str) -> String {
 }
 
 fn request_priority(method: &Method, path: &str, default_priority: Priority) -> Priority {
-    if path.starts_with("/me/player") && *method != Method::GET {
+    if path.starts_with(endpoints::PLAYBACK) && *method != Method::GET {
         Priority::PlaybackControl
     } else {
         default_priority
@@ -1530,10 +1534,10 @@ fn normalize_spotify_response(path: &str, value: &mut serde_json::Value) -> Vec<
     let endpoint = path.split('?').next().unwrap_or(path);
     let mut patched = Vec::new();
     match endpoint {
-        "/me/player" => {
+        endpoints::PLAYBACK => {
             normalize_child(value, "item", "item", normalize_playable, &mut patched);
         }
-        "/me/player/queue" => {
+        endpoints::QUEUE => {
             normalize_child(
                 value,
                 "currently_playing",
@@ -1543,7 +1547,7 @@ fn normalize_spotify_response(path: &str, value: &mut serde_json::Value) -> Vec<
             );
             normalize_array_child(value, "queue", "queue", normalize_playable, &mut patched);
         }
-        "/me/player/recently-played" => {
+        endpoints::RECENTLY_PLAYED => {
             normalize_paging(
                 value,
                 NormalizeHint::Unknown,
@@ -1558,7 +1562,7 @@ fn normalize_spotify_response(path: &str, value: &mut serde_json::Value) -> Vec<
                 &mut patched,
             );
         }
-        "/me/tracks" => {
+        endpoints::SAVED_TRACKS => {
             normalize_paging(value, NormalizeHint::PagingTrack, "paging", &mut patched);
             normalize_array_child(
                 value,
@@ -1568,7 +1572,7 @@ fn normalize_spotify_response(path: &str, value: &mut serde_json::Value) -> Vec<
                 &mut patched,
             );
         }
-        "/me/albums" => {
+        endpoints::SAVED_ALBUMS => {
             normalize_paging(value, NormalizeHint::PagingAlbum, "paging", &mut patched);
             normalize_array_child(
                 value,
@@ -1578,7 +1582,7 @@ fn normalize_spotify_response(path: &str, value: &mut serde_json::Value) -> Vec<
                 &mut patched,
             );
         }
-        "/me/playlists" => {
+        endpoints::MY_PLAYLISTS => {
             normalize_paging(value, NormalizeHint::PagingPlaylist, "paging", &mut patched);
             normalize_array_child(
                 value,
@@ -1591,10 +1595,19 @@ fn normalize_spotify_response(path: &str, value: &mut serde_json::Value) -> Vec<
         _ if endpoint.starts_with("/tracks/") => {
             normalize_track(value, "track", &mut patched);
         }
+        // Legacy `POST /users/{user_id}/playlists` response shape — we
+        // no longer emit this endpoint (create now uses MY_PLAYLISTS),
+        // but the normalizer keeps the arm so historical fixtures /
+        // upstream weirdness still round-trip cleanly.
         _ if endpoint.starts_with("/users/") && endpoint.ends_with("/playlists") => {
             normalize_playlist(value, "playlist", &mut patched);
         }
-        _ if endpoint.starts_with("/playlists/") && endpoint.ends_with("/tracks") => {
+        // Both the modern `/items` form and the deprecated `/tracks`
+        // form return the same paging-of-track shape; keep both so
+        // older recorded responses still normalize.
+        _ if endpoint.starts_with("/playlists/")
+            && (endpoint.ends_with("/items") || endpoint.ends_with("/tracks")) =>
+        {
             normalize_paging(value, NormalizeHint::PagingTrack, "paging", &mut patched);
             normalize_array_child(
                 value,
@@ -1604,7 +1617,7 @@ fn normalize_spotify_response(path: &str, value: &mut serde_json::Value) -> Vec<
                 &mut patched,
             );
         }
-        _ if endpoint == "/search" => {
+        endpoints::SEARCH => {
             normalize_child(
                 value,
                 "tracks",
@@ -2334,9 +2347,9 @@ fn library_endpoint_for_uri(uri: &str) -> AnyResult<(String, String)> {
     let path = match crate::selection::media_kind_from_uri(uri)? {
         MediaKind::Track | MediaKind::Album | MediaKind::Episode | MediaKind::Show => {
             let encoded_uri = encode_component(uri);
-            format!("/me/library?uris={encoded_uri}")
+            format!("{}?uris={encoded_uri}", endpoints::LIBRARY)
         }
-        MediaKind::Artist => format!("/me/following?type=artist&ids={id}"),
+        MediaKind::Artist => format!("{}?type=artist&ids={id}", endpoints::FOLLOWING),
         MediaKind::Playlist => bail!(
             "playlists are saved/unsaved via /playlists/{{id}}/followers, \
              not /me/{{tracks,albums,episodes,artists}}"
