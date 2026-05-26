@@ -604,19 +604,20 @@ impl SpotifyClient {
                 snapshot_id: None,
             });
         }
-        let user_id = self.current_user_id().await?;
-        let user_id = encode_component(&user_id);
+        // Use `POST /me/playlists` (current per Spotify docs), NOT the
+        // older `POST /users/{user_id}/playlists` — the latter appears
+        // to require Extended Quota Mode (returns 403 on dev-mode apps)
+        // and was the silent cause of every playlist-create 403 we
+        // diagnosed. `/me/playlists` works for any authenticated user
+        // with `playlist-modify-public`/`playlist-modify-private` and
+        // needs no user_id, so we also drop the prerequisite `GET /me`.
         let body = serde_json::json!({
             "name": name,
             "description": description.unwrap_or("Created by spotuify"),
             "public": public,
         });
         Ok(self
-            .request_json::<RawPlaylist>(
-                Method::POST,
-                &format!("/users/{user_id}/playlists"),
-                Some(body),
-            )
+            .request_json::<RawPlaylist>(Method::POST, "/me/playlists", Some(body))
             .await?
             .and_then(RawPlaylist::into_playlist)
             .ok_or_else(|| anyhow!("Spotify returned no created playlist"))?)
