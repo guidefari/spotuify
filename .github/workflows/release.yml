@@ -18,7 +18,7 @@ env:
 jobs:
   plan:
     name: Plan Release
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     outputs:
       cli_changed: ${{ steps.scope.outputs.cli_changed }}
       has_artifacts: ${{ steps.scope.outputs.has_artifacts }}
@@ -58,7 +58,7 @@ jobs:
 
   release-smoke:
     name: Release CLI Smoke
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     needs: plan
     if: needs.plan.outputs.cli_changed == 'true'
     steps:
@@ -185,7 +185,7 @@ jobs:
 
   github-release:
     name: GitHub Release
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     needs: [plan, release-smoke, build-binaries]
     if: >-
       always()
@@ -214,7 +214,7 @@ jobs:
 
   homebrew:
     name: Homebrew Formula
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     needs: [plan, github-release]
     if: needs.plan.outputs.cli_changed == 'true' && needs.github-release.result == 'success'
     steps:
