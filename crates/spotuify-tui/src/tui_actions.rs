@@ -461,6 +461,7 @@ pub fn default_actions() -> Vec<ActionSpec> {
             contexts: &[
                 C::SearchResults,
                 C::Library,
+                C::Playlists,
                 C::PlaylistTracks,
                 C::Queue,
                 C::MultiSelect,

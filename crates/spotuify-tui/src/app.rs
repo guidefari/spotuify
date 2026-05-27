@@ -34,6 +34,7 @@ use spotuify_spotify::config::Config;
 
 const TUI_PLAYLIST_TIMEOUT: Duration = Duration::from_secs(30);
 const TUI_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const SYSTEM_AUDIO_OUTPUT_LABEL: &str = "System Default";
 // 5 minutes — the initial library sync paginates Spotify's
 // `/me/tracks` 50 items at a time. A 5,000-track library takes
 // ~100 round-trips; 45 s was nowhere near enough and a single
@@ -722,13 +723,14 @@ impl App {
     }
 
     pub(crate) fn requests_for_action(&self, action: TuiAction) -> Vec<Request> {
-        let uris = self.selected_target_uris();
         match action {
-            TuiAction::QueueSelection => uris
+            TuiAction::QueueSelection => self
+                .selected_queue_target_uris()
                 .into_iter()
                 .map(|uri| Request::QueueAdd { uri })
                 .collect(),
-            TuiAction::LikeSelection => uris
+            TuiAction::LikeSelection => self
+                .selected_target_uris()
                 .into_iter()
                 .map(|uri| Request::LibrarySave {
                     uri: Some(uri),
@@ -739,6 +741,7 @@ impl App {
                 let Some((playlist, _)) = self.selected_playlist_target() else {
                     return Vec::new();
                 };
+                let uris = self.selected_target_uris();
                 if uris.is_empty() {
                     Vec::new()
                 } else {
@@ -747,6 +750,16 @@ impl App {
             }
             _ => Vec::new(),
         }
+    }
+
+    fn selected_queue_target_uris(&self) -> Vec<String> {
+        if self.screen == Screen::Playlists && self.selected_playlist_id.is_none() {
+            return self
+                .selected_playlist()
+                .map(|playlist| vec![format!("spotify:playlist:{}", playlist.id)])
+                .unwrap_or_default();
+        }
+        self.selected_target_uris()
     }
 
     fn selected_playlist_target(&self) -> Option<(String, String)> {
@@ -2582,19 +2595,16 @@ fn handle_key(
     // embedded player renders to). Uppercase + contextual-free so it
     // doesn't clash with lowercase per-page keys.
     if matches!(key.code, KeyCode::Char('O')) {
-        let outputs = spotuify_daemon::server::list_audio_outputs();
-        if outputs.is_empty() {
-            app.toast = Some("No local audio outputs found.".to_string());
-        } else {
-            let current = Config::load()
-                .ok()
-                .and_then(|c| c.player.audio_output_device);
-            let selected = current
-                .as_deref()
-                .and_then(|name| outputs.iter().position(|o| o == name))
-                .unwrap_or(0);
-            app.audio_output_picker = Some(AudioOutputPickerModal { outputs, selected });
-        }
+        let mut outputs = spotuify_daemon::server::list_audio_outputs();
+        outputs.insert(0, SYSTEM_AUDIO_OUTPUT_LABEL.to_string());
+        let current = Config::load()
+            .ok()
+            .and_then(|c| c.player.audio_output_device);
+        let selected = current
+            .as_deref()
+            .and_then(|name| outputs.iter().position(|o| o == name))
+            .unwrap_or(0);
+        app.audio_output_picker = Some(AudioOutputPickerModal { outputs, selected });
         return Ok(false);
     }
 
@@ -3350,19 +3360,39 @@ fn apply_audio_output_picker_selection(
     let Some(name) = picker.outputs.get(picker.selected).cloned() else {
         return;
     };
+    let value = audio_output_config_value(&name);
     match spotuify_spotify::config::set_config_value(
         spotuify_spotify::config::ConfigKey::PlayerAudioOutputDevice,
-        &name,
+        value,
     ) {
         // The output device binds when the backend's sink is built, so a
         // re-register wouldn't apply it — restart rebuilds from config.
         Ok(_) => {
             spawn_restart_daemon(async_tx.clone());
-            app.toast = Some(format!("Audio output → {name}; restarting daemon…"));
+            app.toast = Some(format!(
+                "Audio output → {}; restarting daemon…",
+                audio_output_toast_label(&name)
+            ));
         }
         Err(err) => {
             app.toast = Some(format!("Couldn't set audio output: {err}"));
         }
+    }
+}
+
+fn audio_output_config_value(selection: &str) -> &str {
+    if selection == SYSTEM_AUDIO_OUTPUT_LABEL {
+        ""
+    } else {
+        selection
+    }
+}
+
+fn audio_output_toast_label(selection: &str) -> &str {
+    if selection == SYSTEM_AUDIO_OUTPUT_LABEL {
+        "system default"
+    } else {
+        selection
     }
 }
 
@@ -5304,6 +5334,29 @@ mod tests {
     }
 
     #[test]
+    fn playlist_list_queue_request_targets_whole_playlist() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.playlists = vec![Playlist {
+            id: "quiet-storm".to_string(),
+            name: "Quiet Storm".to_string(),
+            owner: "me".to_string(),
+            tracks_total: 12,
+            image_url: None,
+            snapshot_id: None,
+        }];
+
+        let requests = app.requests_for_action(TuiAction::QueueSelection);
+
+        assert_eq!(
+            requests,
+            vec![Request::QueueAdd {
+                uri: "spotify:playlist:quiet-storm".to_string(),
+            }]
+        );
+    }
+
+    #[test]
     fn multi_select_add_to_playlist_batches_marked_uris_into_one_request() {
         let mut app = test_app();
         app.screen = Screen::Playlists;
@@ -5329,6 +5382,19 @@ mod tests {
                     "spotify:track:second".to_string(),
                 ],
             }]
+        );
+    }
+
+    #[test]
+    fn system_default_audio_output_clears_config_override() {
+        assert_eq!(audio_output_config_value(SYSTEM_AUDIO_OUTPUT_LABEL), "");
+        assert_eq!(
+            audio_output_toast_label(SYSTEM_AUDIO_OUTPUT_LABEL),
+            "system default"
+        );
+        assert_eq!(
+            audio_output_config_value("MacBook Pro Speakers"),
+            "MacBook Pro Speakers"
         );
     }
 

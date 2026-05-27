@@ -2536,7 +2536,7 @@ fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
     render_filter_bar(frame, app, " Device Filter ", chunks[0]);
     let devices = app.filtered_devices();
     let block = card_block(&format!(
-        "Devices  {}  ·  Enter or x transfer playback",
+        "Devices  {}  ·  Enter/x transfer · O audio output",
         devices.len()
     ));
     let inner = block.inner(chunks[1]);
@@ -3317,7 +3317,7 @@ fn render_playlist_list(
         ],
     )
     .block(card_block(&format!(
-        "Playlists  {}  ·  Enter open · a add",
+        "Playlists  {}  ·  Enter open · e enqueue · a add",
         playlists.len()
     )))
     .row_highlight_style(

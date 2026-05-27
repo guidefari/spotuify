@@ -529,6 +529,8 @@ async fn dispatch(
                     let queue_uris: Vec<String> =
                         queued_items.iter().map(|item| item.uri.clone()).collect();
                     let skipped = resolved_items.len() - queue_uris.len();
+                    let selection_kind = selection::media_kind_from_uri(&uri)?;
+                    let idle_context_label = idle_context_start_label(&selection_kind);
 
                     // "Queue" needs an active Spotify session. librespot
                     // 0.8.0 can't originate add-to-queue (embedded
@@ -536,11 +538,14 @@ async fn dispatch(
                     // the Web API `POST /me/player/queue`, which 404s with
                     // NO_ACTIVE_DEVICE when nothing is playing. When Spotify
                     // itself reports no active device for the first item, the
-                    // session is idle: play that item on the embedded device
-                    // to start one, then queue the rest. Keying off Spotify's
+                    // session is idle: start embedded playback. Track/episode
+                    // selections play the first item then queue the rest;
+                    // album/playlist selections start their context so the
+                    // backend owns natural progression. Keying off Spotify's
                     // actual error (not the local clock) means a remote
                     // session the daemon hasn't polled yet is never hijacked.
                     let mut played_first = false;
+                    let mut played_context = false;
                     // The first item reveals whether a session exists: queue
                     // it, and if Spotify reports no active device, start one by
                     // playing it on the embedded device instead.
@@ -548,15 +553,21 @@ async fn dispatch(
                         match queue_one(state_for_event.as_ref(), &mut client, &first).await? {
                             QueueAttempt::Queued => {}
                             QueueAttempt::NoActiveDevice => {
+                                let start_uri = if idle_context_label.is_some() {
+                                    played_context = true;
+                                    uri.clone()
+                                } else {
+                                    first.clone()
+                                };
                                 state_for_event
                                     .transport(crate::state::TransportCmd::PlayUri {
-                                        uri: first.clone(),
+                                        uri: start_uri.clone(),
                                         position_ms: 0,
                                     })
                                     .await
                                     .map_err(|err| {
                                         anyhow::anyhow!(
-                                            "failed to start playback for {first}: {err}"
+                                            "failed to start playback for {start_uri}: {err}"
                                         )
                                     })?;
                                 played_first = true;
@@ -564,24 +575,27 @@ async fn dispatch(
                         }
                     }
 
-                    for queue_uri in queue_uris.iter().skip(1) {
-                        // After an idle auto-play, the new session takes a
-                        // beat to register with Spotify, so retry briefly
-                        // instead of racing it with another 404.
-                        let mut attempt = 0u32;
-                        loop {
-                            match queue_one(state_for_event.as_ref(), &mut client, queue_uri)
-                                .await?
-                            {
-                                QueueAttempt::Queued => break,
-                                QueueAttempt::NoActiveDevice if played_first && attempt < 6 => {
-                                    attempt += 1;
-                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                                }
-                                QueueAttempt::NoActiveDevice => {
-                                    return Err(anyhow::anyhow!(
-                                        "queue add for {queue_uri} failed: no active device"
-                                    ));
+                    if !played_context {
+                        for queue_uri in queue_uris.iter().skip(1) {
+                            // After an idle auto-play, the new session takes a
+                            // beat to register with Spotify, so retry briefly
+                            // instead of racing it with another 404.
+                            let mut attempt = 0u32;
+                            loop {
+                                match queue_one(state_for_event.as_ref(), &mut client, queue_uri)
+                                    .await?
+                                {
+                                    QueueAttempt::Queued => break,
+                                    QueueAttempt::NoActiveDevice if played_first && attempt < 6 => {
+                                        attempt += 1;
+                                        tokio::time::sleep(std::time::Duration::from_millis(500))
+                                            .await;
+                                    }
+                                    QueueAttempt::NoActiveDevice => {
+                                        return Err(anyhow::anyhow!(
+                                            "queue add for {queue_uri} failed: no active device"
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -589,12 +603,16 @@ async fn dispatch(
 
                     // What actually landed in the queue: the first item too,
                     // unless we auto-played it to start the session.
-                    let queued_uris: Vec<String> = if played_first {
+                    let queued_uris: Vec<String> = if played_context {
+                        Vec::new()
+                    } else if played_first {
                         queue_uris.iter().skip(1).cloned().collect()
                     } else {
                         queue_uris.clone()
                     };
-                    let appended_items: Vec<MediaItem> = if played_first {
+                    let appended_items: Vec<MediaItem> = if played_context {
+                        Vec::new()
+                    } else if played_first {
                         queued_items.iter().skip(1).cloned().collect()
                     } else {
                         queued_items.clone()
@@ -604,7 +622,11 @@ async fn dispatch(
                         cache_queue(&state_for_event, queue).await;
                     }
                     let message = if played_first && queued_uris.is_empty() {
-                        "playing now".to_string()
+                        if let Some(label) = idle_context_label {
+                            format!("playing {label} now")
+                        } else {
+                            "playing now".to_string()
+                        }
                     } else if played_first {
                         format!("playing now, queued {} item(s)", queued_uris.len())
                     } else if skipped > 0 && queue_uris.is_empty() {
@@ -2177,6 +2199,14 @@ async fn queueable_items_for_selection_without_cache(
         MediaKind::Artist | MediaKind::Show => anyhow::bail!(
             "artist and show URIs cannot be appended to the Spotify queue; choose a track, episode, album, or playlist"
         ),
+    }
+}
+
+fn idle_context_start_label(kind: &MediaKind) -> Option<&'static str> {
+    match kind {
+        MediaKind::Album => Some("album"),
+        MediaKind::Playlist => Some("playlist"),
+        _ => None,
     }
 }
 
@@ -3852,7 +3882,9 @@ fn media_item_from_uri(uri: &str) -> anyhow::Result<MediaItem> {
 
 #[cfg(test)]
 mod queue_tests {
-    use super::{queue_with_appended_items, queueable_uris_for_selection};
+    use super::{
+        idle_context_start_label, queue_with_appended_items, queueable_uris_for_selection,
+    };
     use spotuify_core::{MediaItem, MediaKind, Queue};
     use spotuify_spotify::client::SpotifyClient;
 
@@ -3916,6 +3948,16 @@ mod queue_tests {
                 "spotify:track:sweet-thing".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn idle_queue_starts_contexts_as_contexts() {
+        assert_eq!(
+            idle_context_start_label(&MediaKind::Playlist),
+            Some("playlist")
+        );
+        assert_eq!(idle_context_start_label(&MediaKind::Album), Some("album"));
+        assert_eq!(idle_context_start_label(&MediaKind::Track), None);
     }
 
     #[test]

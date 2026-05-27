@@ -302,6 +302,7 @@ impl EmbeddedBackend {
         });
         let config = ConnectConfig {
             name: name.to_string(),
+            initial_volume: self.initial_volume(),
             ..ConnectConfig::default()
         };
         let (spirc, task) = tokio::time::timeout(
@@ -351,6 +352,10 @@ impl EmbeddedBackend {
         let spirc = state.spirc.as_ref().ok_or(PlayerError::NotInitialised)?;
         action(spirc)
             .map_err(|err| PlayerError::Playback(format!("librespot spirc command: {err}")))
+    }
+
+    fn initial_volume(&self) -> u16 {
+        self.cache.volume().unwrap_or(u16::MAX / 2)
     }
 }
 
@@ -763,6 +768,19 @@ mod tests {
         assert_eq!(volume_percent_to_librespot(200), u16::MAX);
         assert!(volume_percent_to_librespot(50) > 32_000);
         assert!(volume_percent_to_librespot(50) < 33_000);
+    }
+
+    #[test]
+    fn initial_volume_uses_saved_librespot_cache() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let paths = EmbeddedCachePaths::under(temp.path().to_path_buf(), 0);
+        let (backend, _stream) =
+            EmbeddedBackend::new(paths, Arc::new(StaticTokenProvider::missing()))
+                .expect("embedded backend");
+
+        assert_eq!(backend.initial_volume(), u16::MAX / 2);
+        backend.cache().save_volume(volume_percent_to_librespot(80));
+        assert_eq!(backend.initial_volume(), volume_percent_to_librespot(80));
     }
 
     #[test]
