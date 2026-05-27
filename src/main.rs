@@ -78,6 +78,11 @@ enum Command {
     },
     /// Remove the stored Spotify token from macOS Keychain.
     Logout,
+    /// Authentication-adjacent debug commands.
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
     /// Check config, auth, Spotify API access, and visible devices.
     Doctor {
         /// Output format.
@@ -467,6 +472,27 @@ enum RepeatArg {
     Off,
     Context,
     Track,
+}
+
+#[derive(Subcommand)]
+enum AuthCommand {
+    /// Print the daemon's current Spotify Web API bearer token.
+    ///
+    /// The daemon mints tokens via librespot keymaster + login5 and
+    /// holds them in memory; this command surfaces the current one so
+    /// you can probe `api.spotify.com` directly. Treat the output as a
+    /// secret — by default it goes to stdout for the immediate caller,
+    /// not the daemon log.
+    Bearer {
+        /// Force minting a fresh bearer even if the cached one is
+        /// still valid. Use after a `logout` + `login` round-trip.
+        #[arg(long)]
+        force: bool,
+        /// Output format. `table` prints just the token; `json` wraps
+        /// it for piping into `jq`.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Subcommand)]
@@ -948,6 +974,9 @@ async fn run() -> Result<()> {
             }
             Ok(())
         }
+        Some(Command::Auth { command }) => match command {
+            AuthCommand::Bearer { force, format } => auth_bearer(force, format).await,
+        },
         Some(Command::Doctor { format }) => doctor(format).await,
         Some(Command::Daemon { command }) => handle_daemon(command).await,
         Some(Command::Mcp {
@@ -2450,6 +2479,37 @@ fn parse_iso_or_relative(raw: &str) -> Option<i64> {
     }
     // Plain unix-ms integer is the unambiguous escape hatch.
     raw.parse::<i64>().ok()
+}
+
+/// Print the daemon's current Web API bearer to stdout.
+///
+/// Useful for direct `api.spotify.com` probing from scripts and
+/// agents — the keychain blob no longer caches the access token
+/// (only the refresh token + scopes), so the daemon is the only
+/// place a live bearer exists.
+async fn auth_bearer(force: bool, format: OutputFormat) -> Result<()> {
+    use spotuify_protocol::{IpcClient, OperationSource, Request, Response, ResponseData};
+    daemon::server::ensure_daemon_running().await?;
+    let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
+    let token = match client.request(Request::WebApiToken { force }).await? {
+        Response::Ok {
+            data: ResponseData::WebApiToken { token: Some(t) },
+        } => t,
+        Response::Ok {
+            data: ResponseData::WebApiToken { token: None },
+        } => anyhow::bail!("daemon has no Web API bearer; not logged in or no librespot session"),
+        Response::Ok { .. } => anyhow::bail!("unexpected daemon response"),
+        Response::Error { message, .. } => anyhow::bail!(message),
+    };
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::json!({ "token": token }));
+        }
+        _ => {
+            println!("{token}");
+        }
+    }
+    Ok(())
 }
 
 async fn doctor(format: OutputFormat) -> Result<()> {

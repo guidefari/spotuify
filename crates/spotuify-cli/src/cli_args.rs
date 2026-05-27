@@ -147,6 +147,21 @@ pub enum PlaylistCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Unfollow (effectively delete) a playlist you own.
+    ///
+    /// Spotify has no separate "delete playlist" endpoint; deletion is
+    /// the owner unfollowing the playlist. Not reversible — the
+    /// playlist and its track list are gone from your library.
+    Unfollow {
+        /// Playlist ID, URI, or exact name.
+        playlist: String,
+        /// Commit the unfollow without an interactive prompt.
+        #[arg(long)]
+        yes: bool,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Subcommand)]

@@ -157,6 +157,14 @@ pub enum Request {
         description: Option<String>,
         uris: Vec<String>,
     },
+    /// "Delete" a playlist the user owns. Spotify models deletion as
+    /// the owner unfollowing the playlist, which `DELETE
+    /// /v1/playlists/{id}/followers` performs. Not currently
+    /// reversible — recovering an unfollowed playlist would mean
+    /// recreating it and re-adding every item, which we don't snapshot.
+    PlaylistUnfollow {
+        playlist: String,
+    },
     LibrarySave {
         uri: Option<String>,
         current: bool,
@@ -359,6 +367,7 @@ impl Request {
             | Self::PlaylistAddItems { .. }
             | Self::PlaylistRemoveItems { .. }
             | Self::PlaylistCreate { .. }
+            | Self::PlaylistUnfollow { .. }
             | Self::LibrarySave { .. }
             | Self::LibraryUnsave { .. }
             | Self::LyricsGet { .. }
@@ -401,6 +410,7 @@ impl Request {
             Self::PlaylistAddItems { .. } => "playlist-add-items",
             Self::PlaylistRemoveItems { .. } => "playlist-remove-items",
             Self::PlaylistCreate { .. } => "playlist-create",
+            Self::PlaylistUnfollow { .. } => "playlist-unfollow",
             Self::LibrarySave { .. } => "library-save",
             Self::LibraryUnsave { .. } => "library-unsave",
             Self::LyricsGet { .. } => "lyrics-get",

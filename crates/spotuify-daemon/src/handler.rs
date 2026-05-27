@@ -915,6 +915,34 @@ async fn dispatch(
             )
             .await
         }
+        Request::PlaylistUnfollow { playlist } => {
+            let state_for = state.clone();
+            let playlist_for = playlist.clone();
+            let playlist_uri = selection::playlist_uri(&playlist);
+            spawn_optimistic_mutation(
+                &state,
+                OperationKind::PlaylistUnfollow,
+                operation_source,
+                vec![playlist_uri.clone()],
+                "playlist-unfollow",
+                request_json.clone(),
+                None,
+                None,
+                mutation_lane,
+                move |_op_id| async move {
+                    let mut client = state_for.spotify_client().await?;
+                    client.unfollow_playlist(&playlist_for).await?;
+                    let message = format!("Unfollowed playlist {playlist_for}");
+                    state_for.emit_event(DaemonEvent::PlaylistsChanged {
+                        action: "playlist-unfollow".to_string(),
+                        playlist: Some(playlist_for.clone()),
+                    });
+                    emit_mutation_finished(&state_for, "playlist-unfollow", &message);
+                    Ok(())
+                },
+            )
+            .await
+        }
         Request::LibrarySave { uri, current } => {
             let state_for = state.clone();
             let uri_for = uri.clone();
@@ -2986,26 +3014,112 @@ where
         redone_by_op_id: None,
         error_message: None,
     };
-    let _ = state.store().insert_pending_operation(&row).await;
 
-    let result = record_mutation_with_id(
-        state,
+    // The operations table has a foreign key on `receipt_id`. The
+    // writer pool runs with `PRAGMA foreign_keys = ON`, so the receipt
+    // row MUST exist before we insert the operation. Earlier versions
+    // ran the inserts in the opposite order and the FK violation was
+    // silently swallowed by `let _ = ...`, leaving the operations
+    // table empty in production.
+    let started = now_ms();
+    let receipt = spotuify_protocol::Receipt {
         receipt_id,
-        action,
-        request_summary,
-        body(operation_id),
-    )
-    .await;
+        action: action.to_string(),
+        status: spotuify_protocol::ReceiptStatus::Pending,
+        message: "queued".to_string(),
+        started_at_ms: started,
+        finished_at_ms: None,
+        error: None,
+    };
+    if let Err(err) = state
+        .store()
+        .insert_pending_receipt(&receipt, request_summary)
+        .await
+    {
+        tracing::error!(
+            error = %err,
+            receipt_id = %receipt_id.0,
+            action,
+            "failed to persist pending receipt row"
+        );
+    }
+    if let Err(err) = state.store().insert_pending_operation(&row).await {
+        tracing::error!(
+            error = %err,
+            operation_id = %operation_id.0,
+            kind = ?kind,
+            action,
+            "failed to persist pending operation row"
+        );
+    }
+    state.emit_event(spotuify_protocol::DaemonEvent::MutationAccepted {
+        receipt_id,
+        action: action.to_string(),
+    });
+
+    let result = body(operation_id).await;
 
     let finished = now_ms();
+    let (receipt_status, message, error_summary) = match &result {
+        Ok(_) => (
+            spotuify_protocol::ReceiptStatus::Confirmed,
+            format!("{action} confirmed"),
+            None,
+        ),
+        Err(err) => {
+            let msg = err.to_string();
+            (
+                spotuify_protocol::ReceiptStatus::Failed,
+                msg.clone(),
+                Some(spotuify_protocol::ApiErrorSummary {
+                    kind: spotuify_protocol::IpcErrorKind::Provider,
+                    message: msg,
+                    retry_after_secs: None,
+                }),
+            )
+        }
+    };
+    if let Err(err) = state
+        .store()
+        .finalize_receipt(
+            receipt_id,
+            receipt_status,
+            &message,
+            finished,
+            error_summary.as_ref(),
+        )
+        .await
+    {
+        tracing::error!(
+            error = %err,
+            receipt_id = %receipt_id.0,
+            action,
+            "failed to finalize receipt row"
+        );
+    }
+    state.emit_event(spotuify_protocol::DaemonEvent::MutationFinalized {
+        receipt_id,
+        status: receipt_status,
+        message: message.clone(),
+    });
+    let _ = error_summary;
     let (status, error) = match &result {
         Ok(_) => (OperationStatus::Succeeded, None),
         Err(err) => (OperationStatus::Failed, Some(err.to_string())),
     };
-    let _ = state
+    if let Err(err) = state
         .store()
         .finalize_operation(operation_id, status, finished, error.as_deref())
-        .await;
+        .await
+    {
+        tracing::error!(
+            error = %err,
+            operation_id = %operation_id.0,
+            kind = ?kind,
+            action,
+            "failed to finalize operation row"
+        );
+    }
     state.emit_event(DaemonEvent::OperationRecorded {
         operation_id,
         kind,
@@ -3156,8 +3270,8 @@ where
         redone_by_op_id: None,
         error_message: None,
     };
-    let _ = state.store().insert_pending_operation(&row).await;
-
+    // Receipt FIRST so the operations.receipt_id FK lands cleanly.
+    // See `record_operation` for the same ordering rationale.
     let started_at_ms = crate::analytics::now_ms();
     let receipt = spotuify_protocol::Receipt {
         receipt_id,
@@ -3168,10 +3282,27 @@ where
         finished_at_ms: None,
         error: None,
     };
-    let _ = state
+    if let Err(err) = state
         .store()
         .insert_pending_receipt(&receipt, &request_summary)
-        .await;
+        .await
+    {
+        tracing::error!(
+            error = %err,
+            receipt_id = %receipt_id.0,
+            action,
+            "failed to persist pending receipt row (optimistic)"
+        );
+    }
+    if let Err(err) = state.store().insert_pending_operation(&row).await {
+        tracing::error!(
+            error = %err,
+            operation_id = %operation_id.0,
+            kind = ?kind,
+            action,
+            "failed to persist pending operation row (optimistic)"
+        );
+    }
     state.emit_event(spotuify_protocol::DaemonEvent::MutationAccepted {
         receipt_id,
         action: action.to_string(),

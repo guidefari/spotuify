@@ -192,6 +192,12 @@ pub const TOOLS: &[Tool] = &[
         destructive: true,
     },
     Tool {
+        name: "playlist_unfollow",
+        description: "Unfollow (effectively delete) a playlist the user owns. Not reversible. Without confirm:true returns a preview.",
+        kind: ToolKind::Destructive,
+        destructive: true,
+    },
+    Tool {
         name: "library_save",
         description: "Save a track/album to the user's library.",
         kind: ToolKind::Destructive,

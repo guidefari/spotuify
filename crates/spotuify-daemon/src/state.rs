@@ -91,7 +91,11 @@ enum PlayerCommand {
     },
     /// Mint the first-party Web API bearer from the backend's live
     /// librespot session (login5). `None` when no session is available
-    /// yet. See `DaemonState::mint_web_api_token`.
+    /// yet. See `DaemonState::mint_web_api_token`. Currently unused in
+    /// prod because `web_api_bearer()` mints inline rather than through
+    /// the player actor; kept for the actor-backed path that returns
+    /// when login5 needs to run on the player thread.
+    #[allow(dead_code)]
     WebApiToken {
         resp: oneshot::Sender<Option<String>>,
     },

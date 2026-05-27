@@ -13,7 +13,8 @@
 
 use spotuify_core::now_ms;
 use spotuify_protocol::{
-    Operation, OperationId, OperationKind, OperationSource, OperationStatus, PreState, ReversalPlan,
+    Operation, OperationId, OperationKind, OperationSource, OperationStatus, PreState, Receipt,
+    ReceiptId, ReceiptStatus, ReversalPlan,
 };
 use spotuify_store::Store;
 
@@ -536,4 +537,64 @@ async fn prune_operations_older_than_deletes_only_old_rows() {
     let remaining = s.list_operations(10, None, None).await.unwrap();
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].operation_id, new_id);
+}
+
+// Regression: every operation row written by `record_operation` carries a
+// `receipt_id` pointing at a receipt that hasn't been inserted yet, so
+// with PRAGMA foreign_keys=ON the insert fails the FK constraint. The
+// daemon's `let _ = ...` swallowed the error and the operations table
+// stayed empty in production. Lock the contract so any future caller
+// that touches insert ordering gets a real error instead of silence.
+#[tokio::test]
+async fn insert_pending_operation_rejects_unknown_receipt_id() {
+    let s = store().await;
+    let id = OperationId::new_v7();
+    let mut row = op(
+        id,
+        OperationKind::PlaylistCreate,
+        now_ms(),
+        OperationSource::Cli,
+        OperationStatus::Pending,
+        true,
+    );
+    // Receipt id minted but the matching row was never inserted.
+    row.receipt_id = Some(ReceiptId::new_v7());
+    let result = s.insert_pending_operation(&row).await;
+    assert!(
+        result.is_err(),
+        "insert must surface the FK violation rather than silently succeed"
+    );
+}
+
+#[tokio::test]
+async fn insert_pending_operation_succeeds_when_receipt_exists_first() {
+    let s = store().await;
+    let receipt_id = ReceiptId::new_v7();
+    let receipt = Receipt {
+        receipt_id,
+        action: "playlist-create".to_string(),
+        status: ReceiptStatus::Pending,
+        message: "queued".to_string(),
+        started_at_ms: now_ms(),
+        finished_at_ms: None,
+        error: None,
+    };
+    s.insert_pending_receipt(&receipt, "{}").await.unwrap();
+
+    let id = OperationId::new_v7();
+    let mut row = op(
+        id,
+        OperationKind::PlaylistCreate,
+        now_ms(),
+        OperationSource::Cli,
+        OperationStatus::Pending,
+        true,
+    );
+    row.receipt_id = Some(receipt_id);
+    s.insert_pending_operation(&row)
+        .await
+        .expect("operation with valid receipt FK must persist");
+
+    let back = s.get_operation(id).await.unwrap();
+    assert_eq!(back.receipt_id, Some(receipt_id));
 }

@@ -462,7 +462,44 @@ pub async fn ipc_playlist(command: crate::PlaylistCommand) -> Result<()> {
                 format,
             )
         }
+        crate::PlaylistCommand::Unfollow {
+            playlist,
+            yes,
+            format,
+        } => ipc_playlist_unfollow(&playlist, yes, format).await,
     }
+}
+
+async fn ipc_playlist_unfollow(playlist: &str, yes: bool, format: OutputFormat) -> Result<()> {
+    let resolved = daemon_playlist(playlist).await?;
+    if !yes {
+        confirm_playlist_unfollow(&resolved)?;
+    }
+    print_mutation(
+        daemon_request(Request::PlaylistUnfollow {
+            playlist: resolved.id.clone(),
+        })
+        .await?,
+        format,
+    )
+}
+
+fn confirm_playlist_unfollow(playlist: &Playlist) -> Result<()> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        anyhow::bail!("Confirmation required for `playlist unfollow`. Re-run with --yes.");
+    }
+    println!(
+        "Unfollow `{}` ({})? This removes it from your library and is not reversible.",
+        playlist.name, playlist.id
+    );
+    print!("Continue? [y/N] ");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        return Ok(());
+    }
+    anyhow::bail!("Aborted")
 }
 
 async fn ipc_playlist_create(
