@@ -254,6 +254,14 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
             let playlist = required_str(args, tool, "playlist")?.to_string();
             Ok(TranslatedCall::Request(R::PlaylistUnfollow { playlist }))
         }
+        "playlist_set_image" => {
+            let playlist = required_str(args, tool, "playlist")?.to_string();
+            let image_base64 = required_str(args, tool, "image_base64")?.to_string();
+            Ok(TranslatedCall::Request(R::PlaylistSetImage {
+                playlist,
+                image_base64,
+            }))
+        }
         "library_save" => {
             let uri = required_str(args, tool, "uri")?.to_string();
             // The legacy LibrarySave request carries Option<String> because

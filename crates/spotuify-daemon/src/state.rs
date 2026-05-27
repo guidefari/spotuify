@@ -2258,7 +2258,8 @@ mod receipt_recovery {
                     user-read-private playlist-read-private \
                     playlist-read-collaborative playlist-modify-private \
                     playlist-modify-public user-library-read user-library-modify \
-                    user-follow-read user-follow-modify streaming app-remote-control"
+                    user-follow-read user-follow-modify ugc-image-upload \
+                    streaming app-remote-control"
                 .to_string(),
             token_type: "Bearer".to_string(),
         };

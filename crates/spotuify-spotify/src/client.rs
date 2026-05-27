@@ -1164,6 +1164,86 @@ impl SpotifyClient {
         Ok(())
     }
 
+    /// Upload a custom cover image for a playlist. `image_base64` must
+    /// be the base64-encoded contents of a JPEG no larger than 256 KB
+    /// after encoding — Spotify rejects anything else.
+    /// `PUT /v1/playlists/{id}/images`, scope `ugc-image-upload`.
+    pub async fn set_playlist_image(
+        &mut self,
+        playlist_id: &str,
+        image_base64: &str,
+    ) -> SpotifyResult<()> {
+        if self.fake {
+            if fake_playlists().iter().any(|p| p.id == playlist_id) {
+                return Ok(());
+            }
+            return Err(SpotifyError::NotFound);
+        }
+        // Spotify wants the base64 as a plain-text body with
+        // `Content-Type: image/jpeg`, NOT a JSON wrapper. None of the
+        // request helpers in this file handle that shape — they all
+        // serialize via reqwest's `.json(...)`. Inline the call so we
+        // can set the raw body + content-type without generalising the
+        // helpers for one caller.
+        let token = self.current_bearer().await?;
+        let path = endpoints::playlist_image(playlist_id);
+        let url = format!("{}{path}", self.api_base);
+        let priority = request_priority(&Method::PUT, &path, self.default_priority);
+        let scope = endpoint_scope(&Method::PUT, &path);
+        let started = Instant::now();
+        let body = image_base64.to_owned();
+        tracing::debug!(method = %Method::PUT, path, body_bytes = body.len(), "Spotify request start");
+        let response = match self
+            .rate_limiter
+            .send_with_retry(priority, &scope, || {
+                self.rate_limiter
+                    .inner()
+                    .request(Method::PUT, url.clone())
+                    .bearer_auth(token.clone())
+                    .header(reqwest::header::CONTENT_TYPE, "image/jpeg")
+                    .body(body.clone())
+            })
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                self.record_spotify_api_finished(
+                    &Method::PUT,
+                    &path,
+                    None,
+                    started.elapsed().as_millis(),
+                    Some(spotify_error_class(&err)),
+                )
+                .await;
+                tracing::warn!(method = %Method::PUT, path, error = %err, "Spotify request send failed");
+                return Err(anyhow!(err))
+                    .with_context(|| format!("Spotify PUT {path} request failed"))?;
+            }
+        };
+        let status = response.status();
+        self.record_spotify_api_finished(
+            &Method::PUT,
+            &path,
+            Some(status),
+            started.elapsed().as_millis(),
+            if status.is_success() {
+                None
+            } else {
+                Some("http")
+            },
+        )
+        .await;
+        tracing::debug!(
+            method = %Method::PUT,
+            path,
+            status = %status,
+            elapsed_ms = started.elapsed().as_millis(),
+            "Spotify request finished"
+        );
+        handle_empty_response(&Method::PUT, &path, response).await?;
+        Ok(())
+    }
+
     /// Save (=like) an item by URI. Routes to the correct
     /// `/me/{tracks,albums,episodes,shows}` endpoint based on the URI
     /// kind and uses Spotify's `?ids=` query syntax.

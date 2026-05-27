@@ -467,7 +467,69 @@ pub async fn ipc_playlist(command: crate::PlaylistCommand) -> Result<()> {
             yes,
             format,
         } => ipc_playlist_unfollow(&playlist, yes, format).await,
+        crate::PlaylistCommand::SetImage {
+            playlist,
+            file,
+            format,
+        } => ipc_playlist_set_image(&playlist, &file, format).await,
     }
+}
+
+async fn ipc_playlist_set_image(playlist: &str, file: &Path, format: OutputFormat) -> Result<()> {
+    use base64::Engine as _;
+
+    // Spotify accepts only JPEG and caps the base64-encoded body at
+    // 256 KB. Reading raw bytes ~ 192 KB roughly produces a 256 KB
+    // encoded payload (base64 inflates by 4/3). Reject early so we
+    // don't hand the daemon a payload Spotify will refuse anyway.
+    const MAX_RAW_BYTES: usize = 192 * 1024;
+    const MAX_ENCODED_BYTES: usize = 256 * 1024;
+
+    let raw = if file == Path::new("-") {
+        let mut buf = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut buf)
+            .context("failed to read JPEG bytes from stdin")?;
+        buf
+    } else {
+        std::fs::read(file).with_context(|| format!("failed to read {}", file.display()))?
+    };
+    if raw.is_empty() {
+        anyhow::bail!("playlist set-image: input file is empty");
+    }
+    // Spotify accepts only JPEG. Sniff the SOI marker (FF D8 FF) before
+    // we ship a non-JPEG that the daemon would round-trip just to get a
+    // 400 back.
+    if raw.len() < 3 || raw[0] != 0xff || raw[1] != 0xd8 || raw[2] != 0xff {
+        anyhow::bail!(
+            "playlist set-image: {} does not start with a JPEG SOI marker (FF D8 FF); Spotify accepts only JPEG",
+            file.display()
+        );
+    }
+    if raw.len() > MAX_RAW_BYTES {
+        anyhow::bail!(
+            "playlist set-image: {} is {} bytes; encoded payload would exceed Spotify's 256 KB cap. Re-export at a smaller size.",
+            file.display(),
+            raw.len()
+        );
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&raw);
+    if encoded.len() > MAX_ENCODED_BYTES {
+        anyhow::bail!(
+            "playlist set-image: encoded image is {} bytes, exceeds Spotify's 256 KB cap",
+            encoded.len()
+        );
+    }
+
+    let resolved = daemon_playlist(playlist).await?;
+    print_mutation(
+        daemon_request(Request::PlaylistSetImage {
+            playlist: resolved.id.clone(),
+            image_base64: encoded,
+        })
+        .await?,
+        format,
+    )
 }
 
 async fn ipc_playlist_unfollow(playlist: &str, yes: bool, format: OutputFormat) -> Result<()> {

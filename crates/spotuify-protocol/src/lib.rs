@@ -165,6 +165,17 @@ pub enum Request {
     PlaylistUnfollow {
         playlist: String,
     },
+    /// Replace a playlist's cover art with a custom JPEG. `image_base64`
+    /// carries the base64-encoded JPEG bytes (the daemon passes it
+    /// through to `PUT /v1/playlists/{id}/images` as a raw text body
+    /// with `Content-Type: image/jpeg`). Spotify caps the encoded body
+    /// at 256 KB; reject larger payloads at the CLI before they reach
+    /// the daemon. Not reversible — Spotify gives no read-back of the
+    /// prior image bytes.
+    PlaylistSetImage {
+        playlist: String,
+        image_base64: String,
+    },
     LibrarySave {
         uri: Option<String>,
         current: bool,
@@ -368,6 +379,7 @@ impl Request {
             | Self::PlaylistRemoveItems { .. }
             | Self::PlaylistCreate { .. }
             | Self::PlaylistUnfollow { .. }
+            | Self::PlaylistSetImage { .. }
             | Self::LibrarySave { .. }
             | Self::LibraryUnsave { .. }
             | Self::LyricsGet { .. }
@@ -411,6 +423,7 @@ impl Request {
             Self::PlaylistRemoveItems { .. } => "playlist-remove-items",
             Self::PlaylistCreate { .. } => "playlist-create",
             Self::PlaylistUnfollow { .. } => "playlist-unfollow",
+            Self::PlaylistSetImage { .. } => "playlist-set-image",
             Self::LibrarySave { .. } => "library-save",
             Self::LibraryUnsave { .. } => "library-unsave",
             Self::LyricsGet { .. } => "lyrics-get",

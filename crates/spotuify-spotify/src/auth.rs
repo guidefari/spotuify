@@ -52,6 +52,11 @@ const SCOPES: &[&str] = &[
     "user-library-modify",
     "user-follow-read",
     "user-follow-modify",
+    // Required for `PUT /playlists/{id}/images` (custom cover art).
+    // Adding this scope marks existing tokens as "needs reauth" via
+    // `missing_required_scopes`, which surfaces ScopeReauthRequired
+    // to the TUI/CLI on next daemon start.
+    "ugc-image-upload",
     // Embedded librespot playback uses the Web Playback SDK
     // streaming scope + app-remote-control to drive transport.
     "streaming",

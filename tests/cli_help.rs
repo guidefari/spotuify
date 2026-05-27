@@ -83,6 +83,10 @@ fn cli_help_snapshots_cover_command_tree() {
             "cli_help_playlist_unfollow",
             &["playlist", "unfollow", "--help"],
         ),
+        (
+            "cli_help_playlist_set_image",
+            &["playlist", "set-image", "--help"],
+        ),
         ("cli_help_auth", &["auth", "--help"]),
         ("cli_help_auth_bearer", &["auth", "bearer", "--help"]),
         ("cli_help_library", &["library", "--help"]),
@@ -119,7 +123,7 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_sync", &["sync", "--help"]),
     ];
 
-    assert_eq!(cases.len(), 72);
+    assert_eq!(cases.len(), 73);
     for (name, args) in cases {
         assert_help_snapshot(name, args);
     }

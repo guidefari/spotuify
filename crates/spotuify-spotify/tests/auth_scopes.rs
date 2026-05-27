@@ -17,7 +17,8 @@ fn token_scope_check_reports_follow_scopes_missing_from_existing_login() {
          user-read-playback-position \
          user-modify-playback-state user-read-private playlist-read-private \
          playlist-read-collaborative playlist-modify-private playlist-modify-public \
-         user-library-read user-library-modify streaming app-remote-control",
+         user-library-read user-library-modify ugc-image-upload \
+         streaming app-remote-control",
     );
 
     assert_eq!(
@@ -34,7 +35,7 @@ fn token_scope_check_accepts_token_with_all_required_scopes() {
          user-modify-playback-state user-read-private playlist-read-private \
          playlist-read-collaborative playlist-modify-private playlist-modify-public \
          user-library-read user-library-modify user-follow-read user-follow-modify \
-         streaming app-remote-control",
+         ugc-image-upload streaming app-remote-control",
     );
 
     assert!(missing_required_scopes(&token).is_empty());
@@ -60,7 +61,7 @@ fn token_needs_scope_reauth_returns_false_when_token_carries_every_required_scop
          user-modify-playback-state user-read-private playlist-read-private \
          playlist-read-collaborative playlist-modify-private playlist-modify-public \
          user-library-read user-library-modify user-follow-read user-follow-modify \
-         streaming app-remote-control",
+         ugc-image-upload streaming app-remote-control",
     );
 
     assert!(!token_needs_scope_reauth(Some(&token)));

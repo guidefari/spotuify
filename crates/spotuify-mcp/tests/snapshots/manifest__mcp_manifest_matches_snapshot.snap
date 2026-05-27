@@ -106,6 +106,10 @@ tools:
     description: "Unfollow (effectively delete) a playlist the user owns. Not reversible. Without confirm:true returns a preview."
     kind: destructive
     destructive: true
+  - name: playlist_set_image
+    description: "Replace a playlist's cover art with a base64-encoded JPEG (256 KB max)."
+    kind: destructive
+    destructive: true
   - name: library_save
     description: "Save a track/album to the user's library."
     kind: destructive

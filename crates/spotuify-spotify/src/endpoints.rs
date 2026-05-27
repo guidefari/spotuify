@@ -68,6 +68,13 @@ pub fn playlist_followers(id: &str) -> String {
     format!("/playlists/{}/followers", encode_component(id))
 }
 
+/// Custom cover-art upload. `PUT` accepts base64-encoded JPEG as a
+/// raw text body with `Content-Type: image/jpeg`; max 256 KB. Needs
+/// the `ugc-image-upload` scope.
+pub fn playlist_image(id: &str) -> String {
+    format!("/playlists/{}/images", encode_component(id))
+}
+
 // ---- Catalog ----
 pub const SEARCH: &str = "/search";
 /// Batch track lookup. Caller adds `?ids=...`.

@@ -198,6 +198,12 @@ pub const TOOLS: &[Tool] = &[
         destructive: true,
     },
     Tool {
+        name: "playlist_set_image",
+        description: "Replace a playlist's cover art with a base64-encoded JPEG (256 KB max).",
+        kind: ToolKind::Destructive,
+        destructive: true,
+    },
+    Tool {
         name: "library_save",
         description: "Save a track/album to the user's library.",
         kind: ToolKind::Destructive,

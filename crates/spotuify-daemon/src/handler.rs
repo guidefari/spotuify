@@ -943,6 +943,51 @@ async fn dispatch(
             )
             .await
         }
+        Request::PlaylistSetImage {
+            playlist,
+            image_base64,
+        } => {
+            // Spotify caps the base64-encoded body at 256 KB. The CLI
+            // checks too, but a fast bail here protects MCP callers and
+            // any future direct-IPC clients.
+            const MAX_IMAGE_BASE64_BYTES: usize = 256 * 1024;
+            if image_base64.is_empty() {
+                anyhow::bail!("playlist-set-image: image_base64 is empty");
+            }
+            if image_base64.len() > MAX_IMAGE_BASE64_BYTES {
+                anyhow::bail!(
+                    "playlist-set-image: encoded image is {} bytes, exceeds Spotify's 256 KB cap",
+                    image_base64.len()
+                );
+            }
+            let state_for = state.clone();
+            let playlist_for = playlist.clone();
+            let playlist_uri = selection::playlist_uri(&playlist);
+            let image_for = image_base64.clone();
+            spawn_optimistic_mutation(
+                &state,
+                OperationKind::PlaylistSetImage,
+                operation_source,
+                vec![playlist_uri.clone()],
+                "playlist-set-image",
+                request_json.clone(),
+                None,
+                None,
+                mutation_lane,
+                move |_op_id| async move {
+                    let mut client = state_for.spotify_client().await?;
+                    client.set_playlist_image(&playlist_for, &image_for).await?;
+                    let message = format!("Updated cover for playlist {playlist_for}");
+                    state_for.emit_event(DaemonEvent::PlaylistsChanged {
+                        action: "playlist-set-image".to_string(),
+                        playlist: Some(playlist_for.clone()),
+                    });
+                    emit_mutation_finished(&state_for, "playlist-set-image", &message);
+                    Ok(())
+                },
+            )
+            .await
+        }
         Request::LibrarySave { uri, current } => {
             let state_for = state.clone();
             let uri_for = uri.clone();

@@ -162,6 +162,22 @@ pub enum PlaylistCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Replace a playlist's cover art with a custom JPEG.
+    ///
+    /// Spotify accepts only JPEG and caps the base64-encoded body at
+    /// 256 KB. Requires the `ugc-image-upload` OAuth scope — if your
+    /// stored token predates spotuify 0.1.23, run `spotuify login`
+    /// first.
+    SetImage {
+        /// Playlist ID, URI, or exact name.
+        playlist: String,
+        /// Path to a JPEG file (or `-` to read JPEG bytes from stdin).
+        #[arg(long, value_name = "FILE")]
+        file: PathBuf,
+        /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Subcommand)]
