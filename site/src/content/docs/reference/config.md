@@ -3,7 +3,7 @@ title: "Config"
 description: "Document config paths, keys, defaults, env vars, and one-shot overrides."
 ---
 
-Config is TOML. Secrets belong in the OS credential store when possible.
+Config is TOML. Secrets belong in the OS credential store when possible. On Unix, `spotuify` writes its config file with mode `0600`.
 
 ## Paths
 
@@ -19,7 +19,7 @@ These keys are accepted by `spotuify config get` and `spotuify config set`.
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `client_id` | string | first-party | only set this to use your own Spotify app instead of the built-in first-party login |
-| `client_secret` | string | none | only for your own Spotify app (dev-app flow) |
+| `client_secret` | string | none | only for your own Spotify app (dev-app flow); `config get` redacts it unless `--reveal-secret` is passed |
 | `redirect_uri` | string | `http://127.0.0.1:8888/callback` | only used with your own Spotify app; must match its settings |
 | `player.backend` | enum | `embedded` | only `embedded` (in-process librespot); Spotifyd/Connect-only backends were removed |
 | `player.bitrate` | number | `320` | `96`, `160`, or `320` |
@@ -35,6 +35,8 @@ These keys are accepted by `spotuify config get` and `spotuify config set`.
 ```bash
 spotuify config get player.bitrate
 spotuify config set player.bitrate 320
+spotuify config get client_secret
+spotuify config get client_secret --reveal-secret
 ```
 
 :::note[Legacy `[spotifyd]` migration]

@@ -10,6 +10,9 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -175,6 +178,13 @@ jobs:
           else
             sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
           fi
+
+      - name: Attest CLI archive provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
 
       - uses: actions/upload-artifact@v7
         with:

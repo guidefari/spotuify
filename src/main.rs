@@ -481,8 +481,7 @@ enum AuthCommand {
     /// The daemon mints tokens via librespot keymaster + login5 and
     /// holds them in memory; this command surfaces the current one so
     /// you can probe `api.spotify.com` directly. Treat the output as a
-    /// secret — by default it goes to stdout for the immediate caller,
-    /// not the daemon log.
+    /// secret; printing it requires `--reveal-secret`.
     Bearer {
         /// Force minting a fresh bearer even if the cached one is
         /// still valid. Use after a `logout` + `login` round-trip.
@@ -492,6 +491,9 @@ enum AuthCommand {
         /// it for piping into `jq`.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
+        /// Actually print the live bearer token.
+        #[arg(long)]
+        reveal_secret: bool,
     },
 }
 
@@ -599,7 +601,12 @@ enum ConfigCommand {
     /// Create the config file if it does not exist.
     Init,
     /// Print a config value.
-    Get { key: String },
+    Get {
+        key: String,
+        /// Print sensitive values instead of `<redacted>`.
+        #[arg(long)]
+        reveal_secret: bool,
+    },
     /// Set a config value.
     Set { key: String, value: String },
 }
@@ -975,7 +982,11 @@ async fn run() -> Result<()> {
             Ok(())
         }
         Some(Command::Auth { command }) => match command {
-            AuthCommand::Bearer { force, format } => auth_bearer(force, format).await,
+            AuthCommand::Bearer {
+                force,
+                format,
+                reveal_secret,
+            } => auth_bearer(force, format, reveal_secret).await,
         },
         Some(Command::Doctor { format }) => doctor(format).await,
         Some(Command::Daemon { command }) => handle_daemon(command).await,
@@ -1898,9 +1909,14 @@ fn handle_config(command: ConfigCommand) -> Result<()> {
     match command {
         ConfigCommand::Path => println!("{}", config_path()?.display()),
         ConfigCommand::Init => println!("{}", init_config()?.display()),
-        ConfigCommand::Get { key } => {
-            if let Some(value) = get_config_value(ConfigKey::parse(&key)?)? {
-                println!("{value}");
+        ConfigCommand::Get { key, reveal_secret } => {
+            let key = ConfigKey::parse(&key)?;
+            if let Some(value) = get_config_value(key)? {
+                if matches!(key, ConfigKey::ClientSecret) && !reveal_secret {
+                    println!("<redacted>");
+                } else {
+                    println!("{value}");
+                }
             }
         }
         ConfigCommand::Set { key, value } => {
@@ -2487,8 +2503,11 @@ fn parse_iso_or_relative(raw: &str) -> Option<i64> {
 /// agents — the keychain blob no longer caches the access token
 /// (only the refresh token + scopes), so the daemon is the only
 /// place a live bearer exists.
-async fn auth_bearer(force: bool, format: OutputFormat) -> Result<()> {
+async fn auth_bearer(force: bool, format: OutputFormat, reveal_secret: bool) -> Result<()> {
     use spotuify_protocol::{IpcClient, OperationSource, Request, Response, ResponseData};
+    if !reveal_secret {
+        anyhow::bail!("refusing to print a live Spotify bearer token without --reveal-secret");
+    }
     daemon::server::ensure_daemon_running().await?;
     let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
     let token = match client.request(Request::WebApiToken { force }).await? {

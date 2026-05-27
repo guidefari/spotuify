@@ -1,4 +1,8 @@
 use std::fs;
+#[cfg(unix)]
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -987,7 +991,8 @@ fn write_config_file(path: &Path, file: &FileConfig) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let contents = toml::to_string_pretty(file).context("failed to encode config")?;
-    fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))
+    write_private_file(path, contents.as_bytes())
+        .with_context(|| format!("failed to write {}", path.display()))
 }
 
 fn write_template(path: &Path) -> Result<()> {
@@ -998,7 +1003,25 @@ fn write_template(path: &Path) -> Result<()> {
         // (chezmoi/dotbot etc) by dropping a .gitignore on first init.
         write_gitignore_if_absent(parent);
     }
-    fs::write(path, CONFIG_TEMPLATE).with_context(|| format!("failed to create {}", path.display()))
+    write_private_file(path, CONFIG_TEMPLATE.as_bytes())
+        .with_context(|| format!("failed to create {}", path.display()))
+}
+
+#[cfg(unix)]
+fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(contents)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    fs::write(path, contents)
 }
 
 /// Phase 13 (P13-G) — write a `.gitignore` in the config dir if absent.
@@ -1067,7 +1090,9 @@ const CONFIG_TEMPLATE: &str = r#"# spotuify config
 # Apply for Extended Quota Mode on the dashboard to lift the dev-app
 # 25-user cap and unlock playlist/library writes.
 client_id = ""
-client_secret = ""
+# Optional, only for your own Spotify app. Prefer SPOTUIFY_CLIENT_SECRET
+# when you do not want a client secret written to disk.
+# client_secret = ""
 redirect_uri = "http://127.0.0.1:8888/callback"
 
 [player]
@@ -1112,7 +1137,8 @@ on_error = true
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_single_override, get_config_value, parse_bool, set_config_value, Config, ConfigKey,
+        apply_single_override, get_config_value, init_config, parse_bool, set_config_value, Config,
+        ConfigKey,
     };
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1246,6 +1272,37 @@ bitrate = 320
 
         assert_eq!(hook.as_deref(), Some("hook.sh"));
         assert_eq!(timeout.as_deref(), Some("1234"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_init_and_set_write_private_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = temp.path().join("spotuify.toml");
+
+        let old_config = std::env::var_os("SPOTUIFY_CONFIG");
+        std::env::set_var("SPOTUIFY_CONFIG", &config_path);
+
+        init_config().expect("config init should write");
+        let init_mode = std::fs::metadata(&config_path)
+            .expect("config metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        set_config_value(ConfigKey::ClientId, "client").expect("config set should write");
+        let set_mode = std::fs::metadata(&config_path)
+            .expect("config metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        restore_env("SPOTUIFY_CONFIG", old_config);
+
+        assert_eq!(init_mode, 0o600);
+        assert_eq!(set_mode, 0o600);
     }
 
     #[test]

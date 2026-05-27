@@ -60,7 +60,7 @@ brew tap planetaryescape/tap
 brew install spotuify
 ```
 
-Binaries are unsigned today. If Gatekeeper blocks the first launch:
+Release archives include SHA256 checksums and GitHub artifact provenance attestations. macOS binaries are not notarized today, so Gatekeeper may still block the first launch:
 
 ```sh
 xattr -d com.apple.quarantine /opt/homebrew/bin/spotuify
@@ -290,6 +290,8 @@ spotuify config init
 spotuify config get client_id
 spotuify config get redirect_uri
 spotuify config get player.backend
+# Prints <redacted> unless you pass --reveal-secret.
+spotuify config get client_secret
 spotuify config set client_id "..."
 spotuify config set client_secret "..."
 spotuify config set redirect_uri "http://127.0.0.1:8888/callback"
@@ -650,7 +652,8 @@ The daemon panics at startup when librespot can't bind an audio backend. Rebuild
 - The login refresh token is stored in macOS Keychain under service `spotuify`. The Web API access token is minted on demand and never written to disk.
 - `spotuify logout` removes the stored token from Keychain.
 - To re-authenticate, run `spotuify login` again.
-- If you use your own Spotify app (`SPOTUIFY_CLIENT_ID`), those credentials live in `~/.config/spotuify/spotuify.toml` or the environment.
+- `spotuify auth bearer` and `spotuify config get client_secret` require `--reveal-secret` before printing secrets.
+- Config files are written with mode `0600` on Unix. If you use your own Spotify app (`SPOTUIFY_CLIENT_ID`), prefer `SPOTUIFY_CLIENT_SECRET` when you do not want the client secret written to disk.
 
 ## Development
 

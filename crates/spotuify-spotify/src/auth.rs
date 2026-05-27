@@ -1,6 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
-use std::net::TcpListener;
+use std::net::{IpAddr, TcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1044,10 +1044,23 @@ fn bind_redirect_listener(redirect_uri: &str) -> AnyResult<TcpListener> {
     let host = url
         .host_str()
         .ok_or_else(|| anyhow!("redirect URI host missing"))?;
+    if !redirect_host_is_loopback(host) {
+        bail!("redirect URI host `{host}` is not loopback; use 127.0.0.1, localhost, or ::1");
+    }
     let port = url
         .port_or_known_default()
         .ok_or_else(|| anyhow!("redirect URI port missing"))?;
     TcpListener::bind((host, port)).with_context(|| format!("failed to bind {host}:{port}"))
+}
+
+fn redirect_host_is_loopback(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<IpAddr>() {
+        Ok(addr) => addr.is_loopback(),
+        Err(_) => false,
+    }
 }
 
 fn wait_for_code(listener: TcpListener, expected_state: &str) -> AnyResult<String> {
@@ -1554,5 +1567,26 @@ mod tests {
                 "first-party credentials should be gone after delete"
             );
         });
+    }
+
+    #[test]
+    fn redirect_listener_rejects_non_loopback_hosts() {
+        let err = super::bind_redirect_listener("http://192.0.2.10:8888/callback")
+            .expect_err("non-loopback redirect should be refused before bind");
+
+        assert!(
+            err.to_string().contains("not loopback"),
+            "error should explain loopback requirement, got: {err}"
+        );
+    }
+
+    #[test]
+    fn redirect_loopback_check_accepts_localhost_and_loopback_ips() {
+        assert!(super::redirect_host_is_loopback("localhost"));
+        assert!(super::redirect_host_is_loopback("LOCALHOST"));
+        assert!(super::redirect_host_is_loopback("127.0.0.1"));
+        assert!(super::redirect_host_is_loopback("::1"));
+        assert!(!super::redirect_host_is_loopback("192.0.2.10"));
+        assert!(!super::redirect_host_is_loopback("example.com"));
     }
 }

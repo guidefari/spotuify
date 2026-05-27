@@ -32,6 +32,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 const DEFAULT_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const MAX_COVER_ART_BYTES: u64 = 10 * 1024 * 1024;
 
 type CoverFetchLock = Arc<Mutex<()>>;
 type CoverFetchLocks = Arc<Mutex<HashMap<String, CoverFetchLock>>>;
@@ -82,6 +83,8 @@ pub enum CoverCacheError {
     DecodeFailed(String),
     #[error("image dimensions too small ({width}x{height}); refusing to cache")]
     DimensionsTooSmall { width: u32, height: u32 },
+    #[error("image body too large ({size} bytes; max {max} bytes); refusing to cache")]
+    BodyTooLarge { size: u64, max: u64 },
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("http: {0}")]
@@ -220,7 +223,11 @@ async fn fetch_and_persist_inner(
             actual: content_type.clone(),
         },
     )?;
+    if let Some(size) = resp.content_length() {
+        validate_cover_body_size(size)?;
+    }
     let bytes = resp.bytes().await?;
+    validate_cover_body_size(bytes.len() as u64)?;
     if bytes.is_empty() {
         return Err(CoverCacheError::DecodeFailed("empty body".to_string()));
     }
@@ -244,6 +251,16 @@ async fn fetch_and_persist_inner(
     fs::write(&tmp, &bytes)?;
     fs::rename(&tmp, &path)?;
     Ok(path)
+}
+
+fn validate_cover_body_size(size: u64) -> Result<(), CoverCacheError> {
+    if size > MAX_COVER_ART_BYTES {
+        return Err(CoverCacheError::BodyTooLarge {
+            size,
+            max: MAX_COVER_ART_BYTES,
+        });
+    }
+    Ok(())
 }
 
 /// LRU eviction by mtime when the cache exceeds `max_bytes`.
@@ -468,6 +485,21 @@ mod tests {
         assert_eq!(h.len(), 32);
         assert_eq!(h, hash_url("https://i.scdn.co/image/abc"));
         assert_ne!(h, hash_url("https://i.scdn.co/image/def"));
+    }
+
+    #[test]
+    fn cover_body_size_limit_rejects_oversized_images() {
+        let err = validate_cover_body_size(MAX_COVER_ART_BYTES + 1)
+            .expect_err("oversized body should be rejected");
+
+        assert!(matches!(
+            err,
+            CoverCacheError::BodyTooLarge {
+                size,
+                max: MAX_COVER_ART_BYTES
+            } if size == MAX_COVER_ART_BYTES + 1
+        ));
+        validate_cover_body_size(MAX_COVER_ART_BYTES).expect("limit boundary should pass");
     }
 
     #[test]

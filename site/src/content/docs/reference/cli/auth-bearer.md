@@ -1,7 +1,23 @@
 ---
-source: tests/cli_help.rs
-expression: normalize_help_output(&stdout)
+title: "spotuify auth bearer"
+description: "Print the daemon's current Spotify Web API bearer token."
 ---
+
+<!-- generated: spotuify-cli-reference -->
+
+## When to use it
+
+Print the daemon's current Spotify Web API bearer token.
+
+## Examples
+
+```bash
+spotuify auth bearer --reveal-secret
+```
+
+## Help
+
+```text
 Print the daemon's current Spotify Web API bearer token.
 
 The daemon mints tokens via librespot keymaster + login5 and holds them in memory; this command surfaces the current one so you can probe `api.spotify.com` directly. Treat the output as a secret; printing it requires `--reveal-secret`.
@@ -13,7 +29,7 @@ Options:
           Force minting a fresh bearer even if the cached one is still valid. Use after a `logout` + `login` round-trip
 
       --log-format <LOG_FORMAT>
-          Phase 13 (P13-A) — pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT`
+          Phase 13 (P13-A) - pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT`
 
           [possible values: text, json]
 
@@ -24,13 +40,14 @@ Options:
           [possible values: table, json, jsonl, csv, ids]
 
       --no-daemon-start
-          Phase 13 (P13-H) — if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
+          Phase 13 (P13-H) - if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
 
   -o, --set <key.path=value>
-          Phase 13 (P13-H) — one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
+          Phase 13 (P13-H) - one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged
 
       --reveal-secret
           Actually print the live bearer token
 
   -h, --help
           Print help (see a summary with '-h')
+```

@@ -22,10 +22,6 @@ export default defineConfig({
       customCss: ['./src/styles/custom.css'],
       head: [
         { tag: 'meta', attrs: { name: 'theme-color', content: '#10130f' } },
-        // Load brand fonts without blocking render. The stylesheet is fetched
-        // as a print sheet, then promoted to `all` once it loads. If Google
-        // Fonts is slow or blocked, the page renders immediately on the
-        // fallback stack instead of white-screening.
         { tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.googleapis.com' } },
         { tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: true } },
         {
@@ -33,14 +29,7 @@ export default defineConfig({
           attrs: {
             rel: 'stylesheet',
             href: 'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@10..48,75..100,300..800&family=Sometype+Mono:wght@400;500;600;700&display=swap',
-            media: 'print',
-            onload: "this.media='all'",
           },
-        },
-        {
-          tag: 'noscript',
-          content:
-            '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@10..48,75..100,300..800&family=Sometype+Mono:wght@400;500;600;700&display=swap">',
         },
       ],
       sidebar: [

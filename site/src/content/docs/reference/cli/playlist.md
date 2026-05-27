@@ -30,6 +30,8 @@ Commands:
   play         Play a playlist
   add          Add a Spotify URI to a playlist
   add-current  Add the current track or episode to a playlist
+  unfollow     Unfollow (effectively delete) a playlist you own
+  set-image    Replace a playlist's cover art with a custom JPEG
   help         Print this message or the help of the given subcommand(s)
 
 Options:
