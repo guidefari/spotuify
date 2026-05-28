@@ -2,6 +2,7 @@
 name = "spotuify-spotify"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "Spotify Web API client, auth, config, and the typed error/compat/rate-limit middleware (Phase 6). The legacy SpotifyClient implementation lives in src/spotify.rs of the root binary during Phase 7's incremental extraction; this crate hosts new Phase 6 modules (error, rate_limit, compat) consumed by the binary."
 

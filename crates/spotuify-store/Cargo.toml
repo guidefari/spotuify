@@ -2,6 +2,7 @@
 name = "spotuify-store"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "SQLite cache for spotuify. Migrations + queries. Depends on spotuify-core and spotuify-protocol."
 

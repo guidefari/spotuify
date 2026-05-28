@@ -1,4 +1,6 @@
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -35,6 +37,9 @@ pub fn init_with_format(format: LogFormat) -> Result<WorkerGuard> {
         .context("log path has no parent directory")?
         .to_path_buf();
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    #[cfg(unix)]
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("failed to secure {}", dir.display()))?;
 
     // Daily rotation with a 7-file retention window. The previous
     // setup used `rolling::never` which left a single growing file —

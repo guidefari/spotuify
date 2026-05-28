@@ -2,6 +2,7 @@
 name = "spotuify-protocol"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "IPC wire protocol shared between spotuify daemon, CLI, TUI, and MCP server. Depends only on spotuify-core."
 

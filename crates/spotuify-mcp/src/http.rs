@@ -4,7 +4,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, ORIGIN};
+use axum::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HOST, ORIGIN};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -89,6 +89,7 @@ async fn post_mcp(State(state): State<HttpState>, request: Request<Body>) -> Res
 
 fn validate_headers(state: &HttpState, headers: &HeaderMap, require_accept: bool) -> HeaderResult {
     validate_auth(state, headers)?;
+    validate_host(headers)?;
     validate_origin(headers)?;
     if require_accept {
         validate_accept(headers)?;
@@ -109,6 +110,36 @@ fn validate_auth(state: &HttpState, headers: &HeaderMap) -> HeaderResult {
         None,
         "missing or invalid bearer token",
     )))
+}
+
+fn validate_host(headers: &HeaderMap) -> HeaderResult {
+    let Some(host) = headers.get(HOST).and_then(|value| value.to_str().ok()) else {
+        return Err(Box::new(json_error(
+            StatusCode::FORBIDDEN,
+            None,
+            "invalid Host",
+        )));
+    };
+    let Ok(url) = url::Url::parse(&format!("http://{host}/")) else {
+        return Err(Box::new(json_error(
+            StatusCode::FORBIDDEN,
+            None,
+            "invalid Host",
+        )));
+    };
+    let allowed = matches!(
+        url.host_str(),
+        Some("127.0.0.1") | Some("localhost") | Some("::1")
+    );
+    if allowed {
+        Ok(())
+    } else {
+        Err(Box::new(json_error(
+            StatusCode::FORBIDDEN,
+            None,
+            "invalid Host",
+        )))
+    }
 }
 
 fn validate_origin(headers: &HeaderMap) -> HeaderResult {
@@ -198,6 +229,17 @@ mod tests {
             .await
             .expect("forbidden request should complete");
         assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+        let rebinding = client
+            .post(&url)
+            .header(AUTHORIZATION, "Bearer secret")
+            .header(HOST, "example.com")
+            .header(ACCEPT, "application/json, text/event-stream")
+            .json(&body)
+            .send()
+            .await
+            .expect("rebinding request should complete");
+        assert_eq!(rebinding.status(), StatusCode::FORBIDDEN);
 
         let ok = client
             .post(&url)

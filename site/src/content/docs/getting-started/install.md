@@ -24,6 +24,16 @@ spotuify --help
 
 Release archives include SHA256 checksums and GitHub artifact provenance attestations. macOS binaries are not notarized yet, so Gatekeeper may still ask you to approve the first launch.
 
+## Install script
+
+For macOS and Linux x86_64 release archives, the installer downloads both the archive and its published `.sha256` file before installing:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/planetaryescape/spotuify/main/install.sh
+bash install.sh
+spotuify --help
+```
+
 ## Cargo
 
 ```bash

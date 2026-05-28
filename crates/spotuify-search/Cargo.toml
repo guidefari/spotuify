@@ -2,6 +2,7 @@
 name = "spotuify-search"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "Tantivy search index for spotuify. Rebuildable derived state from the SQLite store."
 

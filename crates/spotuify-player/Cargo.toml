@@ -2,6 +2,7 @@
 name = "spotuify-player"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "Player backend trait + implementations (spotifyd, embedded librespot in Phase 9.3+, connect-only). The trait, BackendKind dispatch, and ConnectOnly/Mock backends ship in Phase 9.0; librespot integration lands in 9.2+."
 

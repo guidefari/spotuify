@@ -68,6 +68,14 @@ xattr -d com.apple.quarantine /opt/homebrew/bin/spotuify
 
 ### Linux (x86_64)
 
+Install the latest prebuilt archive with checksum verification:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/planetaryescape/spotuify/main/install.sh
+bash install.sh
+spotuify
+```
+
 Grab the `linux-x86_64` tarball from [Releases](https://github.com/planetaryescape/spotuify/releases) and put `spotuify` on your `PATH`:
 
 ```sh

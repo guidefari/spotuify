@@ -2,6 +2,7 @@
 name = "spotuify-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "Core domain types for spotuify (Playback, MediaItem, Device, Playlist, etc.). No internal dependencies; safe to import from any other crate."
 

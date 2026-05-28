@@ -27,7 +27,7 @@ jobs:
       has_artifacts: ${{ steps.scope.outputs.has_artifacts }}
       build_matrix: ${{ steps.matrix.outputs.build_matrix }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
       - name: Validate release ref
@@ -65,9 +65,9 @@ jobs:
     needs: plan
     if: needs.plan.outputs.cli_changed == 'true'
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -90,11 +90,11 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.build_matrix) }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: release-${{ matrix.target }}
 
@@ -148,6 +148,7 @@ jobs:
           ARCHIVE="spotuify-v${VERSION}-${MATRIX_ARCHIVE}"
           mkdir -p release
           cp "target/${MATRIX_TARGET}/release/spotuify" release/
+          cp install.sh release/
           cp README.md release/
           cp -r install release/install 2>/dev/null || true
           cp -r docs/recipes release/recipes 2>/dev/null || true
@@ -165,6 +166,7 @@ jobs:
           $archive = "spotuify-v$version-$env:MATRIX_ARCHIVE"
           New-Item -ItemType Directory -Force -Path release | Out-Null
           Copy-Item "target/$env:MATRIX_TARGET/release/spotuify.exe" release/
+          Copy-Item install.sh release/
           Copy-Item README.md release/
           Copy-Item install release/install -Recurse -ErrorAction SilentlyContinue
           Compress-Archive -Path "release/*" -DestinationPath $archive -Force
@@ -180,13 +182,13 @@ jobs:
           fi
 
       - name: Attest CLI archive provenance
-        uses: actions/attest@v4
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
         with:
           subject-path: |
             ${{ env.ARCHIVE }}
             ${{ env.ARCHIVE }}.sha256
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.target }}-cli
           path: |
@@ -204,20 +206,24 @@ jobs:
       && (needs.build-binaries.result == 'success'
         || (needs.plan.outputs.has_artifacts != 'true' && needs.build-binaries.result == 'skipped'))
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: needs.build-binaries.result == 'success'
         with:
           path: artifacts
           merge-multiple: true
 
-      - uses: softprops/action-gh-release@v3.0.0
+      - name: Verify release artifact checksums
+        if: needs.build-binaries.result == 'success'
+        run: scripts/verify_release_checksums.sh artifacts
+
+      - uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         if: needs.build-binaries.result == 'success'
         with:
           files: artifacts/*
           generate_release_notes: true
           overwrite_files: false
 
-      - uses: softprops/action-gh-release@v3.0.0
+      - uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         if: needs.build-binaries.result == 'skipped'
         with:
           generate_release_notes: true
@@ -228,11 +234,13 @@ jobs:
     needs: [plan, github-release]
     if: needs.plan.outputs.cli_changed == 'true' && needs.github-release.result == 'success'
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
           merge-multiple: true
+      - name: Verify release artifact checksums
+        run: scripts/verify_release_checksums.sh artifacts
       - name: Render formula
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
@@ -257,7 +265,7 @@ jobs:
           git -C tap add Formula/spotuify.rb
           git -C tap commit -m "spotuify ${VERSION}"
           git -C tap push origin HEAD:main
-      - uses: Homebrew/actions/setup-homebrew@master
+      - uses: Homebrew/actions/setup-homebrew@6eaeff80e7e5c43087c0e5eb5aa82120399e9c91 # master
       - name: Verify Homebrew install
         run: |
           brew update

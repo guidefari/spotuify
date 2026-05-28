@@ -2,6 +2,7 @@
 name = "spotuify-system"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "Phase 14 system integration: MPRIS / Now Playing / SMTC media controls (souvlaki), desktop notifications (notify-rust), shell-hook event dispatch, Discord Rich Presence, and the cover-art file cache shared with the TUI."
 

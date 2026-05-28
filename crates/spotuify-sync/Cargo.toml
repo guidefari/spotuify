@@ -2,6 +2,7 @@
 name = "spotuify-sync"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "Background sync engine for spotuify: playback, devices, playlists, recent items, library, and refetch gates."
 
