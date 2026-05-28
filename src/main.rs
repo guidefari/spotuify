@@ -1637,8 +1637,7 @@ async fn onboard() -> Result<()> {
     // First-party (keymaster) is opt-in via SPOTUIFY_USE_FIRST_PARTY=1.
     // The default below is the dev-app onboarding (paste client_id,
     // dev-app OAuth, sync). See `is_first_party` for the rationale.
-    let config = Config::load().context("failed to load saved config")?;
-    if config.is_first_party() {
+    if Config::first_party_requested() {
         first_party_login().await?;
         if let Err(err) = nudge_daemon_reload_auth().await {
             tracing::debug!(error = %err, "post-onboard daemon reload-auth skipped");
@@ -1647,18 +1646,14 @@ async fn onboard() -> Result<()> {
         return Ok(());
     }
 
-    // Legacy dev-app onboarding — only when the user has set their own
-    // SPOTUIFY_CLIENT_ID / client_id (a custom Spotify app). Dev-mode
-    // apps cannot create playlists; the default first-party flow can.
-    println!("Using your own Spotify app (SPOTUIFY_CLIENT_ID is set).");
-    let existing_client_id = std::env::var("SPOTUIFY_CLIENT_ID")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or(get_config_value(ConfigKey::ClientId)?);
-    let existing_client_secret = std::env::var("SPOTUIFY_CLIENT_SECRET")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or(get_config_value(ConfigKey::ClientSecret)?);
+    // Dev-app onboarding: read the partial config template directly so
+    // blank first-run credentials become prompts, not load errors.
+    println!("Using your own Spotify app.");
+    let DevAppOnboardingState {
+        client_id: existing_client_id,
+        client_secret: existing_client_secret,
+        redirect_uri: existing_redirect_uri,
+    } = dev_app_onboarding_state()?;
     let needs_credentials = existing_client_id.is_none() || existing_client_secret.is_none();
     if needs_credentials {
         println!("Spotify Dashboard steps:");
@@ -1687,11 +1682,7 @@ async fn onboard() -> Result<()> {
             set_config_value(ConfigKey::ClientSecret, &client_secret)?;
         }
 
-        let redirect_uri = prompt_default(
-            "Redirect URI",
-            &get_config_value(ConfigKey::RedirectUri)?
-                .unwrap_or_else(|| "http://127.0.0.1:8888/callback".to_string()),
-        )?;
+        let redirect_uri = prompt_default("Redirect URI", &existing_redirect_uri)?;
         set_config_value(ConfigKey::RedirectUri, &redirect_uri)?;
     }
 
@@ -1705,13 +1696,35 @@ async fn onboard() -> Result<()> {
     Ok(())
 }
 
+struct DevAppOnboardingState {
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    redirect_uri: String,
+}
+
+fn dev_app_onboarding_state() -> Result<DevAppOnboardingState> {
+    let client_id = std::env::var("SPOTUIFY_CLIENT_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or(get_config_value(ConfigKey::ClientId)?);
+    let client_secret = std::env::var("SPOTUIFY_CLIENT_SECRET")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or(get_config_value(ConfigKey::ClientSecret)?);
+    let redirect_uri = get_config_value(ConfigKey::RedirectUri)?
+        .unwrap_or_else(|| "http://127.0.0.1:8888/callback".to_string());
+
+    Ok(DevAppOnboardingState {
+        client_id,
+        client_secret,
+        redirect_uri,
+    })
+}
+
 fn needs_onboarding() -> Result<bool> {
-    // First-party is now opt-in (SPOTUIFY_USE_FIRST_PARTY=1). On a
-    // config-load failure (first run, no client_id yet) fall through to
-    // the dev-app onboarding branch so the user gets the "add your
-    // client_id" prompt.
-    let first_party = Config::load().map(|c| c.is_first_party()).unwrap_or(false);
-    if first_party {
+    // First-party is opt-in (SPOTUIFY_USE_FIRST_PARTY=1). The default
+    // dev-app flow can start from a partial config template.
+    if Config::first_party_requested() {
         let creds_present = crate::auth::load_first_party_credentials()
             .map(|creds| creds.is_some())
             .unwrap_or(false);
@@ -1798,7 +1811,9 @@ fn prompt_default(label: &str, default: &str) -> Result<String> {
     print!("{label} [{default}]: ");
     io::stdout().flush()?;
     let mut value = String::new();
-    io::stdin().read_line(&mut value)?;
+    if io::stdin().read_line(&mut value)? == 0 {
+        anyhow::bail!("input closed while reading {label}");
+    }
     let value = value.trim();
     if value.is_empty() {
         Ok(default.to_string())
@@ -1811,7 +1826,9 @@ fn prompt(label: &str) -> Result<String> {
     print!("{label}: ");
     io::stdout().flush()?;
     let mut value = String::new();
-    io::stdin().read_line(&mut value)?;
+    if io::stdin().read_line(&mut value)? == 0 {
+        anyhow::bail!("input closed while reading {label}");
+    }
     Ok(value)
 }
 
@@ -1819,7 +1836,9 @@ fn wait_for_enter(message: &str) -> Result<()> {
     print!("{message}");
     io::stdout().flush()?;
     let mut value = String::new();
-    io::stdin().read_line(&mut value)?;
+    if io::stdin().read_line(&mut value)? == 0 {
+        anyhow::bail!("input closed while waiting for setup confirmation");
+    }
     Ok(())
 }
 
@@ -2585,13 +2604,15 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        bug_report, ensure_ops_undo_allowed, reset_cache_files, AnalyticsCommand, CacheCommand,
-        Cli, Command, DaemonCommand, HooksCommand, LyricsCommand, MprisCommand, PlaylistCommand,
-        QueueCommand, RepeatArg, SearchKind, SearchSource, SyncTarget, ToggleArg, VizCommand,
+        bug_report, dev_app_onboarding_state, ensure_ops_undo_allowed, needs_onboarding,
+        reset_cache_files, AnalyticsCommand, CacheCommand, Cli, Command, DaemonCommand,
+        HooksCommand, LyricsCommand, MprisCommand, PlaylistCommand, QueueCommand, RepeatArg,
+        SearchKind, SearchSource, SyncTarget, ToggleArg, VizCommand,
     };
     use crate::output::OutputFormat;
 
     static BUG_REPORT_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    static ONBOARDING_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
         if let Some(value) = value {
@@ -2599,6 +2620,44 @@ mod tests {
         } else {
             std::env::remove_var(key);
         }
+    }
+
+    #[test]
+    fn onboarding_state_accepts_blank_first_run_config() {
+        let _guard = ONBOARDING_ENV_LOCK.lock().unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_path = temp.path().join("spotuify.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+client_id = ""
+redirect_uri = "http://127.0.0.1:8888/callback"
+
+[player]
+bitrate = 320
+"#,
+        )
+        .unwrap();
+
+        let old_config = std::env::var_os("SPOTUIFY_CONFIG");
+        let old_client_id = std::env::var_os("SPOTUIFY_CLIENT_ID");
+        let old_client_secret = std::env::var_os("SPOTUIFY_CLIENT_SECRET");
+        let old_first_party = std::env::var_os("SPOTUIFY_USE_FIRST_PARTY");
+        std::env::set_var("SPOTUIFY_CONFIG", &config_path);
+        std::env::remove_var("SPOTUIFY_CLIENT_ID");
+        std::env::remove_var("SPOTUIFY_CLIENT_SECRET");
+        std::env::remove_var("SPOTUIFY_USE_FIRST_PARTY");
+
+        let state = dev_app_onboarding_state().unwrap();
+        assert_eq!(state.client_id, None);
+        assert_eq!(state.client_secret, None);
+        assert_eq!(state.redirect_uri, "http://127.0.0.1:8888/callback");
+        assert!(needs_onboarding().unwrap());
+
+        restore_env("SPOTUIFY_CONFIG", old_config);
+        restore_env("SPOTUIFY_CLIENT_ID", old_client_id);
+        restore_env("SPOTUIFY_CLIENT_SECRET", old_client_secret);
+        restore_env("SPOTUIFY_USE_FIRST_PARTY", old_first_party);
     }
 
     #[test]

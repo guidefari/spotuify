@@ -696,6 +696,10 @@ impl Config {
     /// (Mercury/dealer), keep the per-user dev-app budget as the
     /// default. First-party will return as the default once that lands.
     pub fn is_first_party(&self) -> bool {
+        Self::first_party_requested()
+    }
+
+    pub fn first_party_requested() -> bool {
         std::env::var("SPOTUIFY_USE_FIRST_PARTY")
             .ok()
             .map(|v| {
