@@ -5,6 +5,8 @@ class Spotuify < Formula
   license "MIT"
 
   on_macos do
+    depends_on "portaudio"
+
     if Hardware::CPU.arm?
       url "https://github.com/planetaryescape/spotuify/releases/download/v#{version}/spotuify-v#{version}-macos-aarch64.tar.gz"
       sha256 "__SHA256_MACOS_AARCH64__"
