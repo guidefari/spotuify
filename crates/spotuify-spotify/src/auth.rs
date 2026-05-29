@@ -257,7 +257,7 @@ pub async fn access_token_cached(
     let mut cached = cache.lock().await;
     let token = match cached.clone() {
         Some(token) => token,
-        None => load_token_bounded()?.ok_or(SpotifyError::AuthRequired)?,
+        None => load_token_for_access()?.ok_or(SpotifyError::AuthRequired)?,
     };
 
     // Phase 6.8: route the refresh decision through the typed
@@ -274,7 +274,7 @@ pub async fn access_token_cached(
 
     tracing::info!("refreshing Spotify access token (proactive or due)");
     let _lock = acquire_token_store_lock_bounded()?;
-    let token = load_token_bounded()?.unwrap_or(token);
+    let token = load_token_for_access()?.unwrap_or(token);
     if !should_refresh_token(&token) {
         *cached = Some(token.clone());
         return Ok(token.access_token);
@@ -293,11 +293,11 @@ pub async fn refresh_access_token_cached(
     let mut cached = cache.lock().await;
     let token = match cached.clone() {
         Some(token) => token,
-        None => load_token_bounded()?.ok_or(SpotifyError::AuthRequired)?,
+        None => load_token_for_access()?.ok_or(SpotifyError::AuthRequired)?,
     };
     tracing::info!("refreshing Spotify access token after 401");
     let _lock = acquire_token_store_lock_bounded()?;
-    let token = load_token_bounded()?.unwrap_or(token);
+    let token = load_token_for_access()?.unwrap_or(token);
     if cached
         .as_ref()
         .is_some_and(|old| token_changed(old, &token))
@@ -504,6 +504,18 @@ pub fn stored_credential_snapshot() -> SpotifyResult<Option<StoredCredential>> {
         }
     }
     Ok(None)
+}
+
+/// Disk-only credential snapshot for daemon recovery probes. This never
+/// touches the OS keychain, so it is safe to call while an auth-required
+/// latch is suppressing interactive keychain prompts.
+pub fn stored_credential_disk_snapshot() -> Option<StoredCredential> {
+    if let Some(creds) = load_first_party_from_disk() {
+        return Some(StoredCredential::FirstParty(creds));
+    }
+    let token = load_token_from_disk()?;
+    let raw = serde_json::to_string(&token).ok()?;
+    classify_credential(&raw)
 }
 
 pub fn disk_token_cache_status() -> String {
@@ -719,6 +731,7 @@ fn load_token_bounded() -> AnyResult<Option<StoredToken>> {
     {
         match token_result {
             Ok(token) => Ok(token),
+            Err(err) if keychain_access_needs_user(&err) => Err(err),
             Err(err) => {
                 tracing::debug!(
                     error = %err,
@@ -732,6 +745,27 @@ fn load_token_bounded() -> AnyResult<Option<StoredToken>> {
     {
         token_result
     }
+}
+
+fn load_token_for_access() -> SpotifyResult<Option<StoredToken>> {
+    load_token_bounded().map_err(map_token_load_error)
+}
+
+fn map_token_load_error(err: anyhow::Error) -> SpotifyError {
+    if keychain_access_needs_user(&err) {
+        SpotifyError::AuthRequired
+    } else {
+        SpotifyError::from(err)
+    }
+}
+
+fn keychain_access_needs_user(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    message.contains("timed out trying to read keychain token")
+        || message.contains("failed to read keychain token:")
+        || message.contains("macOS security CLI could not read Spotify token")
+        || message.contains("timed out trying to read keychain token via macOS security CLI")
+        || message.contains("keychain worker exited while trying to read keychain token")
 }
 
 #[cfg(target_os = "macos")]
@@ -1353,6 +1387,28 @@ mod tests {
             assert!(!status.contains("access-secret-should-not-print"));
             assert!(!status.contains("refresh-secret-hidden"));
             assert!(!status.contains("Bearer"));
+        });
+    }
+
+    #[test]
+    fn keychain_timeout_maps_to_auth_required() {
+        let err =
+            super::map_token_load_error(anyhow::anyhow!("timed out trying to read keychain token"));
+
+        assert!(matches!(err, SpotifyError::AuthRequired));
+    }
+
+    #[test]
+    fn disk_credential_snapshot_never_requires_keychain() {
+        with_auth_env(|| {
+            save_token_to_disk(&existing_token());
+
+            match super::stored_credential_disk_snapshot() {
+                Some(crate::first_party::StoredCredential::LegacyDevApp(token)) => {
+                    assert_eq!(token.access_token, "old-access");
+                }
+                other => panic!("expected disk legacy token, got {other:?}"),
+            }
         });
     }
 

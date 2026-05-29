@@ -12,6 +12,9 @@
 
 use spotuify_protocol::DaemonEvent;
 
+use std::collections::HashSet;
+use std::sync::Arc;
+
 #[derive(Debug, Clone)]
 pub struct NotificationsConfig {
     pub enabled: bool,
@@ -41,11 +44,15 @@ impl Default for NotificationsConfig {
 
 pub struct NotificationsHandle {
     config: NotificationsConfig,
+    notified_auth_errors: Arc<parking_lot::Mutex<HashSet<String>>>,
 }
 
 impl NotificationsHandle {
     pub fn new(config: NotificationsConfig) -> anyhow::Result<Self> {
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            notified_auth_errors: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+        })
     }
 
     pub fn enabled(&self) -> bool {
@@ -89,10 +96,16 @@ impl NotificationsHandle {
                 let b = expand_tokens(&self.config.body, action);
                 Some((s, b))
             }
-            DaemonEvent::AuthError { kind } if self.config.on_error => Some((
-                "spotuify auth error".to_string(),
-                format!("auth issue: {:?} — re-login required", kind),
-            )),
+            DaemonEvent::AuthError { kind } if self.config.on_error => {
+                let key = format!("{kind:?}");
+                if !self.notified_auth_errors.lock().insert(key) {
+                    return None;
+                }
+                Some((
+                    "spotuify auth error".to_string(),
+                    format!("auth issue: {:?} — re-login required", kind),
+                ))
+            }
             _ => None,
         }
     }
@@ -146,5 +159,24 @@ mod tests {
         assert!(h.render(&ev).is_some());
         // The actual `handle()` invocation skips the notification when
         // disabled; we don't exercise the notify-rust backend in tests.
+    }
+
+    #[test]
+    fn auth_error_notifications_are_deduped() {
+        let h = NotificationsHandle::new(NotificationsConfig {
+            enabled: true,
+            on_error: true,
+            ..NotificationsConfig::default()
+        })
+        .expect("notifications handle should construct");
+        let ev = DaemonEvent::AuthError {
+            kind: spotuify_protocol::AuthErrorKind::NotLoggedIn,
+        };
+
+        assert!(h.render(&ev).is_some());
+        assert!(
+            h.render(&ev).is_none(),
+            "same auth error should only produce one desktop notification"
+        );
     }
 }

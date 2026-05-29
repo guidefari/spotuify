@@ -808,6 +808,13 @@ impl DaemonState {
             return Ok(());
         }
 
+        if let Some(err) = self.auth_gate_error() {
+            if spotuify_spotify::auth::stored_credential_disk_snapshot().is_none() {
+                return Err(anyhow::Error::new(err));
+            }
+            self.clear_auth_gate_for_disk_recovery().await;
+        }
+
         let config = Config::load().context("failed to load Spotify config")?;
         let first_party = first_party_mode(&config);
         let client =
@@ -933,6 +940,19 @@ impl DaemonState {
         ) {
             self.drop_player_session().await;
         }
+    }
+
+    async fn clear_auth_gate_for_disk_recovery(&self) {
+        {
+            let mut cache = self.token_cache.lock().await;
+            *cache = None;
+        }
+        self.update_player_token(None);
+        self.first_party_bearer.lock().take();
+        self.auth_revoked
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.auth_required
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 
     /// Shut down the embedded librespot session (without stopping the
