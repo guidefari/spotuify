@@ -81,8 +81,11 @@ Implemented Spotify API capabilities:
   bottom-player play/pause, and bottom-player volume scrolling.
 - Spotify search limit changed to the current valid max.
 - Keychain reads/writes bounded to avoid indefinite hangs.
-- spotifyd config path set to the user's dotfiles path.
-- preferred spotifyd device name set to `spotuify-hume`.
+- Keychain reads that need user approval now latch `AuthRequired` in the
+  daemon; auth-error desktop notifications are deduped so an unattended
+  prompt does not become a notification storm.
+- embedded player device name set to `spotuify-hume`.
+- legacy `[spotifyd] device_name` remains accepted as a migration fallback.
 - daemon, Unix-socket JSON IPC, workspace split, SQLite cache,
   operation receipts, typed Spotify errors, rate-limit handling,
   MCP stdio/HTTP surfaces, embedded librespot sink-chain wiring, local

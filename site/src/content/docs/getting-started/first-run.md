@@ -13,7 +13,9 @@ spotuify onboard
 
 What you get: config creation, a browser login, and the first sync path in one flow.
 
-There is no Spotify Developer app to register and no Client ID to paste. spotuify logs in with Spotify's first-party flow and mints a full-access Web API token from your session, so creating playlists and saving tracks work out of the box. Premium is required for playback. (Power users can point spotuify at their own Spotify app with `SPOTUIFY_CLIENT_ID`; see [Install](/getting-started/install/).)
+The default auth path uses your own Spotify Developer app through Spotify OAuth PKCE. Add the app's `client_id` to config when onboarding asks for it. Use redirect URI `http://127.0.0.1:8888/callback` in the Spotify dashboard. Premium is required for playback.
+
+This is the BYO Spotify app GA path, not broad consumer no-developer setup. If playlist/library writes return `403`, your app is probably still in Spotify Development Mode; apply for Extended Quota Mode in the Spotify dashboard.
 
 ## Inspect the config path
 
@@ -39,7 +41,7 @@ What you get: a structured health report. Use this first for auth, daemon, devic
 ## Verify device control
 
 ```bash
-spotuify devices
+spotuify devices --format json
 spotuify transfer spotuify-hume
 spotuify status
 ```

@@ -45,10 +45,17 @@ const SOCKET_PROBE_DELAY: Duration = Duration::from_millis(100);
 const AUTH_HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 
 pub async fn run_daemon() -> Result<()> {
+    spotuify_protocol::paths::secure_current_instance_dirs()
+        .context("failed to secure spotuify state directories")?;
     let socket_path = DaemonState::socket_path();
     if let Some(parent) = socket_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
+        if parent == spotuify_protocol::paths::runtime_dir() {
+            spotuify_protocol::paths::ensure_private_dir(parent)
+                .with_context(|| format!("failed to secure {}", parent.display()))?;
+        } else {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
     }
 
     match inspect_socket_state(&socket_path).await {
@@ -130,6 +137,8 @@ pub async fn run_daemon() -> Result<()> {
     let retention_task = spawn_retention_loop(state.clone());
     let listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("failed to bind {}", socket_path.display()))?;
+    spotuify_protocol::paths::secure_private_socket(&socket_path)
+        .with_context(|| format!("failed to secure {}", socket_path.display()))?;
     write_daemon_pid_file()?;
     tracing::info!(socket = %socket_path.display(), "spotuify daemon listening");
 

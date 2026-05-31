@@ -15,7 +15,7 @@ Observability is user experience.
 - keychain access latency
 - daemon status
 - socket health
-- spotifyd process state
+- embedded player state
 - preferred device visibility
 - Spotify playback endpoint
 - devices endpoint

@@ -35,6 +35,55 @@ impl Drop for DaemonGuard {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn fake_daemon_repairs_private_runtime_and_state_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("temp dir");
+    let socket_path = temp.path().join("runtime/daemon.sock");
+    let mut daemon = DaemonGuard {
+        socket_path: socket_path.clone(),
+        pid: None,
+    };
+
+    let _ = run_json(temp.path(), &["devices", "--format", "json"]);
+    let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
+    daemon.pid = status["daemon_pid"].as_u64();
+    assert!(
+        daemon.pid.is_some(),
+        "fake daemon should be resident: {status:#}"
+    );
+
+    for dir in [
+        temp.path().join("runtime"),
+        temp.path().join("data"),
+        temp.path().join("cache-dir"),
+        temp.path().join("config-dir"),
+        temp.path().join("logs"),
+    ] {
+        let mode = std::fs::metadata(&dir)
+            .unwrap_or_else(|err| panic!("metadata for {}: {err}", dir.display()))
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "{} should be private", dir.display());
+    }
+
+    for file in [
+        socket_path,
+        temp.path().join("cache.sqlite"),
+        temp.path().join("analytics.sqlite"),
+    ] {
+        let mode = std::fs::metadata(&file)
+            .unwrap_or_else(|err| panic!("metadata for {}: {err}", file.display()))
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "{} should be private", file.display());
+    }
+}
+
 #[test]
 fn fake_daemon_cli_journey_covers_json_ids_and_mutation_receipts() {
     let temp = TempDir::new().expect("temp dir");
@@ -222,6 +271,10 @@ fn command(root: &Path) -> Command {
         .env("SPOTUIFY_EXIT_WITH_PARENT", std::process::id().to_string())
         .env("SPOTUIFY_RUNTIME_DIR", &runtime_dir)
         .env("SPOTUIFY_SOCKET", runtime_dir.join("daemon.sock"))
+        .env("SPOTUIFY_DATA_DIR", root.join("data"))
+        .env("SPOTUIFY_CACHE_DIR", root.join("cache-dir"))
+        .env("SPOTUIFY_CONFIG_DIR", root.join("config-dir"))
+        .env("SPOTUIFY_LOG_DIR", root.join("logs"))
         .env("SPOTUIFY_CACHE_DB", root.join("cache.sqlite"))
         .env("SPOTUIFY_SEARCH_INDEX", root.join("index"))
         .env("SPOTUIFY_ANALYTICS_DB", root.join("analytics.sqlite"))

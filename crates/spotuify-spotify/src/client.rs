@@ -1298,51 +1298,58 @@ impl SpotifyClient {
         path: &str,
         body: Option<T>,
     ) -> AnyResult<()> {
-        let token = self.current_bearer().await?;
+        let mut token = self.current_bearer().await?;
         let url = format!("{}{path}", self.api_base);
         let body = body.map(serde_json::to_value).transpose()?;
         let priority = request_priority(&method, path, self.default_priority);
         let scope = endpoint_scope(&method, path);
         let started = Instant::now();
         tracing::debug!(method = %method, path, "Spotify request start");
-        let response = match self
-            .rate_limiter
-            .send_with_retry(priority, &scope, || {
-                let mut request = self
-                    .rate_limiter
-                    .inner()
-                    .request(method.clone(), url.clone())
-                    .bearer_auth(token.clone());
-                if let Some(body) = &body {
-                    request = request.json(body);
-                } else if method_accepts_empty_body(&method) {
-                    // Spotify's edge layer occasionally responds with
-                    // HTTP 411 ("Length Required") for bodyless PUT/POST
-                    // even when `Content-Length: 0` is set explicitly
-                    // — `seanmonstar/reqwest#838` documents the
-                    // header-stripping path. Sending an empty JSON
-                    // object lets reqwest compute Content-Length from
-                    // the body and pins Content-Type, which the edge
-                    // accepts uniformly.
-                    request = request.json(&serde_json::json!({}));
+        let mut auth_attempt = 0_u8;
+        let response = loop {
+            match self
+                .rate_limiter
+                .send_with_retry(priority, &scope, || {
+                    let mut request = self
+                        .rate_limiter
+                        .inner()
+                        .request(method.clone(), url.clone())
+                        .bearer_auth(token.clone());
+                    if let Some(body) = &body {
+                        request = request.json(body);
+                    } else if method_accepts_empty_body(&method) {
+                        // Spotify's edge layer occasionally responds with
+                        // HTTP 411 ("Length Required") for bodyless PUT/POST
+                        // even when `Content-Length: 0` is set explicitly
+                        // — `seanmonstar/reqwest#838` documents the
+                        // header-stripping path. Sending an empty JSON
+                        // object lets reqwest compute Content-Length from
+                        // the body and pins Content-Type, which the edge
+                        // accepts uniformly.
+                        request = request.json(&serde_json::json!({}));
+                    }
+                    request
+                })
+                .await
+            {
+                Ok(response) => break response,
+                Err(SpotifyError::AuthExpired) if auth_attempt == 0 => {
+                    auth_attempt += 1;
+                    token = self.refresh_bearer().await?;
                 }
-                request
-            })
-            .await
-        {
-            Ok(response) => response,
-            Err(err) => {
-                self.record_spotify_api_finished(
-                    &method,
-                    path,
-                    None,
-                    started.elapsed().as_millis(),
-                    Some(spotify_error_class(&err)),
-                )
-                .await;
-                tracing::warn!(method = %method, path, error = %err, "Spotify request send failed");
-                return Err(anyhow!(err))
-                    .with_context(|| format!("Spotify {method} {path} request failed"));
+                Err(err) => {
+                    self.record_spotify_api_finished(
+                        &method,
+                        path,
+                        None,
+                        started.elapsed().as_millis(),
+                        Some(spotify_error_class(&err)),
+                    )
+                    .await;
+                    tracing::warn!(method = %method, path, error = %err, "Spotify request send failed");
+                    return Err(anyhow!(err))
+                        .with_context(|| format!("Spotify {method} {path} request failed"));
+                }
             }
         };
         let status = response.status();

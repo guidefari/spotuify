@@ -469,10 +469,11 @@ impl PlayerBackend for EmbeddedBackend {
     }
 
     /// Mint a full-scope Web API bearer from the live librespot session
-    /// via `login5`. This is the first-party token source that replaces
-    /// the dev-app PKCE flow: the keymaster session is never in
-    /// Development Mode, so this bearer can write playlists where a
-    /// dev-app token gets a 403.
+    /// via `login5`. This is the opt-in first-party token source: the
+    /// keymaster session is never in Development Mode, so this bearer
+    /// can write playlists where a dev-app token gets a 403. It is not
+    /// the default Web API path while sustained keymaster polling is
+    /// more rate-limit-prone than per-user dev-app traffic.
     ///
     /// `login5`'s `Login5Manager` caches the token internally and only
     /// re-mints when within seconds of expiry, so calling this on every

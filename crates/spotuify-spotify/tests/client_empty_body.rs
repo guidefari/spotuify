@@ -21,11 +21,12 @@ use std::sync::Arc;
 use serde_json::json;
 use spotuify_core::{MediaItem, MediaKind};
 use spotuify_spotify::auth::StoredToken;
-use spotuify_spotify::client::SpotifyClient;
+use spotuify_spotify::client::{SpotifyClient, WebApiBearerProvider};
 use spotuify_spotify::config::{
     AnalyticsConfig, CacheConfig, Config, DiscordConfig, NotificationsConfig, PlayerConfig,
     VizConfig,
 };
+use spotuify_spotify::SpotifyResult;
 use tokio::sync::Mutex;
 use wiremock::matchers::{body_json, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -65,6 +66,34 @@ async fn test_client(server: &MockServer) -> SpotifyClient {
         .expect("test client should build")
         .with_api_base_for_tests(format!("{}/v1", server.uri()))
         .with_token_cache(full_scope_token_cache())
+}
+
+#[derive(Default)]
+struct RecordingBearer {
+    calls: Mutex<Vec<bool>>,
+}
+
+#[async_trait::async_trait]
+impl WebApiBearerProvider for RecordingBearer {
+    async fn bearer(&self, force_refresh: bool) -> SpotifyResult<String> {
+        self.calls.lock().await.push(force_refresh);
+        Ok(if force_refresh {
+            "fresh-token"
+        } else {
+            "stale-token"
+        }
+        .to_string())
+    }
+}
+
+async fn test_client_with_bearer_provider(
+    server: &MockServer,
+    provider: Arc<RecordingBearer>,
+) -> SpotifyClient {
+    SpotifyClient::new(test_config())
+        .expect("test client should build")
+        .with_api_base_for_tests(format!("{}/v1", server.uri()))
+        .with_bearer_provider(provider)
 }
 
 fn track_item(uri: &str) -> MediaItem {
@@ -162,6 +191,42 @@ async fn queue_append_request_carries_json_object_body_so_spotify_edge_accepts_i
         .add_to_queue("spotify:track:queued")
         .await
         .expect("add_to_queue should succeed when request body is a JSON object");
+}
+
+#[tokio::test]
+async fn queue_append_retries_once_with_fresh_bearer_after_auth_expiry() {
+    let server = MockServer::start().await;
+    let provider = Arc::new(RecordingBearer::default());
+
+    Mock::given(method("POST"))
+        .and(path("/v1/me/player/queue"))
+        .and(query_param("uri", "spotify:track:queued"))
+        .and(header("authorization", "Bearer stale-token"))
+        .and(header("content-type", "application/json"))
+        .and(body_json(json!({})))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/me/player/queue"))
+        .and(query_param("uri", "spotify:track:queued"))
+        .and(header("authorization", "Bearer fresh-token"))
+        .and(header("content-type", "application/json"))
+        .and(body_json(json!({})))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut client = test_client_with_bearer_provider(&server, provider.clone()).await;
+    client
+        .add_to_queue("spotify:track:queued")
+        .await
+        .expect("mutation should retry once with a forced fresh bearer after 401");
+
+    let calls = provider.calls.lock().await.clone();
+    assert_eq!(calls, vec![false, true]);
 }
 
 #[tokio::test]

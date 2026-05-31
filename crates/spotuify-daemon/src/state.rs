@@ -1158,11 +1158,11 @@ impl DaemonState {
             };
         }
         let config = Config::load().context("failed to load Spotify config")?;
-        // First-party (keymaster) mode is the default: the bearer is
-        // minted via login5 through the attached provider, and librespot
+        // In opt-in first-party (keymaster) mode, the bearer is minted
+        // via login5 through the attached provider, and librespot
         // bootstraps from its own cached native credentials, so we must
         // NOT clobber the player token slot with the (Web-API-only)
-        // login5 bearer here. Legacy dev-app mode keeps the old
+        // login5 bearer here. Default dev-app mode keeps the old
         // slot-publish + scope-drift behaviour.
         let first_party = first_party_mode(&config);
         // Only claim our own device for selection when the librespot

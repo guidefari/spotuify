@@ -40,7 +40,6 @@ Judged against [`idiomatic-rust-rubric.md`](./idiomatic-rust-rubric.md). Rubric 
 
 - Per-byte hex `format!("{:02x}")` → `hex::encode`/`write!` in `core::sha256_hex` and `player::derive_device_id`. Skipped: micro-allocation in cold paths; `hex` would add a dependency to the foundational `core` crate.
 - `#[must_use]` on pure predicates (`should_refetch_*`, `PrivacyGate::is_private`). Skipped: `must_use_candidate` is in the rubric allow-list (noisy); add selectively if wanted.
-- Stale `spotuify-player/src/lib.rs:1-17` module doc still describes the removed Spotifyd/ConnectOnly backends [I1]. Safe doc-only fix; do opportunistically.
 - `premium_gate.rs:79 .expect()` on `Client::builder().build()` → return `GateError` [C1].
 - `cli/commands.rs:30 ipc_search` 8-arg `#[allow(too_many_arguments)]` → `SearchArgs` struct [E2].
 - `store migrations.rs:56` tautological `CACHE_VERSION == 12` → an invariant like `CACHE_VERSION as usize == MIGRATIONS.len()` [H3]. Verify the true relationship (`.len()` vs `.last().version`) before changing the assert.

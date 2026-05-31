@@ -67,6 +67,17 @@ SPOTUIFY_LIVE_PLAYBACK=1 ./target/release/spotuify play "luther vandross"
 SPOTUIFY_LIVE_PLAYBACK=1 ./target/release/spotuify next
 ```
 
+Before calling a release GA-ready, run the broader live gate. Its default path
+is live but read-only; playback and playlist mutations require explicit
+environment flags and are part of the release-manager checklist:
+
+```text
+SPOTUIFY_BIN=spotuify scripts/ga-live-smoke.sh
+SPOTUIFY_ALLOW_PROD_INSTANCE_FROM_TARGET=1 SPOTUIFY_INSTANCE=spotuify SPOTUIFY_BIN=./target/release/spotuify scripts/ga-live-smoke.sh
+SPOTUIFY_GA_LIVE_PLAYBACK=1 SPOTUIFY_BIN=spotuify scripts/ga-live-smoke.sh
+SPOTUIFY_GA_LIVE_PLAYLIST=1 SPOTUIFY_BIN=spotuify scripts/ga-live-smoke.sh
+```
+
 Do not add normal unit/integration tests that repeatedly call Spotify's live API. Use the fake provider by default and reserve live checks for explicit, manually requested smoke runs.
 
 ## Conformance rule

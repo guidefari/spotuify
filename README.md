@@ -4,7 +4,9 @@ spotuify is a Spotify player you drive from your terminal: a keyboard-native TUI
 
 <p align="center"><img src="site/public/spotuify-demo.gif" alt="spotuify terminal demo: search, play, queue, and device control" /></p>
 
-Run `spotuify` and you're in. If you're not logged in yet, it walks you through it: log in through the browser, land in a synced UI. No Spotify app to register, no config files to hand-edit.
+Run `spotuify` and you're in. If you're not configured yet, it creates a config file and tells you what to add. The default path uses your own Spotify Developer app with the PKCE browser flow; the experimental first-party/keymaster path is still opt-in.
+
+GA scope: `spotuify` is BYO Spotify app GA for terminal users who are comfortable creating their own Spotify Developer app. It is not broad consumer no-developer setup yet; that would require a reviewed/shared Spotify app or a product decision to make first-party/keymaster auth the default. If writes return `403`, your app is probably still in Spotify Development Mode; apply for Extended Quota Mode in the Spotify dashboard.
 
 ## Why another Spotify TUI?
 
@@ -19,8 +21,8 @@ Want the most polished desktop experience? Use the official app. Want Spotify as
 
 ## Features
 
-- One-step first-run login. No Spotify Developer app to register; just log in through the browser.
-- Browser login with the refresh token stored in the platform's native credential vault under service `spotuify`.
+- Browser login through Spotify OAuth PKCE.
+- OAuth tokens stored in the platform's native credential vault and mirrored to a mode-0600 local auth cache so detached daemons do not hang on keychain prompts.
 - Owned config file at `~/.config/spotuify/spotuify.toml`.
 - Config commands for `path`, `init`, `get`, and `set`.
 - Embedded librespot registers spotuify as a Spotify Connect device at daemon start.
@@ -39,6 +41,7 @@ Want the most polished desktop experience? Use the official app. Want Spotify as
 ## Requirements
 
 - A Spotify Premium account (required for librespot streaming).
+- A Spotify Developer app for the default BYO Spotify app GA auth path. Use redirect URI `http://127.0.0.1:8888/callback`; apply for Extended Quota Mode if you want playlist/library writes beyond Spotify's Development Mode limits.
 - A terminal with good image support for best visuals. Kitty works well; other terminals fall back through `ratatui-image` support.
 
 ## Install
@@ -206,11 +209,14 @@ spotuify onboard
 The onboarding flow does this in order:
 
 1. Creates `~/.config/spotuify/spotuify.toml` if it does not exist.
-2. Opens your browser to log in to Spotify.
-3. Stores the resulting refresh token in the system keychain.
-4. The daemon mints a full-access Web API token from your session and starts syncing.
+2. Asks you to add a Spotify `client_id` from your Spotify Developer app.
+3. Opens your browser to log in to Spotify.
+4. Stores the resulting OAuth token in the system keychain and the local auth cache.
+5. The daemon refreshes the access token as needed and starts syncing.
 
-There is no Client ID or Client Secret to enter. spotuify uses Spotify's first-party login (the same mechanism librespot, spotify-player, and ncspot use), so playback and library writes (creating playlists, saving tracks) work without registering a Developer app. Premium is required for playback.
+Use redirect URI `http://127.0.0.1:8888/callback` in the Spotify dashboard. A client secret is optional for PKCE. Premium is required for playback.
+
+This is the BYO Spotify app GA path, not broad consumer no-developer setup. Apply for Extended Quota Mode in the Spotify dashboard if playlist/library writes return `403`.
 
 After setup succeeds, plain `spotuify` opens the TUI directly on later runs:
 
@@ -220,24 +226,24 @@ spotuify
 
 ## Logging in
 
-Plain `spotuify` and `spotuify onboard` open the browser for you. To rerun the login by hand:
+After config is present, plain `spotuify` and `spotuify onboard` open the browser for you. To rerun the login by hand:
 
 ```sh
 spotuify login
 ```
 
-That opens Spotify in your browser, and once you approve, spotuify stores the refresh token in the system keychain. Nothing else to configure.
+That opens Spotify in your browser, and once you approve, spotuify stores the OAuth token in the system keychain and local auth cache.
 
-### Use your own Spotify app (optional)
+### Spotify app credentials
 
-Most people should skip this. If you specifically want spotuify to authenticate with your own Spotify Developer app instead of the first-party login, set `SPOTUIFY_CLIENT_ID` (and create the app at https://developer.spotify.com/dashboard with redirect URI `http://127.0.0.1:8888/callback`):
+The default auth path uses your own Spotify Developer app. Create one at https://developer.spotify.com/dashboard with redirect URI `http://127.0.0.1:8888/callback`, then set `client_id` in config or export `SPOTUIFY_CLIENT_ID`:
 
 ```sh
 export SPOTUIFY_CLIENT_ID=your-app-client-id
 spotuify login
 ```
 
-Note: apps in Spotify's Development Mode cannot create playlists or save tracks (Spotify returns `403`). That is exactly why the default login does not use one.
+Apps in Spotify's Development Mode can be limited by Spotify policy. Apply for Extended Quota Mode if writes such as playlist creation or library saves return `403`.
 
 ## Configuration
 
@@ -251,11 +257,14 @@ Default config template:
 
 ```toml
 # spotuify config
-# Nothing to set here to get started: run `spotuify` and log in via the
-# browser. Set client_id only if you want to use your own Spotify app
-# (see "Use your own Spotify app").
-# client_id = ""
-# redirect_uri = "http://127.0.0.1:8888/callback"
+# Copy your Spotify app credentials from https://developer.spotify.com/dashboard.
+# Apply for Extended Quota Mode on the dashboard to lift the dev-app
+# 25-user cap and unlock playlist/library writes.
+client_id = ""
+# Optional, only for your own Spotify app. Prefer SPOTUIFY_CLIENT_SECRET
+# when you do not want a client secret written to disk.
+# client_secret = ""
+redirect_uri = "http://127.0.0.1:8888/callback"
 
 [player]
 backend = "embedded"
@@ -276,7 +285,6 @@ Supported environment overrides:
 
 ```sh
 SPOTUIFY_CONFIG=/path/to/spotuify.toml
-# Optional: use your own Spotify app instead of the first-party login.
 SPOTUIFY_CLIENT_ID=...
 SPOTUIFY_CLIENT_SECRET=...
 SPOTUIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
@@ -380,8 +388,8 @@ Command behavior:
 
 - `spotuify` opens the TUI. If config or OAuth are missing, it starts setup first, syncs, then opens the TUI.
 - `spotuify onboard` runs the same setup flow intentionally: a browser login, then the first sync.
-- `spotuify login` opens the browser to log in and stores the refresh token in the keychain.
-- `spotuify logout` removes the Keychain token.
+- `spotuify login` opens the browser to log in and stores the OAuth token in the OS keychain plus local auth cache.
+- `spotuify logout` removes the OS keychain token and local auth cache.
 - `spotuify doctor` checks config, token status, API access timings, visible devices, recent playback, queue, playlists, logs, cache version, lyrics, MCP, and player backend state.
 - `spotuify logs path` prints the log file path.
 - `spotuify logs tail --follow --format json` streams structured log lines.
@@ -613,7 +621,7 @@ Fix:
 spotuify login
 ```
 
-That opens the browser login. Plain `spotuify` does the same automatically on first run. (If you set `SPOTUIFY_CLIENT_ID` to use your own app and see a `403` on playlist writes, that app is in Development Mode; unset `SPOTUIFY_CLIENT_ID` to use the first-party login instead.)
+That opens the browser login. Plain `spotuify` does the same automatically after config is present. If playlist writes return `403`, the Spotify app is probably still in Development Mode; apply for Extended Quota Mode in the Spotify dashboard.
 
 No token or expired token:
 
@@ -627,9 +635,10 @@ No devices visible:
 
 ```sh
 spotuify doctor
+spotuify devices --format json
 ```
 
-Then check that at least one Spotify Connect device is active. The embedded librespot device registers at daemon start; check `spotuify daemon status` for the player-ready event. Premium account required.
+Then check that the embedded librespot device is visible. It registers at daemon start under `player.device_name` (`spotuify-hume` on this machine). Premium account required.
 
 Art does not render:
 
@@ -650,15 +659,16 @@ spotuify doctor
 spotuify daemon status
 ```
 
-The daemon panics at startup when librespot can't bind an audio backend. Rebuild with one of `--features alsa-backend / pipewire-backend / rodio-backend / portaudio-backend` for your platform.
+If librespot cannot bind an audio backend, the daemon reports a player failure/degraded state through doctor/status and logs. Rebuild with one of `--features alsa-backend / pipewire-backend / rodio-backend / portaudio-backend` for your platform.
 
 ## Security Notes
 
-- The login refresh token is stored in macOS Keychain under service `spotuify`. The Web API access token is minted on demand and never written to disk.
-- `spotuify logout` removes the stored token from Keychain.
+- The default dev-app OAuth token is stored in the OS keychain and mirrored to `<data_dir>/auth/token.json` with mode `0600` on Unix. The mirror is guarded by `<data_dir>/auth/token.lock` so daemon and CLI refreshes do not race.
+- First-party/keymaster auth is experimental and opt-in via `SPOTUIFY_USE_FIRST_PARTY=1`; that path stores only refresh token + scopes in `first-party.json`.
+- `spotuify logout` removes the stored token from Keychain and the local auth cache.
 - To re-authenticate, run `spotuify login` again.
 - `spotuify auth bearer` and `spotuify config get client_secret` require `--reveal-secret` before printing secrets.
-- Config files are written with mode `0600` on Unix. If you use your own Spotify app (`SPOTUIFY_CLIENT_ID`), prefer `SPOTUIFY_CLIENT_SECRET` when you do not want the client secret written to disk.
+- Config files are written with mode `0600` on Unix. Prefer `SPOTUIFY_CLIENT_SECRET` when you do not want a client secret written to disk.
 
 ## Development
 
@@ -682,6 +692,16 @@ To have smoke build the release binary first:
 
 ```sh
 SPOTUIFY_SMOKE_BUILD=1 scripts/smoke.sh
+```
+
+Before calling a release GA-ready, run the live opt-in gate against the exact
+binary you plan to ship:
+
+```sh
+SPOTUIFY_BIN=spotuify scripts/ga-live-smoke.sh
+SPOTUIFY_ALLOW_PROD_INSTANCE_FROM_TARGET=1 SPOTUIFY_INSTANCE=spotuify SPOTUIFY_BIN=./target/release/spotuify scripts/ga-live-smoke.sh
+SPOTUIFY_GA_LIVE_PLAYBACK=1 SPOTUIFY_BIN=spotuify scripts/ga-live-smoke.sh
+SPOTUIFY_GA_LIVE_PLAYLIST=1 SPOTUIFY_BIN=spotuify scripts/ga-live-smoke.sh
 ```
 
 Run locally:

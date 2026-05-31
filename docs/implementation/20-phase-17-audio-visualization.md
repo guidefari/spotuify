@@ -2,7 +2,7 @@
 
 ## Goal
 
-Real-time spectrum visualization in the TUI driven by actual audio samples, not Spotify's deprecated Audio Analysis API. Two tap strategies; pick per backend.
+Real-time spectrum visualization in the TUI driven by actual audio samples, not Spotify's deprecated Audio Analysis API. Prefer the embedded sink tap; use loopback only when visualizing external/system audio.
 
 ## Evidence base
 
@@ -15,7 +15,7 @@ Real-time spectrum visualization in the TUI driven by actual audio samples, not 
 
 ## Decision: hybrid, prefer sink-wrapper
 
-**Use sink-wrapper FFT tap when on embedded librespot (Phase 9). Fall back to system audio loopback when on spotifyd or connect-only backend.**
+**Use sink-wrapper FFT tap when on embedded librespot (Phase 9). Fall back to system audio loopback for external Connect devices or other system audio.**
 
 Sink-wrapper pros:
 - No platform setup. Works out of the box on every OS.
@@ -24,10 +24,10 @@ Sink-wrapper pros:
 - No permissions required (macOS microphone permission, etc.).
 
 Loopback pros:
-- Works regardless of backend (spotifyd, external Connect device, mac AirPlay).
+- Works for external Connect devices, mac AirPlay, and other system audio.
 - Captures system-wide audio mix; useful if user wants visualization of any audio source.
 
-Default: sink-wrapper on embedded, loopback fallback elsewhere. Configurable via `[viz] source = "auto" | "sink" | "loopback" | "none"`.
+Default: sink-wrapper on embedded, loopback fallback for external/system audio. Configurable via `[viz] source = "auto" | "sink" | "loopback" | "none"`.
 
 ## Deliverables
 

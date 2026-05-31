@@ -68,7 +68,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Guided first-run setup: config, browser login, and initial Spotify sync.
+    /// Guided BYO Spotify app setup: config, browser login, and initial Spotify sync.
     Onboard,
     /// Log in to Spotify in your browser and store a refresh token in the keychain.
     Login {
@@ -349,8 +349,8 @@ enum Command {
     },
     /// Phase 13 (P13-I) — ask the running daemon to reload `config.toml`.
     Reload,
-    /// Phase 13 (P13-I) — force the daemon to re-register its active
-    /// player backend (after a VPN flap, network change, etc).
+    /// Phase 13 (P13-I) — force the daemon to re-register its embedded
+    /// player (after a VPN flap, network change, etc).
     Reconnect,
     /// List the local audio output devices the embedded player can render
     /// to (the system speakers/headphones spotuify-hume plays through).
@@ -478,10 +478,10 @@ enum RepeatArg {
 enum AuthCommand {
     /// Print the daemon's current Spotify Web API bearer token.
     ///
-    /// The daemon mints tokens via librespot keymaster + login5 and
-    /// holds them in memory; this command surfaces the current one so
-    /// you can probe `api.spotify.com` directly. Treat the output as a
-    /// secret; printing it requires `--reveal-secret`.
+    /// The daemon owns live Web API bearers for modes that need daemon-side
+    /// token minting; this command surfaces the current one so you can probe
+    /// `api.spotify.com` directly. Treat the output as a secret; printing it
+    /// requires `--reveal-secret`.
     Bearer {
         /// Force minting a fresh bearer even if the cached one is
         /// still valid. Use after a `logout` + `login` round-trip.
@@ -814,9 +814,9 @@ fn cli_login_progress(event: spotuify_spotify::auth::LoginProgress) {
 /// First-party (keymaster) browser login. Opens the browser via
 /// librespot-oauth and persists the long-lived refresh token. The
 /// daemon mints the Web API bearer from the live session on demand
-/// (login5), so nothing else needs to be stored. No Spotify Developer
-/// app required — and unlike a dev-app token, this one can create
-/// playlists.
+/// (login5), so nothing else needs to be stored. This path avoids the
+/// normal Spotify Developer app flow, but it is experimental and opt-in
+/// because sustained Web API polling is harder on keymaster tokens.
 #[cfg(feature = "embedded-playback")]
 async fn first_party_login() -> Result<()> {
     println!("Opening your browser to log in to Spotify (Premium required)...");
@@ -826,7 +826,9 @@ async fn first_party_login() -> Result<()> {
         .map_err(|err| anyhow::anyhow!("Spotify login failed: {err}"))?;
     let creds = spotuify_player::backends::first_party_auth::credentials_from_oauth_token(&token);
     crate::auth::save_first_party_credentials(&creds)?;
-    println!("\nLogged in. spotuify mints a full-access token from your session.");
+    println!(
+        "\nLogged in with first-party auth. spotuify can mint a Web API token from your session."
+    );
     Ok(())
 }
 
@@ -913,6 +915,8 @@ async fn run() -> Result<()> {
         let payload = cli.set.join("\n");
         std::env::set_var("SPOTUIFY_CONFIG_OVERRIDES", payload);
     }
+    spotuify_protocol::paths::secure_current_instance_dirs()
+        .context("failed to secure spotuify state directories")?;
     let _log_guard =
         logging::init_with_format(log_format).context("failed to initialize logging")?;
     logging::install_panic_hook();
@@ -941,7 +945,7 @@ async fn run() -> Result<()> {
             if config.is_first_party() {
                 first_party_login().await?;
             } else {
-                // Legacy dev-app login (user set their own SPOTUIFY_CLIENT_ID).
+                // Default dev-app PKCE login.
                 login(&config, cli_login_progress).await?;
             }
             // The running daemon (if any) is still holding the
@@ -959,7 +963,7 @@ async fn run() -> Result<()> {
             Ok(())
         }
         Some(Command::Logout) => {
-            // Clear both credential kinds: the legacy dev-app token and
+            // Clear both credential kinds: the dev-app token and
             // the first-party refresh token, so `logout` is a clean slate
             // regardless of which flow the user is on.
             logout()?;
@@ -1488,10 +1492,10 @@ fn launchd_plist(label: &str, exe: &Path, instance: &str) -> String {
     )
 }
 
-/// The `SPOTUIFY_CLIENT_ID` opt-out, if the user has set it. Captured into
+/// The `SPOTUIFY_CLIENT_ID` override, if the user has set it. Captured into
 /// the installed service definition so a service-managed daemon (which
 /// does not inherit an interactive shell's env) uses the same dev-app
-/// flow the user logged in with, instead of defaulting to first-party.
+/// credentials as the interactive login.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn opt_out_client_id() -> Option<String> {
     std::env::var("SPOTUIFY_CLIENT_ID")
@@ -1573,7 +1577,7 @@ fn windows_task_name(instance: &str) -> String {
 async fn spotify_client(config: Config, source: AnalyticsSource) -> Result<SpotifyClient> {
     // In first-party mode this CLI process has no librespot session, so it
     // mints the Web API bearer through the daemon (which holds the session)
-    // over IPC. Legacy dev-app mode uses the in-process PKCE path.
+    // over IPC. Default dev-app mode uses the in-process PKCE path.
     let first_party = config.is_first_party();
     let mut client = SpotifyClient::new(config)?;
     if first_party {
@@ -1648,41 +1652,28 @@ async fn onboard() -> Result<()> {
 
     // Dev-app onboarding: read the partial config template directly so
     // blank first-run credentials become prompts, not load errors.
-    println!("Using your own Spotify app.");
-    let DevAppOnboardingState {
-        client_id: existing_client_id,
-        client_secret: existing_client_secret,
-        redirect_uri: existing_redirect_uri,
-    } = dev_app_onboarding_state()?;
-    let needs_credentials = existing_client_id.is_none() || existing_client_secret.is_none();
+    println!("Using BYO Spotify app OAuth.");
+    let state = dev_app_onboarding_state()?;
+    let needs_credentials = dev_app_onboarding_needs_credentials(&state);
     if needs_credentials {
         println!("Spotify Dashboard steps:");
         println!("1. Open https://developer.spotify.com/dashboard");
         println!("2. Create an app named spotuify");
         println!("3. Add this Redirect URI exactly: http://127.0.0.1:8888/callback");
-        println!(
-            "4. Save settings, then copy Client ID and Client Secret from Basic Information\n"
-        );
+        println!("4. Save settings, then copy Client ID from Basic Information\n");
         let _ = open::that_detached("https://developer.spotify.com/dashboard");
         wait_for_enter(
             "Press Enter when the Spotify app is created and the Redirect URI is saved...",
         )?;
     } else {
-        println!("Using saved Spotify app credentials.");
+        println!("Using saved Spotify app client ID.");
     }
 
     if needs_credentials {
-        let client_id = prompt_required_default("Client ID", existing_client_id.as_deref())?;
+        let client_id = prompt_required_default("Client ID", state.client_id.as_deref())?;
         set_config_value(ConfigKey::ClientId, &client_id)?;
 
-        let client_secret =
-            prompt_secret_required_default("Client Secret", existing_client_secret.is_some())?
-                .or(existing_client_secret);
-        if let Some(client_secret) = client_secret {
-            set_config_value(ConfigKey::ClientSecret, &client_secret)?;
-        }
-
-        let redirect_uri = prompt_default("Redirect URI", &existing_redirect_uri)?;
+        let redirect_uri = prompt_default("Redirect URI", &state.redirect_uri)?;
         set_config_value(ConfigKey::RedirectUri, &redirect_uri)?;
     }
 
@@ -1698,7 +1689,6 @@ async fn onboard() -> Result<()> {
 
 struct DevAppOnboardingState {
     client_id: Option<String>,
-    client_secret: Option<String>,
     redirect_uri: String,
 }
 
@@ -1707,18 +1697,17 @@ fn dev_app_onboarding_state() -> Result<DevAppOnboardingState> {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or(get_config_value(ConfigKey::ClientId)?);
-    let client_secret = std::env::var("SPOTUIFY_CLIENT_SECRET")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or(get_config_value(ConfigKey::ClientSecret)?);
     let redirect_uri = get_config_value(ConfigKey::RedirectUri)?
         .unwrap_or_else(|| "http://127.0.0.1:8888/callback".to_string());
 
     Ok(DevAppOnboardingState {
         client_id,
-        client_secret,
         redirect_uri,
     })
+}
+
+fn dev_app_onboarding_needs_credentials(state: &DevAppOnboardingState) -> bool {
+    state.client_id.is_none()
 }
 
 fn needs_onboarding() -> Result<bool> {
@@ -1731,7 +1720,7 @@ fn needs_onboarding() -> Result<bool> {
         return Ok(!creds_present);
     }
 
-    // Legacy dev-app: needs a client_id and a stored token.
+    // Default dev-app PKCE: needs a client_id and a stored token.
     let path = config_path()?;
     let client_id_present = std::env::var("SPOTUIFY_CLIENT_ID")
         .ok()
@@ -1784,24 +1773,6 @@ fn prompt_required_default(label: &str, default: Option<&str>) -> Result<String>
         };
         if !value.trim().is_empty() {
             return Ok(value.trim().to_string());
-        }
-        println!("{label} is required.");
-    }
-}
-
-fn prompt_secret_required_default(label: &str, has_default: bool) -> Result<Option<String>> {
-    loop {
-        let prompt = if has_default {
-            format!("{label} [press Enter to keep saved]: ")
-        } else {
-            format!("{label}: ")
-        };
-        let value = rpassword::prompt_password(prompt)?;
-        if !value.trim().is_empty() {
-            return Ok(Some(value.trim().to_string()));
-        }
-        if has_default {
-            return Ok(None);
         }
         println!("{label} is required.");
     }
@@ -2519,9 +2490,7 @@ fn parse_iso_or_relative(raw: &str) -> Option<i64> {
 /// Print the daemon's current Web API bearer to stdout.
 ///
 /// Useful for direct `api.spotify.com` probing from scripts and
-/// agents — the keychain blob no longer caches the access token
-/// (only the refresh token + scopes), so the daemon is the only
-/// place a live bearer exists.
+/// agents in modes that mint a daemon-side bearer.
 async fn auth_bearer(force: bool, format: OutputFormat, reveal_secret: bool) -> Result<()> {
     use spotuify_protocol::{IpcClient, OperationSource, Request, Response, ResponseData};
     if !reveal_secret {
@@ -2535,7 +2504,9 @@ async fn auth_bearer(force: bool, format: OutputFormat, reveal_secret: bool) -> 
         } => t,
         Response::Ok {
             data: ResponseData::WebApiToken { token: None },
-        } => anyhow::bail!("daemon has no Web API bearer; not logged in or no librespot session"),
+        } => anyhow::bail!(
+            "daemon has no Web API bearer; not logged in or token minting unavailable"
+        ),
         Response::Ok { .. } => anyhow::bail!("unexpected daemon response"),
         Response::Error { message, .. } => anyhow::bail!(message),
     };
@@ -2604,15 +2575,15 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        bug_report, dev_app_onboarding_state, ensure_ops_undo_allowed, needs_onboarding,
-        reset_cache_files, AnalyticsCommand, CacheCommand, Cli, Command, DaemonCommand,
-        HooksCommand, LyricsCommand, MprisCommand, PlaylistCommand, QueueCommand, RepeatArg,
-        SearchKind, SearchSource, SyncTarget, ToggleArg, VizCommand,
+        bug_report, dev_app_onboarding_needs_credentials, dev_app_onboarding_state,
+        ensure_ops_undo_allowed, needs_onboarding, reset_cache_files, AnalyticsCommand,
+        CacheCommand, Cli, Command, DaemonCommand, DevAppOnboardingState, HooksCommand,
+        LyricsCommand, MprisCommand, PlaylistCommand, QueueCommand, RepeatArg, SearchKind,
+        SearchSource, SyncTarget, ToggleArg, VizCommand,
     };
     use crate::output::OutputFormat;
 
-    static BUG_REPORT_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    static ONBOARDING_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
         if let Some(value) = value {
@@ -2624,7 +2595,7 @@ mod tests {
 
     #[test]
     fn onboarding_state_accepts_blank_first_run_config() {
-        let _guard = ONBOARDING_ENV_LOCK.lock().unwrap();
+        let _guard = TEST_ENV_LOCK.blocking_lock();
         let temp = tempfile::TempDir::new().unwrap();
         let config_path = temp.path().join("spotuify.toml");
         std::fs::write(
@@ -2641,23 +2612,32 @@ bitrate = 320
 
         let old_config = std::env::var_os("SPOTUIFY_CONFIG");
         let old_client_id = std::env::var_os("SPOTUIFY_CLIENT_ID");
-        let old_client_secret = std::env::var_os("SPOTUIFY_CLIENT_SECRET");
         let old_first_party = std::env::var_os("SPOTUIFY_USE_FIRST_PARTY");
         std::env::set_var("SPOTUIFY_CONFIG", &config_path);
         std::env::remove_var("SPOTUIFY_CLIENT_ID");
-        std::env::remove_var("SPOTUIFY_CLIENT_SECRET");
         std::env::remove_var("SPOTUIFY_USE_FIRST_PARTY");
 
         let state = dev_app_onboarding_state().unwrap();
         assert_eq!(state.client_id, None);
-        assert_eq!(state.client_secret, None);
         assert_eq!(state.redirect_uri, "http://127.0.0.1:8888/callback");
         assert!(needs_onboarding().unwrap());
 
         restore_env("SPOTUIFY_CONFIG", old_config);
         restore_env("SPOTUIFY_CLIENT_ID", old_client_id);
-        restore_env("SPOTUIFY_CLIENT_SECRET", old_client_secret);
         restore_env("SPOTUIFY_USE_FIRST_PARTY", old_first_party);
+    }
+
+    #[test]
+    fn dev_app_onboarding_treats_client_secret_as_optional() {
+        let state = DevAppOnboardingState {
+            client_id: Some("public-client".to_string()),
+            redirect_uri: "http://127.0.0.1:8888/callback".to_string(),
+        };
+
+        assert!(
+            !dev_app_onboarding_needs_credentials(&state),
+            "PKCE onboarding should not force users to copy a client secret"
+        );
     }
 
     #[test]
@@ -2723,7 +2703,7 @@ bitrate = 320
 
     #[tokio::test]
     async fn bug_report_writes_requested_tar_and_redacts_config() {
-        let _guard = BUG_REPORT_ENV_LOCK.lock().await;
+        let _guard = TEST_ENV_LOCK.lock().await;
         let temp = tempfile::TempDir::new().unwrap();
         let config_path = temp.path().join("spotuify.toml");
         std::fs::write(

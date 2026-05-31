@@ -20,7 +20,7 @@ The plan is phased so each phase leaves the app more useful than before. Do not 
 | 09 | [Phase 6 - Sync Hardening](09-phase-6-sync-hardening.md) | Rate limits, snapshot_id/ETag, freshness, two-stage receipts |
 | 10 | [Phase 7 - Workspace Split](10-phase-7-workspace-split.md) | Extract single crate into target workspace layout |
 | 11 | [Phase 8 - MCP Server](11-phase-8-mcp-server.md) | Expose daemon as Model Context Protocol server |
-| 12 | [Phase 9 - Librespot Embed](12-phase-9-librespot-embed.md) | Decision gate: embed librespot vs supervise spotifyd |
+| 12 | [Phase 9 - Librespot Embed](12-phase-9-librespot-embed.md) | Embedded librespot player runtime |
 | 13 | [Phase 10 - Analytics Derivations](13-phase-10-analytics-derivations.md) | Derived listening facts, top-N, habits, exports |
 | 14 | [Phase 11 - Cross-Platform](14-phase-11-cross-platform.md) | Linux/Windows support, installers, releases |
 | 15 | [Phase 12 - Operation Log and Undo](15-phase-12-operation-log-undo.md) | Recorded mutations with reversal plans |

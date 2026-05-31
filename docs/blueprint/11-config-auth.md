@@ -22,10 +22,12 @@ spotuify config doctor
 client_id = "..."
 redirect_uri = "http://127.0.0.1:8888/callback"
 
-[spotifyd]
-autostart = true
-config_path = "~/.dotfiles/.config/spotifyd/spotifyd.conf"
+[player]
+backend = "embedded"
 device_name = "spotuify-hume"
+bitrate = 320
+normalization = false
+audio_cache_mib = 0
 
 [daemon]
 autostart = true
@@ -37,14 +39,18 @@ cache_remote_results = true
 
 ## Secrets
 
-- Access and refresh tokens live in system keyring.
-- Client secret should not be required for PKCE.
+- Default dev-app PKCE credentials live in the system keyring and are mirrored to `<data_dir>/auth/token.json` with mode `0600` on Unix so detached daemons do not hang on keychain prompts.
+- `<data_dir>/auth/token.lock` serializes login, logout, refresh, and revocation purge across daemon/CLI processes.
+- First-party/keymaster credentials are opt-in via `SPOTUIFY_USE_FIRST_PARTY=1`; that path stores only refresh token + scopes in `first-party.json`.
+- Client secret is optional for PKCE.
 - If a secret is stored for compatibility, `config show` must redact it.
 - Bug reports must never include secrets.
 
 ## OAuth
 
-Use Spotify OAuth PKCE.
+Default: Spotify OAuth PKCE with a user-provided Spotify Developer app `client_id`.
+
+Experimental: first-party/keymaster auth via librespot login5, gated by `SPOTUIFY_USE_FIRST_PARTY=1`.
 
 Commands:
 
@@ -52,16 +58,33 @@ Commands:
 spotuify login
 spotuify logout
 spotuify auth status
-spotuify auth refresh
-spotuify auth reauth
+spotuify auth bearer --reveal-secret
 ```
 
 ## Keychain timeouts
 
 Every keychain call must be bounded. A hung keychain must degrade to a clear auth error, not freeze doctor, CLI, daemon, or TUI.
 
-## spotifyd config
+Interactive keychain approval is auth state, not a retry loop. If a daemon
+token read needs user approval, the daemon latches `AuthRequired`, emits one
+auth error, and lets later health checks fail fast until `spotuify login` or a
+disk-backed recovery probe clears the latch.
 
-spotifyd uses its own OAuth flow in current versions. The spotuify config points to the spotifyd config file and preferred device name, but spotuify should not store spotifyd credentials.
+## Refresh-token revocation
 
-`spotuify doctor` should detect invalid TOML in spotifyd config and stale device-name mismatches.
+Refresh tokens are mutable shared state, not static config. Refresh paths must:
+
+- hold the token-store lock,
+- reload persisted credentials under the lock before refreshing stale memory,
+- persist replacement refresh tokens when Spotify returns one,
+- keep the old refresh token when Spotify omits one,
+- purge memory + disk on `invalid_grant` only after re-checking that the failed refresh token is still the persisted token,
+- fail fast through the daemon auth latch until re-auth or a successful health probe clears it.
+
+## Legacy player config
+
+Current playback is embedded librespot only. The supported config surface is `[player]`, and `player.backend` currently accepts only `embedded`.
+
+Old configs with `[spotifyd] device_name = "..."` are still honored as a read-only migration shim when `[player] device_name` is absent. Other spotifyd fields are ignored; spotuify does not manage a spotifyd subprocess.
+
+`spotuify doctor` should report the effective player device name and whether the embedded device is visible/connected.

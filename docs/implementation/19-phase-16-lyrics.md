@@ -16,7 +16,7 @@ Show synced lyrics in the TUI scrolling with playback position, sourced from Spo
 
 ## Provider strategy
 
-1. **Spotify (preferred)** — via embedded librespot's mercury bus. Synced. Same source as the official Spotify app. Requires Phase 9's embedded backend; falls back to (2) when running on `--backend spotifyd` or `--backend connect`.
+1. **Spotify (preferred)** — via embedded librespot's mercury bus. Synced. Same source as the official Spotify app. Requires Phase 9's embedded backend; falls back to (2) when mercury lyrics are unavailable.
 2. **LRCLIB (fallback)** — public HTTP API. Synced when available; plain text when only that exists. No auth required, but they ask for rate-limit etiquette (max ~5 req/s) and a `User-Agent`.
 3. **None (last resort)** — show "No lyrics available" with a link/button to suggest manual config.
 
@@ -142,7 +142,7 @@ Re-render only when `active` changes (avoid every-frame re-render).
 ## Verification
 
 - Spotify track with known lyrics on `--backend embedded`: synced lyrics scroll in time.
-- Same track on `--backend spotifyd` (no mercury): falls back to LRCLIB, still synced.
+- Same track with Spotify mercury unavailable: falls back to LRCLIB, still synced when LRCLIB has it.
 - Arabic/Hebrew track: RTL rendering correct.
 - Track with no Spotify lyrics, no LRCLIB entry: "No lyrics available" shown without errors.
 - Offline/restart cache path: cached lyrics render without refetching after daemon restart; missing ones show the no-lyrics state.

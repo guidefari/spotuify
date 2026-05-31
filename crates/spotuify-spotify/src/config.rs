@@ -11,12 +11,10 @@ use spotuify_core::BackendKind;
 
 use crate::error::{SpotifyError, SpotifyResult};
 
-/// librespot's first-party "keymaster" client id. This is the default
-/// `client_id` — a first-party login is never in Spotify's Development
-/// Mode, so it can write playlists where a per-user dev app gets a 403.
-/// Users who prefer their own Spotify app set `SPOTUIFY_CLIENT_ID` (or
-/// `client_id` in the config) to override it; that switches the auth
-/// flow back to the legacy dev-app PKCE path.
+/// librespot's first-party "keymaster" client id. Kept for the
+/// opt-in first-party experiment (`SPOTUIFY_USE_FIRST_PARTY=1`), but
+/// the default auth path is the per-user dev-app PKCE flow driven by
+/// `client_id` in config or `SPOTUIFY_CLIENT_ID`.
 pub const KEYMASTER_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
 
 #[derive(Clone, Debug)]
@@ -650,12 +648,10 @@ impl Config {
         let discord = DiscordConfig::from_file(&file);
         let viz = VizConfig::from_file(&file);
 
-        // client_id defaults to the first-party keymaster id. A user only
-        // needs to set this if they want their own Spotify app. After the
-        // 2026-05-26 revert, the dev-app flow is the default: keymaster
-        // gets policed far harder under spotuify's Web API polling than
-        // a per-user dev app. First-party will return as the default
-        // once spotuify routes reads through librespot's native session.
+        // The dev-app flow is the default: keymaster gets policed far
+        // harder under spotuify's Web API polling than a per-user dev
+        // app. First-party will return as the default once spotuify
+        // routes reads through librespot's native session.
         let client_id = std::env::var("SPOTUIFY_CLIENT_ID")
             .ok()
             .or(file.client_id)
@@ -898,12 +894,14 @@ pub fn set_config_value(key: ConfigKey, value: &str) -> SpotifyResult<PathBuf> {
 
 fn ensure_config_exists(path: &Path) -> Result<()> {
     if path.exists() {
+        spotuify_protocol::paths::secure_private_file_if_exists(path)
+            .with_context(|| format!("failed to secure {}", path.display()))?;
         return Ok(());
     }
 
     write_template(path)?;
     bail!(
-        "created {}; add your Spotify client_id and client_secret, then rerun spotuify",
+        "created {}; add your Spotify client_id, then rerun spotuify",
         path.display()
     )
 }

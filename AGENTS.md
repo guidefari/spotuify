@@ -15,7 +15,7 @@ The user maintains the live state of their machine and account; you have everyth
 - **Restart dev daemon:** `./target/release/spotuify daemon stop && ./target/release/spotuify daemon start`
 - **Run the failing case:** `./target/release/spotuify <subcommand>` (`search`, `play`, `queue add`, `playlists`, etc.)
 - **Read the daemon log:** `./target/release/spotuify logs path` then tail that file; filter out tantivy noise with `grep -v tantivy`
-- **Auth token for raw Spotify probes:** the **daemon** owns the live Web API bearer in memory (minted via librespot keymaster + login5). Use `spotuify auth bearer` to print it to stdout, then `curl -H "Authorization: Bearer $(spotuify auth bearer)" https://api.spotify.com/v1/...` to probe upstream directly. The keychain (service `spotuify` for installed, `spotuify-dev` for target builds) holds only the refresh token + scopes — no `access_token` field, since v0.1.22+.
+- **Auth token for raw Spotify probes:** use `spotuify auth bearer` to print the live Web API bearer, then `curl -H "Authorization: Bearer $(spotuify auth bearer)" https://api.spotify.com/v1/...` to probe upstream directly. Default auth is the user dev-app PKCE path; the keychain plus `<data_dir>/auth/token.json` 0600 disk mirror hold the OAuth token. First-party/keymaster auth is opt-in (`SPOTUIFY_USE_FIRST_PARTY=1`) and stores only refresh token + scopes under `spotify-first-party`.
 - **Tantivy lockfile stuck:** remove `.tantivy-*.lock` under the current instance `search_index` after stopping that instance's daemon.
 - **Stray daemons:** do not broad-`pkill` `spotuify daemon`; stop the current instance with its own binary/env so dev and prod do not kill each other.
 

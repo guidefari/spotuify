@@ -1,16 +1,10 @@
 //! Player backend abstraction for spotuify.
 //!
 //! Defines the `PlayerBackend` trait the daemon uses to register a
-//! Spotify Connect device and dispatch playback commands. Three
-//! implementations land across Phase 9:
-//!
-//! - **ConnectOnlyBackend** (Phase 9.0) — wraps the Web API to remote
-//!   control existing Connect devices; no local audio output. Works
-//!   for Free accounts and headless servers.
-//! - **SpotifydBackend** (Phase 9.1) — supervises a sibling spotifyd
-//!   process. Today's default during the rollout.
-//! - **EmbeddedBackend** (Phase 9.2+) — in-process librespot Player +
-//!   Spirc with mercury bus and gapless preload.
+//! Spotify Connect device and dispatch playback commands. The shipped
+//! runtime backend is `EmbeddedBackend`: an in-process librespot Player
+//! + Spirc with mercury bus and gapless preload. The mock backend is
+//!   for tests only.
 //!
 //! See `docs/implementation/12-phase-9-librespot-embed.md` for the
 //! full design; `docs/blueprint/07-player.md` for the non-negotiable

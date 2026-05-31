@@ -2,7 +2,7 @@
 
 ## Goal
 
-Move from single-crate to the target workspace layout in `blueprint/01-architecture.md` §"Target Rust workspace" so the daemon is embeddable, the MCP binary can share core, and module boundaries become compiler-enforced. Sized to accommodate the new crates introduced by Phases 8 (MCP), 9 (player backends), 14 (system integration), 15 (cover art), 16 (lyrics), and 17 (audio).
+Move from single-crate to the target workspace layout in `blueprint/01-architecture.md` §"Target Rust workspace" so the daemon is embeddable, the MCP binary can share core, and module boundaries become compiler-enforced. Sized to accommodate the new crates introduced by Phases 8 (MCP), 9 (embedded player), 14 (system integration), 15 (cover art), 16 (lyrics), and 17 (audio).
 
 ## Evidence base
 
@@ -11,7 +11,7 @@ Cross-checked against competitors:
 - **ncspot** workspace: root + `xtask` (dev tooling only). Single binary crate.
 - **spotatui**: single binary, not a workspace.
 
-**No competitor has a real workspace split.** This is a real differentiator for spotuify — it unlocks MCP-server embedding, library use by third parties, and clean Phase 9 backend swapping. The maintenance overhead is real but the alternative (4308-line god-struct, see spotatui `core/app.rs`) is worse.
+**No competitor has a real workspace split.** This is a real differentiator for spotuify — it unlocks MCP-server embedding, library use by third parties, and a clean embedded-player boundary. The maintenance overhead is real but the alternative (4308-line god-struct, see spotatui `core/app.rs`) is worse.
 
 ## Target layout
 
@@ -25,7 +25,7 @@ spotuify/
 │   ├── spotuify-search/             # Tantivy indexing/query
 │   ├── spotuify-spotify/            # Web API client + auth + compat normalizer (Phase 6)
 │   ├── spotuify-keychain/            # credential-storage leaf crate
-│   ├── spotuify-player/             # PlayerBackend trait + embedded/spotifyd/connect impls (Phase 9)
+│   ├── spotuify-player/             # PlayerBackend trait + embedded librespot impl (Phase 9)
 │   ├── spotuify-sync/               # background sync + reconciliation (Phase 6)
 │   ├── spotuify-system/             # MPRIS/notifications/hooks/Discord (Phase 14)
 │   ├── spotuify-lyrics/             # mercury + LRCLIB providers (Phase 16)
@@ -61,7 +61,7 @@ spotuify/
 4. [x] Move `src/store.rs` → `crates/spotuify-store/`.
 5. [x] Move `src/search.rs`, `src/reindex.rs` → `crates/spotuify-search/`.
 6. [x] Move `src/spotify.rs`, `src/auth.rs`, `src/config.rs` → `crates/spotuify-spotify/`; credential storage moved into `spotuify-keychain`.
-7. [x] Move `src/spotifyd.rs` and create `spotuify-player::backends::{embedded, spotifyd, connect_only}` per Phase 9.
+7. [x] Move player code and create `spotuify-player::backends::embedded` plus test mock per Phase 9.
 8. [x] Move `src/sync.rs` implementation → `crates/spotuify-sync/`.
 9. [x] New crate `spotuify-system` (filled by Phase 14).
 10. [x] New crate `spotuify-lyrics` (filled by Phase 16).

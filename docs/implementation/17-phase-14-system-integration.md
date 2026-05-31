@@ -59,6 +59,7 @@ Reserve direct zbus MPRIS as a Linux-only fallback if souvlaki has bugs that blo
 - macOS: notify-rust supports NSUserNotification (may require updating to use UNUserNotificationCenter in future).
 - Windows: notify-rust uses WinRT toast.
 - Per-event toggles: `on_track_change`, `on_pause`, `on_resume`, `on_skip`, `on_error`.
+- Auth errors are deduped per error kind for the life of the notification handle. A missing or revoked login should notify once, then wait for the user instead of flooding the desktop while the daemon's auth latch is active.
 
 ### Shell-hook event system
 - Adopt spotify-player's `player_event_hook_command` pattern.
@@ -116,7 +117,7 @@ This is exactly spotify-player's approach (`media_control.rs:160-263`).
 1. [x] Add `crates/spotuify-system` to workspace. Verified by workspace-boundary tests and `spotuify-system` crate checks.
 2. [x] Media-controls boundary now opens souvlaki, attaches OS media-key events, forwards mapped commands through the daemon playback request path, and keeps PID-scoped MPRIS bus names. Basic playback-state updates are pushed from `PlaybackChanged` events. Windows hidden-window lifecycle, rich track metadata/art updates, and live OS smoke checks remain follow-ups.
 3. [x] Cover-art file cache implemented with TTL, size cap, integrity checks, and daemon cache-status reporting. Verified by `crates/spotuify-system/src/cover_cache.rs` tests.
-4. [x] notify-rust notification bridge exists behind the `notifications` feature with templates, per-event toggles, Linux hints, daemon config wiring, and `spotuify config get/set notifications.*` support. Current daemon events still provide action labels rather than full track metadata or cover-art paths, so rich notification payloads remain a follow-up. Verified by notification template tests, `system_integration_sections_from_partial_toml_keep_defaults`, `config_set_and_get_supports_notification_keys`, and `system_config_includes_notification_preferences`.
+4. [x] notify-rust notification bridge exists behind the `notifications` feature with templates, per-event toggles, Linux hints, auth-error dedupe, daemon config wiring, and `spotuify config get/set notifications.*` support. Current daemon events still provide action labels rather than full track metadata or cover-art paths, so rich notification payloads remain a follow-up. Verified by notification template tests, `auth_error_notifications_are_deduped`, `system_integration_sections_from_partial_toml_keep_defaults`, `config_set_and_get_supports_notification_keys`, and `system_config_includes_notification_preferences`.
 5. [x] Shell-hook dispatcher exists and daemon system config now wires `[analytics] hook_command` / `hook_timeout_ms` into `SystemIntegration`; documented legacy `player.event_hook` works as a fallback. `listen-qualified`, track-change/start, and track-finished projections are wired from current `DaemonEvent`s; pause/resume still need richer playback events with URI/position. Verified by hook projection tests, `system_config_includes_analytics_hook_command`, `system_config_uses_player_event_hook_as_legacy_fallback`, and `system_config_prefers_analytics_hook_over_legacy_player_event_hook`.
 6. [x] Discord RPC remains feature-gated config/handle scaffolding only. Live Discord IPC presence updates are deliberately not shipped until playback events carry enough track metadata; shipping URI-only presence would be a low-value half-feature.
 7. [x] Per-event notification configuration is exposed in `config.toml` and the config CLI. Discord config remains parsed/scaffolded only because live Discord presence is not shipped yet.
@@ -128,7 +129,7 @@ This is exactly spotify-player's approach (`media_control.rs:160-263`).
 
 - Linux `playerctl` and macOS Now Playing live smoke remain manual; Windows SMTC awaits the hidden-window driver.
 - Headless Windows graceful degradation remains a follow-up; the current implementation does not claim Windows media-key support without a window handle.
-- Notification rendering, config parsing, config CLI get/set, and daemon config wiring are covered; track metadata and cover-art notification smoke remain pending.
+- Notification rendering, auth-error dedupe, config parsing, config CLI get/set, and daemon config wiring are covered; track metadata and cover-art notification smoke remain pending.
 - Hook projection, daemon config wiring, and `hooks test` CLI parsing/strict execution are covered by tests.
 - Discord RPC is scaffolded only; live profile smoke remains pending.
 - PID-scoped bus-name construction and souvlaki attach exist, but two-daemon MPRIS smoke remains pending.

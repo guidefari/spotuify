@@ -18,9 +18,9 @@ These keys are accepted by `spotuify config get` and `spotuify config set`.
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `client_id` | string | first-party | only set this to use your own Spotify app instead of the built-in first-party login |
-| `client_secret` | string | none | only for your own Spotify app (dev-app flow); `config get` redacts it unless `--reveal-secret` is passed |
-| `redirect_uri` | string | `http://127.0.0.1:8888/callback` | only used with your own Spotify app; must match its settings |
+| `client_id` | string | required | Spotify Developer app client id for the default PKCE flow |
+| `client_secret` | string | none | optional for PKCE; `config get` redacts it unless `--reveal-secret` is passed |
+| `redirect_uri` | string | `http://127.0.0.1:8888/callback` | must match the Spotify app settings |
 | `player.backend` | enum | `embedded` | only `embedded` (in-process librespot); Spotifyd/Connect-only backends were removed |
 | `player.bitrate` | number | `320` | `96`, `160`, or `320` |
 | `player.device_name` | string | none | preferred embedded/connect device name |
@@ -76,29 +76,29 @@ the player to use that vertical space for queue items instead.
 
 ## Environment variables
 
-By default no auth env vars are needed; `spotuify login` opens a browser
-and uses Spotify's first-party flow. The variables below only apply when
-you opt into your own Spotify app, where `SPOTUIFY_CLIENT_ID` is the
-switch that activates the dev-app flow.
+The default auth path is dev-app PKCE. Put `client_id` in config or set
+`SPOTUIFY_CLIENT_ID` before login. First-party/keymaster auth is opt-in
+for experiments with `SPOTUIFY_USE_FIRST_PARTY=1`.
 
 ```bash
 SPOTUIFY_CLIENT_ID=... spotuify login
 SPOTUIFY_CLIENT_SECRET=... spotuify login
 SPOTUIFY_REDIRECT_URI=http://127.0.0.1:8888/callback spotuify login
+SPOTUIFY_USE_FIRST_PARTY=1 spotuify login
 ```
 
 For local development and tests:
 
 ```bash
-# Skip the proactive scope-drift keychain read at daemon startup
-# (still reads the token on the first real API call). Cuts macOS
-# Keychain prompts in half for fresh builds.
-SPOTUIFY_SKIP_KEYCHAIN_ON_START=1 spotuify daemon start
-
 # Run the whole stack against fake Spotify data; never touches the
 # keychain. Honored by the CLI, daemon, and TUI uniformly.
 SPOTUIFY_FAKE_SPOTIFY=1 spotuify
 ```
+
+The old proactive scope-drift keychain read no longer runs at daemon
+startup. Scope checks now reuse the first real token read. If that read
+needs interactive Keychain approval, the daemon latches the auth-required
+state and waits for `spotuify login` instead of prompting repeatedly.
 
 ## One-shot overrides
 

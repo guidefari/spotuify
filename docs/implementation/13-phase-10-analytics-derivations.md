@@ -41,7 +41,7 @@ listen_facts
 - qualification_rule_version
 - skip_reason             -- user_next | user_previous | track_end | error | session_died
 - source                  -- search | playlist | album | queue | library | agent | radio
-- backend                 -- embedded | spotifyd | connect
+- backend                 -- embedded
 
 track_metrics            -- materialized view
 artist_metrics, album_metrics   -- analogous
@@ -62,7 +62,7 @@ habit_metrics
 - Phase 9's sink-factory chain includes an `AudioCounterTap` sink that counts PCM samples written.
 - More accurate than wall-clock timing because it excludes buffer drops, AirPods-disconnect gaps, etc.
 - `audible_ms = (samples_written / sample_rate) * 1000`.
-- Fall back to wall-clock derivation on `--backend spotifyd` (no sink tap available).
+- Fall back to wall-clock derivation when no sink tap is available.
 
 ### CLI commands
 - `spotuify analytics rebuild [--since ISO]` — recompute derivations from raw events.

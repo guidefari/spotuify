@@ -8,9 +8,9 @@ The user should be able to open the TUI, start a playlist, close the terminal, a
 
 ## Playback device model
 
-spotuify controls Spotify Connect devices. The preferred target is `spotifyd` configured as `spotuify-hume` on this machine.
+spotuify controls Spotify Connect devices. The preferred target is the daemon's embedded librespot device, configured as `spotuify-hume` on this machine.
 
-The daemon should ensure the preferred device is running and visible before playback mutations that require a device.
+The daemon should ensure the preferred device is running and visible before playback mutations that require a device. If it is not available, playback should fail with remediation instead of falling through to an unrelated visible device.
 
 ## Required player actions
 

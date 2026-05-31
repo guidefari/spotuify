@@ -72,7 +72,7 @@
 
 ## I. Documentation (C-CRATE-DOC, C-EXAMPLE, C-FAILURE)
 
-- I1 Crate-level `//!` doc states purpose and is not stale. **spotuify hotspot:** player `lib.rs` still describes removed Spotifyd/ConnectOnly backends.
+- I1 Crate-level `//!` doc states purpose and is not stale.
 - I2 Public items have a one-line doc; fallible/panicking public fns of *library* crates get `# Errors`/`# Panics`. (Internal crates: `missing_errors_doc` is allowed; do not chase it.)
 
 ---

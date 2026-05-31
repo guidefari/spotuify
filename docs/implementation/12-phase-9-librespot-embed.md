@@ -2,9 +2,15 @@
 
 ## Decision
 
-**Embed librespot in the daemon.** All three active Rust Spotify TUIs (ncspot, spotify-player, spotatui) embed librespot 0.8.x. Sibling-process spotifyd is supported as a `--backend spotifyd` fallback for users who want crash-isolation. Embedded becomes the default once mac+linux audio backends prove stable.
+**Embed librespot in the daemon.** All three active Rust Spotify TUIs (ncspot, spotify-player, spotatui) embed librespot 0.8.x. spotuify now ships embedded librespot as the only supported runtime backend. Sibling-process spotifyd and Connect-only backends were removed rather than kept as half-supported fallbacks.
 
 Decision log entry: D010 (write during Phase 13).
+
+Auth update 2026-05-28: embedded librespot remains the playback/default device
+path, but `login5().auth_token()` is not the default Web API token source.
+D016 keeps user dev-app PKCE as the default and gates first-party/keymaster
+auth behind `SPOTUIFY_USE_FIRST_PARTY=1` until spotuify can avoid sustained
+keymaster polling for normal reads.
 
 ## Goal
 
@@ -20,7 +26,7 @@ Replace the supervised spotifyd sibling process with an in-process librespot Pla
 | Spirc dual-timeout (inner 30s + outer abort) | spotatui | `streaming.rs:434-466` + `runtime.rs:653-684` |
 | Premium gate before init | spotatui | `runtime.rs:131-179` |
 | Sink-factory closure (taps) | spotify-player | `streaming.rs:200-213` |
-| `login5().auth_token()` → Web API token | spotify-player | `client/spotify.rs:86-102` + `token.rs:8-46` |
+| `login5().auth_token()` → Web API token | spotify-player | `client/spotify.rs:86-102` + `token.rs:8-46`; opt-in/future for spotuify after D016 |
 | Mercury bus: lyrics | spotify-player | `client/mod.rs:642-661` |
 | Mercury bus: radio (autoplay) | spotify-player | `client/mod.rs:949-1019` |
 | TimeToPreloadNextTrack → preload (gapless) | ncspot | `spotify_worker.rs:151-154`, `queue.rs:461-471` |
@@ -74,10 +80,7 @@ crates/spotuify-player/
 │   │   │   ├── token_bridge.rs // login5().auth_token() -> rspotify token
 │   │   │   ├── mercury.rs      // lyrics, radio, recommendations
 │   │   │   └── worker.rs       // tokio::select! command loop
-│   │   ├── spotifyd/
-│   │   │   └── mod.rs          // existing spotifyd-subprocess code
-│   │   └── connect_only/
-│   │       └── mod.rs          // Web API transfer only, no local device
+│   │   └── mock.rs             // tests only
 │   ├── events.rs               // domain PlayerEvent (smaller than librespot's)
 │   └── config.rs               // PlayerConfig, BackendKind enum
 ```
@@ -109,8 +112,8 @@ pub trait PlayerBackend: Send + Sync {
 
 ### Two-token strategy
 - librespot owns the **streaming token** via its own OAuth (client_id with `streaming` scope).
-- Use `session.login5().auth_token()` to get a **Web API token** out of the same session.
-- This eliminates the second browser-prompt OAuth flow that ncspot, spotatui all do.
+- In first-party mode, use `session.login5().auth_token()` to get a **Web API token** out of the same session.
+- This can eliminate the second browser-prompt OAuth flow, but it is not the default until keymaster-backed reads avoid sustained Web API polling.
 - Reference: spotify-player `token.rs:8-46`. Note their 5s timeout that forces `session.shutdown()` to trigger reconnect.
 - Persist librespot creds via `librespot_core::cache::Cache::new(creds_path, volume_path, audio_cache_path, audio_cache_size_mib)`.
 
@@ -232,8 +235,7 @@ Makes spotuify appear nicely in pavucontrol / mixer.
 
 ## CLI / config
 
-- `spotuify daemon --backend embedded|spotifyd|connect`
-- `[player] backend = "embedded" | "spotifyd" | "connect"` in `config.toml`
+- `[player] backend = "embedded"` in `config.toml`
 - `[player] bitrate = 96 | 160 | 320` (default 320)
 - `[player] device_name = "spotuify"` (default = hostname)
 - `[player] normalization = false` (ReplayGain)
@@ -250,7 +252,7 @@ Makes spotuify appear nicely in pavucontrol / mixer.
 - Linux: PipeWire restart (`systemctl --user restart pipewire`) mid-playback → daemon survives, session reconnects within 5s.
 - Windows: start daemon, start playback, sleep machine for 1 minute, wake → playback resumes from same position via librespot's reconnect.
 - Free account: daemon refuses to init librespot, emits `PremiumRequired`, browse/control still works.
-- Switch backends via `config set player.backend embedded` → `daemon restart` → previous backend cleanly shut down, new backend up; current playback queue persists across restart.
+- Restart after changing player config → previous embedded session cleanly shut down, new embedded session up; current playback queue persists across restart.
 - Spirc auth failure with bad cached creds → daemon clears creds, retries once with browser flow.
 - Spirc 30s timeout (simulate by blocking outbound traffic) → daemon emits `PlayerDegraded`, does NOT clear creds, surfaces to TUI.
 - `mercury_get("hm://lyrics/v1/track/{id}")` returns synced lyrics for a known track.
@@ -260,10 +262,10 @@ Makes spotuify appear nicely in pavucontrol / mixer.
 ## Migration
 
 Existing spotifyd users:
-- Keep `--backend spotifyd` as a supported choice indefinitely.
-- `spotuify migrate-player` interactive prompt: detects spotifyd config, asks if user wants to switch to embedded, copies relevant settings, restarts daemon.
-- README documents both paths.
+- `[spotifyd] device_name` is read as a legacy fallback only when `[player] device_name` is absent.
+- Users should move the device name to `[player] device_name`; no spotifyd subprocess is started or supervised.
+- README and config reference document embedded-only playback plus the legacy device-name shim.
 
 ## Definition of done
 
-A fresh user runs `brew tap planetaryescape/spotuify && brew install spotuify && spotuify onboard && spotuify play "jazz"` and music plays locally with no other install steps. Existing spotifyd users see zero regression. Premium-gated, crash-isolated via RecoveringSink, dual-timeout Spirc init. Web API token comes from `login5().auth_token()`; no second OAuth flow. Mercury bus available for lyrics/radio. Phase 6's PlayerEvent-as-truth is fully wired. Decision recorded in `13-decision-log.md` as D010.
+A fresh user runs `brew tap planetaryescape/spotuify && brew install spotuify && spotuify onboard && spotuify play "jazz"` and music plays locally with no other playback install steps. Existing configs keep their preferred device name through the legacy shim. Premium-gated, crash-isolated via RecoveringSink, dual-timeout Spirc init. Embedded playback uses librespot; default Web API auth remains user dev-app PKCE after D016, with first-party/login5 auth opt-in for experiments and future native-session reads. Mercury bus available for lyrics/radio. Phase 6's PlayerEvent-as-truth is fully wired. Decision recorded in `13-decision-log.md` as D010.

@@ -14,6 +14,9 @@ pub mod operations;
 pub mod output;
 pub mod paths;
 
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub use agent_playlists::{
     CandidateIssue, CandidateStatus, PlaylistCreateMetadata, PlaylistCreatePreview,
     PlaylistMutationPreview, PlaylistPlan, PlaylistTrackSelection, ResolvedTrackCandidate,

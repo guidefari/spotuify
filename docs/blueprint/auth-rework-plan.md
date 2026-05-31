@@ -1,5 +1,11 @@
 # Auth rework: first-party librespot login (drop the user dev app)
 
+> Status: superseded. The staged rework was built far enough to keep
+> first-party/keymaster auth as an opt-in experiment, but the default was
+> reverted on 2026-05-26. Current default auth is user dev-app PKCE with
+> `client_id` in config or `SPOTUIFY_CLIENT_ID`; first-party requires
+> `SPOTUIFY_USE_FIRST_PARTY=1`. See D016 in `docs/blueprint/13-decision-log.md`.
+
 > Staged plan to replace spotuify's "register your own Spotify app" Web API auth
 > with librespot's first-party OAuth (keymaster client id) + `login5`, like
 > spotify-player. Fixes the Development-Mode 403 on playlist writes and removes
@@ -48,7 +54,8 @@ Web API calls (reads and writes). No user dev app.
 
 ## Onboarding / config
 
-- `config.rs`: make `client_id` optional, default to the keymaster id; keep
+- `config.rs`: historical target was to make `client_id` optional and use the
+  keymaster id; current code did not keep this default. Keep
   `SPOTUIFY_CLIENT_ID` as a power-user override. Drop the required client_secret.
   Remove the dashboard instructions from the config template and
   `ensure_config_exists` bail.

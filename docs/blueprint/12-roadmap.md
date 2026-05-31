@@ -12,7 +12,7 @@ Deliverables:
 
 - [ ] Search limit fixed and covered by CLI smoke test.
 - [ ] Keychain calls bounded everywhere.
-- [ ] Preferred spotifyd device visible and verified by doctor.
+- [ ] Preferred embedded device visible and verified by doctor.
 - [ ] Playback actions do not block TUI input.
 - [ ] Doctor completes under bounded time.
 - [ ] Release build verified.

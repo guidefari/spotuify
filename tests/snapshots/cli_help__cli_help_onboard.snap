@@ -2,7 +2,7 @@
 source: tests/cli_help.rs
 expression: normalize_help_output(&stdout)
 ---
-Guided first-run setup: config, browser login, and initial Spotify sync
+Guided BYO Spotify app setup: config, browser login, and initial Spotify sync
 
 Usage: spotuify onboard [OPTIONS]
 

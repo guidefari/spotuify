@@ -243,19 +243,12 @@ pub fn classify_response(
     }
 }
 
-/// A user-facing hint appended to a write 403 when the user has opted
-/// into their own Spotify app (`SPOTUIFY_CLIENT_ID`). Such apps are in
-/// Spotify's Development Mode, which blocks playlist/library writes —
-/// the exact reason spotuify defaults to the first-party login. Returns
-/// `None` for the default (first-party) setup, where this 403 shouldn't
-/// happen, and for non-write endpoints.
+/// A user-facing hint appended to playlist/library write 403s. The
+/// default dev-app PKCE flow can hit Spotify Development Mode policy
+/// until the user's app has Extended Quota Mode. Playback-control 403s
+/// are intentionally excluded because they usually mean Premium/device
+/// restrictions, not app-review policy.
 fn dev_app_write_hint(endpoint: &str) -> Option<String> {
-    let using_own_app = std::env::var("SPOTUIFY_CLIENT_ID")
-        .ok()
-        .is_some_and(|value| !value.trim().is_empty());
-    if !using_own_app {
-        return None;
-    }
     // `endpoint` is a "VERB /path" scope label. Only nudge on the
     // playlist/library write families that Development Mode actually
     // blocks — NOT playback-control writes (`/me/player/...`), which
@@ -274,9 +267,10 @@ fn dev_app_write_hint(endpoint: &str) -> Option<String> {
         return None;
     }
     Some(
-        "\n  Hint: your own Spotify app (SPOTUIFY_CLIENT_ID) is in Development Mode, \
-         which blocks playlist/library writes. Unset SPOTUIFY_CLIENT_ID and run \
-         `spotuify login` to use the first-party login, which can write."
+        "\n  Hint: Spotify Developer apps in Development Mode can block \
+         playlist/library writes. Apply for Extended Quota Mode in the \
+         Spotify dashboard, then re-run `spotuify login` if scopes or app \
+         settings changed."
             .to_string(),
     )
 }
@@ -335,87 +329,42 @@ mod tests {
     use super::{classify_response, dev_app_write_hint, SpotifyError};
     use chrono::Utc;
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn with_client_id_env<R>(value: Option<&str>, f: impl FnOnce() -> R) -> R {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let prev = std::env::var_os("SPOTUIFY_CLIENT_ID");
-        match value {
-            Some(v) => std::env::set_var("SPOTUIFY_CLIENT_ID", v),
-            None => std::env::remove_var("SPOTUIFY_CLIENT_ID"),
-        }
-        let out = f();
-        match prev {
-            Some(p) => std::env::set_var("SPOTUIFY_CLIENT_ID", p),
-            None => std::env::remove_var("SPOTUIFY_CLIENT_ID"),
-        }
-        out
+    #[test]
+    fn dev_app_write_hint_only_on_library_writes() {
+        // Playlist/library writes are what Development Mode blocks.
+        assert!(dev_app_write_hint("POST /playlists/{id}/tracks").is_some());
+        assert!(dev_app_write_hint("POST /users/me/playlists").is_some());
+        assert!(dev_app_write_hint("PUT /me/tracks").is_some());
+        // Playback-control writes 403 for other reasons; no hint.
+        assert!(dev_app_write_hint("PUT /me/player/play").is_none());
+        assert!(dev_app_write_hint("POST /me/player/queue").is_none());
+        // Reads never get the write hint.
+        assert!(dev_app_write_hint("GET /me/playlists").is_none());
     }
 
     #[test]
-    fn dev_app_write_hint_only_on_library_writes_with_own_app() {
-        with_client_id_env(Some("my-dev-app"), || {
-            // Playlist/library writes are what Development Mode blocks.
-            assert!(dev_app_write_hint("POST /playlists/{id}/tracks").is_some());
-            assert!(dev_app_write_hint("POST /users/me/playlists").is_some());
-            assert!(dev_app_write_hint("PUT /me/tracks").is_some());
-            // Playback-control writes 403 for other reasons; no hint.
-            assert!(dev_app_write_hint("PUT /me/player/play").is_none());
-            assert!(dev_app_write_hint("POST /me/player/queue").is_none());
-            // Reads never get the write hint.
-            assert!(dev_app_write_hint("GET /me/playlists").is_none());
-        });
-        with_client_id_env(None, || {
-            // First-party (default): no dev-app hint at all.
-            assert!(dev_app_write_hint("POST /playlists/{id}/tracks").is_none());
-        });
-    }
-
-    #[test]
-    fn classify_403_write_appends_hint_for_own_app() {
+    fn classify_403_write_appends_development_mode_hint() {
         // Adversarial: a dev-app user creating a playlist must be told
         // *why* it's blocked, not just "403".
-        with_client_id_env(Some("my-dev-app"), || {
-            let err = classify_response(
-                403,
-                None,
-                "POST /users/me/playlists",
-                r#"{"error":{"status":403,"message":"Forbidden"}}"#,
-                Utc::now(),
-            );
-            match err {
-                SpotifyError::Api {
-                    status: 403,
-                    message,
-                    ..
-                } => {
-                    assert!(message.contains("Forbidden"));
-                    assert!(
-                        message.contains("SPOTUIFY_CLIENT_ID"),
-                        "expected dev-app hint, got: {message}"
-                    );
-                }
-                other => panic!("expected Api 403, got {other:?}"),
+        let err = classify_response(
+            403,
+            None,
+            "POST /users/me/playlists",
+            r#"{"error":{"status":403,"message":"Forbidden"}}"#,
+            Utc::now(),
+        );
+        match err {
+            SpotifyError::Api {
+                status, message, ..
+            } => {
+                assert_eq!(status, 403);
+                assert!(message.contains("Forbidden"));
+                assert!(
+                    message.contains("Extended Quota Mode"),
+                    "expected dev-app policy hint, got: {message}"
+                );
             }
-        });
-    }
-
-    #[test]
-    fn classify_403_first_party_has_no_dev_app_hint() {
-        with_client_id_env(None, || {
-            let err = classify_response(
-                403,
-                None,
-                "POST /users/me/playlists",
-                r#"{"error":{"status":403,"message":"Forbidden"}}"#,
-                Utc::now(),
-            );
-            match err {
-                SpotifyError::Api { message, .. } => {
-                    assert!(!message.contains("SPOTUIFY_CLIENT_ID"));
-                }
-                other => panic!("expected Api 403, got {other:?}"),
-            }
-        });
+            other => panic!("expected Api 403, got {other:?}"),
+        }
     }
 }

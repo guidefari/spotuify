@@ -9,7 +9,7 @@
 | 00 | [Overview](00-overview.md) | Product identity, principles, non-goals, differentiators |
 | 01 | [Architecture](01-architecture.md) | Daemon, clients, IPC, crate/module boundaries |
 | 02 | [Data Model](02-data-model.md) | Core entities, IDs, SQLite source of truth, mutation receipts |
-| 03 | [Spotify Provider](03-spotify-provider.md) | Web API, spotifyd/librespot, capability limits, rate limits |
+| 03 | [Spotify Provider](03-spotify-provider.md) | Web API, embedded librespot, capability limits, rate limits |
 | 04 | [Sync and Cache](04-sync-cache.md) | Background sync, local truth, optimistic updates, reconciliation |
 | 05 | [Search](05-search.md) | Local Tantivy search, Spotify search, filters, query semantics |
 | 06 | [CLI and Shell Integration](06-cli.md) | Canonical CLI surface, formats, stdin IDs, dry-run, exit codes |
@@ -17,7 +17,7 @@
 | 08 | [TUI](08-tui.md) | Layout, command palette, contextual hints, search/filter UX |
 | 09 | [Agent Workflows](09-agent-workflows.md) | Agent-native design, researched playlists, preview/commit loops |
 | 10 | [Observability](10-observability.md) | Doctor, logs, diagnostics, action traces, bug reports |
-| 11 | [Config and Auth](11-config-auth.md) | Config paths, OAuth, keychain, spotifyd configuration |
+| 11 | [Config and Auth](11-config-auth.md) | Config paths, OAuth, keychain, player configuration |
 | 12 | [Roadmap](12-roadmap.md) | Phased milestones and definitions of done |
 | 13 | [Decision Log](13-decision-log.md) | Settled decisions and alternatives considered |
 | 14 | [Reuse Strategy](14-reuse-strategy.md) | Copy-from-mxr policy, reusable crate candidates, extraction thresholds |
@@ -48,5 +48,5 @@ When mxr has already solved an architectural layer, copy first and adapt. Do not
 | HTTP/API client | reqwest |
 | CLI parser | clap |
 | Credentials | macOS Keychain first, cross-platform keyring later |
-| Playback device | spotifyd/librespot or external Spotify Connect device |
+| Playback device | embedded librespot plus Spotify Connect device control |
 | IPC | JSON over Unix socket |

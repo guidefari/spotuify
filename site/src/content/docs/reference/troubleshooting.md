@@ -36,31 +36,26 @@ spotuify doctor
 ```
 
 `spotuify login` opens the browser, and the daemon mints a Web API token
-from your session. No Client ID or redirect URI to configure.
+from your stored OAuth credentials. Configure a Spotify Developer app
+`client_id` first if the config does not have one yet.
 
 ### 403 on playlist writes
 
-If you set `SPOTUIFY_CLIENT_ID` to use your own Spotify app and creating
-a playlist returns `403`, that app is in Spotify's Development Mode,
-which blocks playlist and library writes. Unset it to fall back to the
-first-party login, which can write:
+If playlist or library writes return `403`, your Spotify app is probably
+still in Development Mode. Apply for Extended Quota Mode in the Spotify
+dashboard.
 
 ```bash
-unset SPOTUIFY_CLIENT_ID
-spotuify login
+spotuify auth status
+spotuify doctor
 ```
 
 ## Permissions out of date
 
-This banner only applies to the legacy dev-app login (when you set
-`SPOTUIFY_CLIENT_ID`). The default first-party login always grants the
-full scope set, so it never fires there.
-
 The TUI shows the banner *"Spotify permissions out of date. Quit,
-run `spotuify logout && spotuify login`, then restart."* when a dev-app
-token was issued before a scope that newer features require (like
-follow/unfollow or playlist add). The fix is exactly what the banner
-says:
+run `spotuify logout && spotuify login`, then restart."* when a token was
+issued before a scope that newer features require, like follow/unfollow
+or playlist add. The fix is exactly what the banner says:
 
 ```bash
 spotuify logout
@@ -69,10 +64,16 @@ spotuify login
 
 ## macOS keychain prompt storm
 
-Each cold start of `spotuify` (or `spotuify daemon`) reads your Spotify
-OAuth token from the macOS Keychain. On a fresh binary the system
-prompts for approval; the in-memory token cache only deduplicates
-within a single process.
+`spotuify` first tries the private auth cache at
+`<data_dir>/auth/token.json`. If that file is missing, it falls back to
+the macOS Keychain. On a fresh or unsigned binary, macOS may prompt for
+approval.
+
+The daemon treats an unanswered Keychain prompt as `AuthRequired`. It
+emits one auth event, the notification bridge shows one auth
+notification per error kind, and later health checks fail fast without
+touching Keychain again. Run `spotuify login` when you are ready to
+repair auth.
 
 To kill the prompts on a binary you trust:
 
@@ -93,27 +94,24 @@ spotuify login       # recreates a clean item, trusting the installed binary
 spotuify daemon start
 ```
 
-For local development and tests:
+For local development and tests, use fake mode when you do not want any
+Keychain access at all:
 
 ```bash
-# Skip the proactive scope-drift check at startup (one fewer
-# keychain hit per cold start; the first real API call still
-# reads the token).
-SPOTUIFY_SKIP_KEYCHAIN_ON_START=1 spotuify daemon start
+SPOTUIFY_FAKE_SPOTIFY=1 spotuify
 ```
-
-`SPOTUIFY_FAKE_SPOTIFY=1` already implies the skip. Fake-mode runs
-never touch the keychain.
 
 ## No active device
 
 ```bash
-spotuify devices
+spotuify devices --format json
 spotuify transfer spotuify-hume
 spotuify play "imagine dragons"
 ```
 
-If the device list is empty, start the daemon and reconnect:
+The daemon should expose its embedded librespot device even when Spotify's
+device registry lags. If the device list is empty, start the daemon and
+reconnect:
 
 ```bash
 spotuify daemon restart

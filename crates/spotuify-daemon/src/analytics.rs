@@ -72,6 +72,7 @@ impl AnalyticsStore {
             .await?;
         let store = Self { writer, reader };
         store.run_migrations().await?;
+        secure_sqlite_files(db_path)?;
         Ok(store)
     }
 
@@ -248,6 +249,17 @@ pub fn analytics_db_path() -> Result<PathBuf> {
         return Ok(PathBuf::from(path));
     }
     Ok(spotuify_protocol::paths::data_dir().join("analytics.sqlite3"))
+}
+
+fn secure_sqlite_files(db_path: &Path) -> Result<()> {
+    spotuify_protocol::paths::secure_private_file_if_exists(db_path)?;
+    spotuify_protocol::paths::secure_private_file_if_exists(&sqlite_sidecar_path(db_path, "-wal"))?;
+    spotuify_protocol::paths::secure_private_file_if_exists(&sqlite_sidecar_path(db_path, "-shm"))?;
+    Ok(())
+}
+
+fn sqlite_sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
+    PathBuf::from(format!("{}{}", db_path.display(), suffix))
 }
 
 // now_ms moved to spotuify_core::analytics; re-exported from this

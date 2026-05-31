@@ -157,7 +157,6 @@ fn describe_ipc_failure(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::Mutex;
     use std::time::Duration;
 
     use futures::{SinkExt, StreamExt};
@@ -168,11 +167,11 @@ mod tests {
     use super::{default_socket_path, IpcClient};
     use crate::{DaemonEvent, IpcCodec, IpcMessage, IpcPayload, Request, Response, ResponseData};
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn default_socket_path_uses_shared_runtime_resolver() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .expect("env lock should not be poisoned");
         std::env::remove_var("SPOTUIFY_SOCKET");
         std::env::set_var("SPOTUIFY_RUNTIME_DIR", "/tmp/spotuify-runtime-test");
 

@@ -115,7 +115,11 @@ impl Store {
             db_path: db_path.to_path_buf(),
             index_path: index_path.to_path_buf(),
         };
+        store.ensure_schema_migrations_table().await?;
+        store.check_cache_version().await?;
         store.run_migrations().await?;
+        secure_sqlite_files(db_path)?;
+        spotuify_protocol::paths::ensure_private_dir(index_path)?;
         Ok(store)
     }
 
@@ -1406,6 +1410,17 @@ impl Store {
     }
 
     async fn run_migrations(&self) -> Result<()> {
+        self.ensure_schema_migrations_table().await?;
+
+        for migration in MIGRATIONS {
+            self.apply_migration(migration).await?;
+        }
+
+        self.validate_schema().await?;
+        Ok(())
+    }
+
+    async fn ensure_schema_migrations_table(&self) -> Result<()> {
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS schema_migrations (
                 version INTEGER PRIMARY KEY,
@@ -1415,12 +1430,6 @@ impl Store {
         )
         .execute(&self.writer)
         .await?;
-
-        for migration in MIGRATIONS {
-            self.apply_migration(migration).await?;
-        }
-
-        self.validate_schema().await?;
         Ok(())
     }
 
@@ -1746,6 +1755,17 @@ async fn build_writer_pool(db_url: &str) -> Result<SqlitePool> {
         .acquire_timeout(POOL_ACQUIRE_TIMEOUT)
         .connect_with(opts)
         .await?)
+}
+
+fn secure_sqlite_files(db_path: &Path) -> Result<()> {
+    spotuify_protocol::paths::secure_private_file_if_exists(db_path)?;
+    spotuify_protocol::paths::secure_private_file_if_exists(&sqlite_sidecar_path(db_path, "-wal"))?;
+    spotuify_protocol::paths::secure_private_file_if_exists(&sqlite_sidecar_path(db_path, "-shm"))?;
+    Ok(())
+}
+
+fn sqlite_sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
+    PathBuf::from(format!("{}{}", db_path.display(), suffix))
 }
 
 pub fn cache_db_path() -> Result<PathBuf> {

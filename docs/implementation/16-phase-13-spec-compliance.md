@@ -25,7 +25,7 @@ Close small gaps between code and blueprint specs, plus adopt small-but-impactfu
 - `--no-daemon-start` global CLI flag (Phase 2 spec).
 - `spotuify bug-report [--include-logs N]` — bundle redacted system info + logs + doctor report (blueprint `10-observability.md`).
 - `spotuify reload` — daemon re-reads `config.toml` and applies runtime-safe settings. Current hot-reload coverage applies visualization enable/source/FPS/smoothing/noise-gate without restart; backend swaps and TUI-only theme/keymap changes remain restart-scoped until those subsystems expose hot-swap seams.
-- `spotuify reconnect` — daemon shuts down and re-registers the active player backend; useful after VPN/network change.
+- `spotuify reconnect` — daemon shuts down and re-registers the embedded player; useful after VPN/network change.
 - `-o key.path=value` global CLI flag for one-shot TOML config override (e.g., `spotuify -o player.bitrate=160 play "jazz"`).
 - `spotuify generate completions <shell>` (clap-built-in, just wire it).
 - `spotuify generate man-page`.
@@ -56,7 +56,7 @@ Close small gaps between code and blueprint specs, plus adopt small-but-impactfu
 - Match the shipped CLI surface; remove pre-daemon-era language.
 - Add per-platform quickstart sections (filled by Phase 11).
 - Add MCP-server setup snippet (Phase 8).
-- Add embedded-vs-spotifyd choice (Phase 9).
+- Document embedded-only playback plus legacy `[spotifyd]` device-name migration (Phase 9).
 - Add competitor comparison table.
 
 ### Phase 5 doc clarification
@@ -68,18 +68,18 @@ Close small gaps between code and blueprint specs, plus adopt small-but-impactfu
 2. [x] `--no-daemon-start` is threaded through clap root and daemon-start helpers. Verified by `no_daemon_start_status_fails_without_spawning_daemon`.
 3. [x] `bug-report` collects version/platform, doctor JSON when the daemon is reachable, last N log lines, last 50 operations when reachable, and redacted config; bundles as a local tar file and never auto-uploads. Verified by `bug_report_writes_requested_tar_and_redacts_config`.
 4. [x] `spotuify reload` request is wired in the daemon and applies runtime visualization settings without restart. Verified by `reload_applies_viz_config_without_daemon_restart`. Backend swaps and TUI-only theme/keymap reload are intentionally not claimed until those subsystems expose hot-swap seams.
-5. [x] `spotuify reconnect` request shuts down and re-registers the active player backend. Verified by `reconnect_re_registers_player_backend`.
+5. [x] `spotuify reconnect` request shuts down and re-registers the embedded player. Verified by `reconnect_re_registers_player_backend`.
 6. [x] `-o key.path=value` global flag is wired through clap and merged through TOML `Value` without writing the config file. Verified by `config_load_applies_dotpath_override_without_writing_config_file`, dot-path override unit tests, and CLI help snapshots.
 7. [x] Auto-write `.gitignore` in config dir on first init/load. Verified by `init_config_writes_gitignore_next_to_template`.
 8. [x] `cache_version` constant + startup gate are implemented. Verified by `Store::check_cache_version`, daemon startup guard in `DaemonState::new`, and `test_check_cache_version_*` migration coverage.
-9. [x] `User-Agent` headers are attached to Spotify Web API, OAuth token exchange, premium gate, Connect-only Web API, LRCLIB, and cover-art HTTP clients. Verified by `user_agent_string_carries_version_os_arch_and_github_url`, `web_api_commands_send_spotuify_user_agent`, and `premium_gate_sends_spotuify_user_agent`.
+9. [x] `User-Agent` headers are attached to Spotify Web API, OAuth token exchange, premium gate, LRCLIB, and cover-art HTTP clients. Verified by `user_agent_string_carries_version_os_arch_and_github_url`, `web_api_commands_send_spotuify_user_agent`, and `premium_gate_sends_spotuify_user_agent`.
 10. [x] Panic hook wiring + backtrace log path + next-start warning are implemented in `src/logging.rs` and installed during CLI startup. Backtrace file writing is covered by `panic_backtrace_writer_records_payload_and_location`; hidden `--panic-test` remains intentionally unshipped.
 11. [x] TUI confirmation modal shell is implemented and rendered, but no delete-playlist/unfollow/bulk-unsave TUI command is currently exposed. CLI/MCP destructive actions remain protected by dry-run/confirm contracts.
 12. [x] `tracing-subscriber` JSON formatter behind `--log-format json` / `SPOTUIFY_LOG_FORMAT=json` is wired.
 13. [x] `logs tail --follow --format json` is wired and covered by help snapshots.
 14. [x] `HealthClass` enum has `Healthy`, `Degraded`, and `Unhealthy`; doctor election is implemented. Verified by diagnostics tests for degraded and unhealthy reports.
 15. [x] Decision-log entries D010-D014 exist in `docs/blueprint/13-decision-log.md`.
-16. [x] README rewrite matches the daemon/CLI/MCP/workspace-era surface, includes platform quickstarts, MCP setup, embedded-vs-spotifyd build guidance, and a trade-off comparison table.
+16. [x] README rewrite matches the daemon/CLI/MCP/workspace-era surface, includes platform quickstarts, MCP setup, embedded playback build guidance, and a trade-off comparison table.
 17. [x] Phase 5 doc clarification edit is present in `docs/implementation/06-phase-5-agent-playlists.md`, documenting `build_playlist_plan` as a deterministic heuristic scaffold rather than an LLM planner.
 
 ## Verification
@@ -89,7 +89,7 @@ Close small gaps between code and blueprint specs, plus adopt small-but-impactfu
 - `spotuify bug-report --output <path>` produces that tar path; test coverage checks config secrets and email addresses are redacted.
 - `spotuify -o player.bitrate=96 play X` plays at 96kbps for that invocation only; config file unchanged.
 - `spotuify reload` after editing `[viz]` settings updates the running daemon without losing playback.
-- `spotuify reconnect` after toggling VPN re-registers the active player backend.
+- `spotuify reconnect` after toggling VPN re-registers the embedded player.
 - `SPOTUIFY_LOG_FORMAT=json spotuify status` emits structured tracing output on stderr.
 - `spotuify sync search-cache --prune --older-than 7d --format json` reports pruned counts.
 - TUI confirmation modal blocks normal input; `n`/Esc cancel and `y` dispatches the deferred action. Specific delete-playlist/unfollow/bulk-unsave actions are not exposed yet.

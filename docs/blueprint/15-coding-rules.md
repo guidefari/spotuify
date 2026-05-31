@@ -24,7 +24,7 @@ spotuify should be boring inside and delightful outside. Use plain Rust, clear b
 ## Error handling rules
 
 - No raw Spotify error should be the final UX if it can be mapped to an actionable domain error.
-- Keychain, network, IPC, spotifyd, image loading, and search indexing must have bounded failure behavior.
+- Keychain, network, IPC, embedded playback, image loading, and search indexing must have bounded failure behavior.
 - `doctor` must never hang indefinitely.
 - TUI input handling must never await network or keychain work.
 

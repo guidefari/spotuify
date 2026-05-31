@@ -1,9 +1,10 @@
 //! First-party (librespot keymaster) Web API credentials.
 //!
-//! The dev-app PKCE flow (`auth::StoredToken`) is being replaced by
-//! librespot's first-party OAuth (keymaster client id) + `login5`. A
-//! first-party login is never in Spotify's Development Mode, so it can
-//! write playlists where a dev-app token gets a 403.
+//! The default auth path is dev-app PKCE (`auth::StoredToken`).
+//! First-party OAuth (keymaster client id) + `login5` is kept as an
+//! opt-in experiment behind `SPOTUIFY_USE_FIRST_PARTY=1`. It avoids
+//! Spotify Development Mode write policy, but sustained Web API polling
+//! through keymaster gets rate-limited harder than a per-user dev app.
 //!
 //! What we persist: only the long-lived librespot-oauth **refresh
 //! token** (plus the scopes granted at login, for diagnostics). The Web
@@ -68,10 +69,9 @@ impl FirstPartyCredentials {
 /// A stored credential blob, classified by shape.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StoredCredential {
-    /// First-party keymaster credential — the supported path.
+    /// First-party keymaster credential — opt-in experimental path.
     FirstParty(FirstPartyCredentials),
-    /// Legacy dev-app PKCE token. Still readable, but the user must
-    /// re-login to switch to the first-party flow.
+    /// Dev-app PKCE token. This is the default auth path.
     LegacyDevApp(StoredToken),
 }
 

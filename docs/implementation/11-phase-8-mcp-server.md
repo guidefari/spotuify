@@ -18,7 +18,7 @@ Expose the daemon's Request/Event surface as a Model Context Protocol (MCP) serv
 | Confirmation popups on destructive actions | spotify-player commit #966 | Every destructive MCP tool should require explicit `confirm: true` argument |
 | Mercury bus for lyrics | spotify-player `client/mod.rs:642-661` | `hm://lyrics/v1/track/{id}` |
 | Mercury bus for radio | spotify-player `client/mod.rs:949-1019` | `hm://autoplay-enabled/query`, `hm://radio-apollo/v3/stations/` |
-| `login5().auth_token()` | spotify-player `token.rs:8-46` | Avoid second OAuth flow for the MCP-side Web API client |
+| `login5().auth_token()` | spotify-player `token.rs:8-46` | Useful for first-party/keymaster mode and future native-session reads. D016 keeps dev-app PKCE as the default Web API path until sustained keymaster polling is no longer required. |
 
 ## Deliverables
 

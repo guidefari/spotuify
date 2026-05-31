@@ -86,7 +86,7 @@ The following are *not* findings — they are working controls the auditor will 
 
 - **OAuth PKCE (S256) + state validation** — `crates/spotuify-spotify/src/auth.rs:129-130, 1112-1121`. 32-byte state, 96-byte verifier, SHA-256 challenge.
 - **Redirect URI is loopback-only** — `auth.rs:1047-1049` rejects any non-loopback host before binding.
-- **Access token never persisted** — keychain stores only `refresh_token + scopes`. Live bearer minted in memory.
+- **Credential storage is explicit and mode-restricted** — default dev-app OAuth credentials are stored in the OS keychain and mirrored to `<data_dir>/auth/token.json` with mode `0600` on Unix; first-party/keymaster opt-in stores only refresh token + scopes.
 - **`spotuify auth bearer` requires `--reveal-secret`** — fail-safe default; verified at `src/main.rs:2508-2509`.
 - **Config + token files mode `0600` on Unix** — `crates/spotuify-spotify/src/config.rs:1011-1025` (also `set_permissions` after write).
 - **Auto-generated `.gitignore` in config dir** — `config.rs:1030-1043` guards against dotfile-sync uploads.
@@ -122,7 +122,7 @@ The following are *not* findings — they are working controls the auditor will 
 | Does it phone home? | No. No analytics SDK, no version-check ping, no crash reporter. Network egress is limited to `*.spotify.com`, `*.scdn.co`, librespot AP, and (opt-in) `lrclib.net`. |
 | Does it autostart? | Only if the user runs `spotuify daemon install-service`. The installer scripts under `install/launchd/`, `install/systemd/`, `install/windows/` are vetted; they create *user-level* units, not system units, and are removable with one command. |
 | Does it self-update? | No. Updates are via Homebrew (`brew upgrade`) or manual download from GitHub Releases. |
-| Where are my Spotify tokens? | Keychain on macOS, Secret Service on Linux, DPAPI on Windows (via `keyring` crate). Only the long-lived refresh token + scopes are stored. The live Web API bearer is minted in memory and never persisted. |
+| Where are my Spotify tokens? | Default dev-app auth stores the OAuth token in the OS keychain and mirrors it to `<data_dir>/auth/token.json` with mode `0600` on Unix, guarded by `<data_dir>/auth/token.lock`. First-party/keymaster opt-in stores only refresh token + scopes. |
 | Why is RSA RUSTSEC-2023-0071 not fixed? | Transitive via librespot. Not exploitable in our usage pattern. Documented in `deny.toml` with revisit trigger. |
 | Can a website on `http://127.0.0.1:NNN` attack the daemon? | The IPC daemon is on a Unix socket (no network). The MCP HTTP bridge requires a Bearer token from `SPOTUIFY_MCP_TOKEN`. A defence-in-depth gap (M3 — optional `Origin`) is being tracked. |
 

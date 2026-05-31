@@ -21,6 +21,9 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+
 /// Per-build instance name. Debug builds and binaries run from Cargo's
 /// `target/{debug,release}` tree get `spotuify-dev` so a developer can
 /// run both a stable installed binary and a local build next to it
@@ -258,18 +261,86 @@ pub fn pid_path() -> PathBuf {
     p
 }
 
+#[cfg(unix)]
+pub fn ensure_private_dir(path: &Path) -> anyhow::Result<()> {
+    if path.as_os_str().is_empty() {
+        anyhow::bail!("private directory path is empty");
+    }
+    if path.exists() {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_dir() {
+            anyhow::bail!("{} is not a directory", path.display());
+        }
+        let mode = metadata.permissions().mode();
+        if mode & 0o002 != 0 && mode & 0o1000 != 0 {
+            anyhow::bail!(
+                "refusing to chmod shared sticky directory {}; choose an app-specific subdirectory",
+                path.display()
+            );
+        }
+    }
+    std::fs::create_dir_all(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn ensure_private_dir(path: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(path)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn secure_private_file_if_exists(path: &Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() {
+        anyhow::bail!("{} is not a regular file", path.display());
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn secure_private_file_if_exists(_path: &Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn secure_private_socket(path: &Path) -> anyhow::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_socket() {
+        anyhow::bail!("{} is not a Unix socket", path.display());
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn secure_private_socket(_path: &Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
+pub fn secure_current_instance_dirs() -> anyhow::Result<()> {
+    ensure_private_dir(&runtime_dir())?;
+    ensure_private_dir(&data_dir())?;
+    ensure_private_dir(&config_dir())?;
+    ensure_private_dir(&cache_dir())?;
+    ensure_private_dir(&log_dir())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     // Process-global env is shared across parallel tests; serialize
     // every env-mutating test through this mutex so they don't race.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn app_instance_name_respects_override() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap();
         std::env::set_var("SPOTUIFY_INSTANCE", "ci-job-42");
         std::env::remove_var("SPOTUIFY_ALLOW_PROD_INSTANCE_FROM_TARGET");
         assert_eq!(app_instance_name(), "ci-job-42");
@@ -278,7 +349,7 @@ mod tests {
 
     #[test]
     fn app_instance_name_returns_dev_or_release_default() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap();
         std::env::remove_var("SPOTUIFY_INSTANCE");
         let name = app_instance_name();
         assert!(name == "spotuify" || name == "spotuify-dev");
@@ -286,7 +357,7 @@ mod tests {
 
     #[test]
     fn socket_path_respects_env_override() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap();
         std::env::set_var("SPOTUIFY_SOCKET", "/tmp/test-spotuify.sock");
         assert_eq!(socket_path(), PathBuf::from("/tmp/test-spotuify.sock"));
         std::env::remove_var("SPOTUIFY_SOCKET");
@@ -294,7 +365,7 @@ mod tests {
 
     #[test]
     fn runtime_dir_respects_env_override() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap();
         std::env::set_var("SPOTUIFY_RUNTIME_DIR", "/tmp/test-runtime");
         assert_eq!(runtime_dir(), PathBuf::from("/tmp/test-runtime"));
         std::env::remove_var("SPOTUIFY_RUNTIME_DIR");
@@ -303,7 +374,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn pid_path_is_socket_with_pid_extension_on_unix() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap();
         std::env::set_var("SPOTUIFY_SOCKET", "/tmp/test-spotuify.sock");
         std::env::remove_var("SPOTUIFY_PID_FILE");
         let pid = pid_path();
@@ -316,10 +387,101 @@ mod tests {
 
     #[test]
     fn data_dir_under_override() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap();
         std::env::set_var("SPOTUIFY_DATA_DIR", "/tmp/spotuify-data-test");
         assert_eq!(data_dir(), PathBuf::from("/tmp/spotuify-data-test"));
         std::env::remove_var("SPOTUIFY_DATA_DIR");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_private_dir_repairs_existing_world_readable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let path = temp.path().join("state");
+        std::fs::create_dir(&path).expect("dir");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("loosen dir");
+
+        ensure_private_dir(&path).expect("dir should be secured");
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secure_private_file_if_exists_repairs_existing_world_readable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let path = temp.path().join("spotuify.toml");
+        std::fs::write(&path, "client_secret = \"secret\"\n").expect("write file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("loosen file");
+
+        secure_private_file_if_exists(&path).expect("file should be secured");
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secure_private_socket_repairs_bound_unix_socket() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::net::UnixListener;
+
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let path = temp.path().join("daemon.sock");
+        let _listener = UnixListener::bind(&path).expect("bind socket");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("loosen socket");
+
+        secure_private_socket(&path).expect("socket should be secured");
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secure_current_instance_dirs_repairs_overridden_state_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap();
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let runtime = temp.path().join("runtime");
+        let data = temp.path().join("data");
+        let config = temp.path().join("config");
+        let cache = temp.path().join("cache");
+        let log = temp.path().join("logs");
+
+        for dir in [&runtime, &data, &config, &cache, &log] {
+            std::fs::create_dir(dir).expect("dir");
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
+                .expect("loosen dir");
+        }
+
+        std::env::set_var("SPOTUIFY_RUNTIME_DIR", &runtime);
+        std::env::set_var("SPOTUIFY_DATA_DIR", &data);
+        std::env::set_var("SPOTUIFY_CONFIG_DIR", &config);
+        std::env::set_var("SPOTUIFY_CACHE_DIR", &cache);
+        std::env::set_var("SPOTUIFY_LOG_DIR", &log);
+
+        secure_current_instance_dirs().expect("state dirs should be secured");
+
+        for dir in [&runtime, &data, &config, &cache, &log] {
+            let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{} should be private", dir.display());
+        }
+
+        std::env::remove_var("SPOTUIFY_RUNTIME_DIR");
+        std::env::remove_var("SPOTUIFY_DATA_DIR");
+        std::env::remove_var("SPOTUIFY_CONFIG_DIR");
+        std::env::remove_var("SPOTUIFY_CACHE_DIR");
+        std::env::remove_var("SPOTUIFY_LOG_DIR");
     }
 
     #[test]

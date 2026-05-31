@@ -8,10 +8,26 @@
 //! - check_cache_version() reports the right state for tooling.
 
 use spotuify_store::{Store, CACHE_VERSION};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::Row;
+use std::str::FromStr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 async fn fresh_store() -> Store {
     Store::in_memory().await.expect("in_memory store")
+}
+
+fn temp_store_root(name: &str) -> std::path::PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "spotuify-store-{name}-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).expect("temp store root");
+    root
 }
 
 async fn table_exists(store: &Store, table: &str) -> bool {
@@ -51,6 +67,66 @@ async fn column_default(store: &Store, table: &str, column: &str) -> Option<Stri
     rows.into_iter()
         .find(|row| row.get::<String, _>("name") == column)
         .and_then(|row| row.try_get::<String, _>("dflt_value").ok())
+}
+
+#[tokio::test]
+async fn test_open_refuses_future_schema_before_running_current_migrations() {
+    let root = temp_store_root("future-schema-preflight");
+    let db_path = root.join("cache.sqlite");
+    let index_path = root.join("index");
+    let db_url = format!("sqlite:{}", db_path.display());
+    let opts = SqliteConnectOptions::from_str(&db_url)
+        .unwrap()
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at_ms INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO schema_migrations (version, name, applied_at_ms) VALUES (99, 'future', 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let err = match Store::open(&db_path, &index_path).await {
+        Ok(_) => panic!("future schema should be refused before migrations run"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("99"),
+        "error should name the future schema version: {err}"
+    );
+
+    let opts = SqliteConnectOptions::from_str(&db_url)
+        .unwrap()
+        .read_only(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .unwrap();
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM schema_migrations WHERE version <= ?")
+        .bind(CACHE_VERSION as i64)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    assert_eq!(count.0, 0, "old binary must not stamp current migrations");
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[tokio::test]

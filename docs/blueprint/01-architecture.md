@@ -17,8 +17,8 @@
 │ Agents       │◄─────────────────────────────►│ └────┬────┘ └──────┬───────┘ │
 │ scripts      │                               │      │             │         │
 └──────────────┘                               │ ┌────┴────┐ ┌──────┴───────┐ │
-                                               │ │ Tantivy │ │ spotifyd /   │ │
-                                               │ │ Search  │ │ Connect dev  │ │
+                                               │ │ Tantivy │ │ Embedded     │ │
+                                               │ │ Search  │ │ librespot    │ │
                                                │ └─────────┘ └──────────────┘ │
                                                └──────────────────────────────┘
 ```
@@ -38,7 +38,7 @@ We considered keeping the current monolithic shape where the TUI directly calls 
 
 - Own OAuth token access and refresh.
 - Own Spotify Web API client and rate-limit handling.
-- Own spotifyd lifecycle and preferred device activation.
+- Own embedded player lifecycle and preferred device activation.
 - Maintain local SQLite cache.
 - Maintain Tantivy index derived from SQLite.
 - Serve JSON IPC requests from CLI and TUI.
@@ -114,7 +114,7 @@ spotuify/
 │   ├── store/       # SQLite migrations and queries
 │   ├── search/      # Tantivy indexing/query engine
 │   ├── spotify/     # Spotify Web API provider
-│   ├── player/      # device activation, spotifyd, playback orchestration
+│   ├── player/      # embedded librespot, device activation, playback orchestration
 │   ├── sync/        # background sync and reconciliation
 │   ├── daemon/      # socket server and runtime
 │   ├── cli/         # clap commands and output renderers

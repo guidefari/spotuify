@@ -20,7 +20,7 @@ spotuify auth bearer --reveal-secret
 ```text
 Print the daemon's current Spotify Web API bearer token.
 
-The daemon mints tokens via librespot keymaster + login5 and holds them in memory; this command surfaces the current one so you can probe `api.spotify.com` directly. Treat the output as a secret; printing it requires `--reveal-secret`.
+The daemon owns live Web API bearers for modes that need daemon-side token minting; this command surfaces the current one so you can probe `api.spotify.com` directly. Treat the output as a secret; printing it requires `--reveal-secret`.
 
 Usage: spotuify auth bearer [OPTIONS]
 

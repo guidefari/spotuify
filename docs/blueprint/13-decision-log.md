@@ -37,8 +37,8 @@ Chosen: controller plus Spotify Connect device.
 Why:
 
 - Spotify Web API does not stream audio
-- spotifyd/librespot or official apps are the playback devices
-- spotuify should control, not impersonate a streaming client unless we deliberately embed librespot later
+- embedded librespot or official apps are the playback devices
+- spotuify should control Spotify Connect devices; D010 later made embedded librespot the shipped local device
 
 ## D004: Search - local first, Spotify remote as provider
 
@@ -142,7 +142,7 @@ Why:
 
 ## D010: Embedded librespot (Phase 9, decision gate)
 
-Chosen: embed librespot in the daemon behind a `--features embedded-playback` cargo feature; keep `--backend spotifyd` supported for users who want crash isolation.
+Chosen: embed librespot in the daemon and ship it as the only supported playback backend. The old spotifyd and Connect-only backend choices are not supported runtime modes.
 
 Why:
 
@@ -157,22 +157,16 @@ Trade-offs accepted:
 - Audio-backend bugs come in-house (CoreAudio quirks on mac, PipeWire/PulseAudio selection on linux)
 - librespot protocol drift maintenance now ours rather than spotifyd's release cycle
 - Mitigated by spatatui's `RecoveringSink` pattern wrapping the backend Sink in `catch_unwind`
+- Users who kept `[spotifyd] device_name` rely on a legacy config shim; no spotifyd process is started.
 
 Implementation lands in Phase 9; not part of the current Phase 6/7/8 batch.
 
-Implementation status (Phase 9.0–9.5 complete, 2026-05-13):
+Implementation status (updated 2026-05-28):
 
-- `PlayerBackend` trait + 5 new typed `DaemonEvent`s (`PlayerReady`,
-  `PlayerDegraded`, `PremiumRequired`, `SessionDisconnected`,
-  `PlayerFailed`) in `crates/spotuify-player` and
-  `crates/spotuify-protocol`.
-- Backends shipped: `ConnectOnlyBackend` (Web API only, Free-tier
-  capable, wiremock-tested), `SpotifydBackend` (preserves today's
-  default), `MockPlayerBackend` (behind `test-support` feature),
-  `EmbeddedBackend` with librespot 0.8 cache wiring, attachable sink
-  chain, Player + Spirc registration, transport forwarding, and
-  librespot event translation. Live Spotify Premium smoke is still
-  required before flipping the default.
+- `BackendKind` accepts only `embedded`; `spotifyd` and `connect` parse as errors.
+- `EmbeddedBackend` registers the local Spotify Connect device, wires the sink chain, forwards transport commands, and translates librespot player events.
+- `MockPlayerBackend` remains test-only.
+- Config still reads legacy `[spotifyd] device_name` as a fallback for existing installs.
 - Foundations for Phase 9.3 — `RecoveringSink` (catch_unwind with
   rolling panic budget), `Clock` trait + position-as-SystemTime
   derivation (NTP-step safe), worker `tokio::select!` loop
@@ -256,6 +250,8 @@ Implementation lands in Phase 12; not part of the current Phase 6/7/8 batch.
 
 ## D015: First-party (keymaster) Web API auth (2026-05-24)
 
+Status: superseded by D016.
+
 Chosen: drop the per-user Spotify Developer app as the default. spotuify
 logs in with librespot's first-party "keymaster" client id
 (`65b708073fc0480ea92a077233ca87bd`) via `librespot-oauth`, and mints the
@@ -300,3 +296,31 @@ How (as built):
   "run spotuify login".
 
 Full staged plan: `docs/blueprint/auth-rework-plan.md`.
+
+## D016: Dev-app PKCE remains the default auth path (2026-05-26)
+
+Chosen: revert first-party/keymaster auth to opt-in and keep the per-user
+Spotify Developer app PKCE flow as the default.
+
+Why:
+
+- Sustained Web API polling through keymaster gets policed harder than the
+  per-user dev-app budget. It fixed the Development Mode write policy problem
+  but introduced a worse rate-limit posture for normal daemon sync.
+- The first-party path is still valuable once reads can move through
+  librespot-native session channels instead of heavy `api.spotify.com`
+  polling. Until then, it remains gated by `SPOTUIFY_USE_FIRST_PARTY=1`.
+- Default dev-app auth has sharper operational edges, so the token store must
+  be treated as shared mutable state: keychain plus 0600 disk mirror, a
+  cross-process lock, refresh-token replacement persistence, and `invalid_grant`
+  purge/fail-fast behavior.
+
+Current behavior:
+
+- `Config::load()` requires `client_id` from config or `SPOTUIFY_CLIENT_ID`.
+- `Config::is_first_party()` returns true only when
+  `SPOTUIFY_USE_FIRST_PARTY=1`.
+- Default credentials are `StoredToken` values in the OS keychain plus
+  `<data_dir>/auth/token.json` with mode 0600 on Unix.
+- First-party credentials are separate `FirstPartyCredentials` under
+  `spotify-first-party` plus `<data_dir>/auth/first-party.json`.

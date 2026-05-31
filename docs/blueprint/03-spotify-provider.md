@@ -85,16 +85,19 @@ It should isolate Spotify-specific quirks from the daemon, CLI, and TUI.
 Preferred order:
 
 1. Active unrestricted device.
-2. Configured device name, currently `spotuify-hume` for this machine.
-3. Device name containing `spotifyd` as fallback.
-4. Sole unrestricted device.
-5. Helpful error with `spotuify devices` output.
+2. The daemon's own embedded-device id, when known.
+3. Configured device name, currently `spotuify-hume` for this machine.
+4. Device name containing `spotuify` or `librespot`.
+5. Name-substring overlap with the configured preferred name.
+6. Helpful error with `spotuify devices` output.
 
-## spotifyd/librespot role
+Do not fall back to an unrelated unrestricted device merely because it is visible. Playback is a mutation; if the preferred target is unavailable, fail with remediation rather than surprise-starting another room or account device.
 
-spotifyd is the long-lived playback device. spotuify is the controller.
+## Embedded librespot role
 
-Closing the TUI must never kill spotifyd. `spotuify daemon` may manage spotifyd lifecycle, but it must treat the player process as persistent infrastructure.
+The daemon owns an embedded librespot session and registers spotuify as a local Spotify Connect device.
+
+Closing the TUI must never kill playback. `spotuify daemon` owns the player lifecycle and exposes device/playback state to CLI, TUI, MCP, and agents.
 
 ## Error normalization
 

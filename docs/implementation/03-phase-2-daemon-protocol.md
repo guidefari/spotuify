@@ -11,7 +11,7 @@ Move Spotify/auth/player ownership into a daemon. CLI and TUI become clients.
 - Request/Response/Event types.
 - CLI client wrapper.
 - TUI client wrapper.
-- Daemon-owned Spotify client and spotifyd lifecycle.
+- Daemon-owned Spotify client and embedded player lifecycle.
 - Event stream for playback, sync, mutation, and error events.
 
 ## Protocol starter set

@@ -1,10 +1,13 @@
 //! First-party (keymaster) Web API auth minting.
 //!
-//! Replaces the per-user dev-app PKCE flow. A first-party login uses
-//! librespot's keymaster client id, which is never in Spotify's
-//! Development Mode, so the minted Web API bearer can write playlists
-//! where a dev-app token gets a 403 (verified 2026-05-24: dev-app token
-//! -> 403; keymaster token -> 429, i.e. authorized, only rate-limited).
+//! Opt-in alternative to the default per-user dev-app PKCE flow. A
+//! first-party login uses librespot's keymaster client id, which is
+//! never in Spotify's Development Mode, so the minted Web API bearer can
+//! write playlists where a dev-app token gets a 403 (verified
+//! 2026-05-24: dev-app token -> 403; keymaster token -> 429, i.e.
+//! authorized, only rate-limited). It remains experimental because
+//! sustained Web API polling through keymaster is rate-limited harder
+//! than per-user dev-app traffic.
 //!
 //! Flow:
 //! 1. One browser login (`librespot-oauth`, keymaster id) yields an
