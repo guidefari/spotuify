@@ -701,7 +701,7 @@ impl App {
             binary_fingerprint: current_binary_fingerprint(),
             update_available: false,
             artist_view: None,
-            refresh_requested: true,
+            refresh_requested: false,
             pending_g: false,
         })
     }
@@ -2248,10 +2248,12 @@ fn refresh_plan(app: &App) -> RefreshPlan {
         && playback_uri.is_some()
         && playback_uri != cached_uri
         && playback_uri != failed_uri;
+    let library_visible = matches!(app.screen, Screen::Library | Screen::Playlists);
     RefreshPlan {
-        library: app
-            .last_library_sync
-            .is_none_or(|last_sync| last_sync.elapsed() >= TUI_LIBRARY_REFRESH_INTERVAL),
+        library: library_visible
+            && app
+                .last_library_sync
+                .is_none_or(|last_sync| last_sync.elapsed() >= TUI_LIBRARY_REFRESH_INTERVAL),
         diagnostics: app.screen == Screen::Diagnostics,
         lyrics: need_lyrics_fetch,
     }
@@ -2502,98 +2504,48 @@ fn spawn_selected_art_fetch(url: String, async_tx: mpsc::UnboundedSender<AsyncRe
 /// Issued on TUI startup, after a daemon event-stream reconnect, and
 /// when the broadcast subscription returns `RecvError::Lagged`.
 ///
-/// Issues the three requests concurrently; partial failure is fine,
-/// the missing fields stay `None` and existing TUI state is left
-/// untouched by the tie-breaker in `apply_async_result_with`.
+/// Uses the cached-only `ClientSeed` request: startup seeding must not
+/// trigger Spotify reads. The daemon's warm/sync loops own live refreshes
+/// so opening the TUI doesn't spend provider budget before playback.
 fn spawn_seed(async_tx: mpsc::UnboundedSender<AsyncResult>) {
     if tokio::runtime::Handle::try_current().is_err() {
         return;
     }
     tokio::spawn(async move {
         let fetched_at = Instant::now();
-        let (playback_res, queue_res, devices_res, viz_res, recent_res) = tokio::join!(
-            request_data_without_daemon_start(Request::PlaybackGet),
-            request_data_without_daemon_start(Request::QueueGet),
-            request_data_without_daemon_start(Request::DevicesList),
-            request_data_without_daemon_start(Request::GetVizStatus),
-            request_data_without_daemon_start(Request::RecentlyPlayed),
-        );
-        let seed_auth_kind = [
-            &playback_res,
-            &queue_res,
-            &devices_res,
-            &viz_res,
-            &recent_res,
-        ]
-        .into_iter()
-        .find_map(|result| match result {
-            Err(err) => auth_error_kind_from_error(&err.to_string()),
-            Ok(_) => None,
-        });
-        if let Some(kind) = seed_auth_kind {
-            let _ = async_tx.send(AsyncResult::DaemonEvent(DaemonEvent::AuthError { kind }));
-        }
-        let playback = match playback_res {
-            Ok(ResponseData::Playback { playback }) => Some(playback),
+        let seed = match request_data_without_daemon_start(Request::ClientSeed).await {
+            Ok(ResponseData::ClientSeed {
+                playback,
+                queue,
+                devices,
+                recent,
+                viz,
+            }) => (
+                Some(playback),
+                Some(queue),
+                Some(devices),
+                Some(recent),
+                Some(viz),
+            ),
             Ok(other) => {
-                tracing::debug!(?other, "seed: unexpected PlaybackGet response");
-                None
+                tracing::debug!(?other, "seed: unexpected ClientSeed response");
+                (None, None, None, None, None)
             }
             Err(err) => {
-                tracing::debug!(error = %err, "seed: PlaybackGet failed");
-                None
-            }
-        };
-        let queue = match queue_res {
-            Ok(ResponseData::Queue { queue }) => Some(queue),
-            Ok(other) => {
-                tracing::debug!(?other, "seed: unexpected QueueGet response");
-                None
-            }
-            Err(err) => {
-                tracing::debug!(error = %err, "seed: QueueGet failed");
-                None
-            }
-        };
-        let devices = match devices_res {
-            Ok(ResponseData::Devices { devices }) => Some(devices),
-            Ok(other) => {
-                tracing::debug!(?other, "seed: unexpected DevicesList response");
-                None
-            }
-            Err(err) => {
-                tracing::debug!(error = %err, "seed: DevicesList failed");
-                None
-            }
-        };
-        let viz = match viz_res {
-            Ok(ResponseData::VizStatus { diagnostics }) => Some(diagnostics),
-            Ok(other) => {
-                tracing::debug!(?other, "seed: unexpected GetVizStatus response");
-                None
-            }
-            Err(err) => {
-                tracing::debug!(error = %err, "seed: GetVizStatus failed");
-                None
-            }
-        };
-        let recent = match recent_res {
-            Ok(ResponseData::MediaItems { items }) => Some(items),
-            Ok(other) => {
-                tracing::debug!(?other, "seed: unexpected RecentlyPlayed response");
-                None
-            }
-            Err(err) => {
-                tracing::debug!(error = %err, "seed: RecentlyPlayed failed");
-                None
+                if let Some(kind) = auth_error_kind_from_error(&err.to_string()) {
+                    let _ =
+                        async_tx.send(AsyncResult::DaemonEvent(DaemonEvent::AuthError { kind }));
+                }
+                tracing::debug!(error = %err, "seed: ClientSeed failed");
+                (None, None, None, None, None)
             }
         };
         let _ = async_tx.send(AsyncResult::Seed {
-            playback,
-            queue,
-            devices,
-            viz,
-            recent,
+            playback: seed.0,
+            queue: seed.1,
+            devices: seed.2,
+            recent: seed.3,
+            viz: seed.4,
             fetched_at,
         });
     });
@@ -4899,8 +4851,14 @@ fn apply_screen_switch(app: &mut App, action: TuiAction) -> bool {
     match action {
         TuiAction::OpenPlayer => switch_screen(app, Screen::Player),
         TuiAction::OpenSearch => switch_screen(app, Screen::Search),
-        TuiAction::OpenLibrary => switch_screen(app, Screen::Library),
-        TuiAction::OpenPlaylists => switch_screen(app, Screen::Playlists),
+        TuiAction::OpenLibrary => {
+            switch_screen(app, Screen::Library);
+            app.request_refresh();
+        }
+        TuiAction::OpenPlaylists => {
+            switch_screen(app, Screen::Playlists);
+            app.request_refresh();
+        }
         TuiAction::OpenQueue => switch_screen(app, Screen::Queue),
         TuiAction::OpenDevices => switch_screen(app, Screen::Devices),
         TuiAction::OpenDiagnostics => switch_screen(app, Screen::Diagnostics),
@@ -6701,8 +6659,9 @@ mod tests {
     }
 
     #[test]
-    fn refresh_plan_loads_stale_library_without_manual_prompt() {
-        let app = test_app();
+    fn refresh_plan_loads_stale_library_when_library_visible() {
+        let mut app = test_app();
+        app.screen = Screen::Library;
 
         let plan = refresh_plan(&app);
 
@@ -6710,6 +6669,22 @@ mod tests {
             plan,
             RefreshPlan {
                 library: true,
+                diagnostics: false,
+                lyrics: false,
+            }
+        );
+    }
+
+    #[test]
+    fn refresh_plan_skips_library_on_player_startup() {
+        let app = test_app();
+
+        let plan = refresh_plan(&app);
+
+        assert_eq!(
+            plan,
+            RefreshPlan {
+                library: false,
                 diagnostics: false,
                 lyrics: false,
             }

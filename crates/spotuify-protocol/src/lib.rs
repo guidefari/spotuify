@@ -71,6 +71,13 @@ pub enum Request {
     Shutdown,
     GetDaemonStatus,
     GetDoctorReport,
+    /// Cached startup snapshot for event-driven clients.
+    ///
+    /// This is deliberately read-only: it must not trigger Spotify
+    /// refreshes. The daemon's own warm/sync loops own live provider
+    /// reads so opening a TUI does not spend Web API budget before the
+    /// user presses play.
+    ClientSeed,
     PlaybackGet,
     PlaybackCommand {
         command: PlaybackCommand,
@@ -360,7 +367,8 @@ impl Request {
             Self::SetVizEnabled { .. }
             | Self::SetVizSource { .. }
             | Self::GetVizStatus
-            | Self::SetVizFocus { .. } => IpcCategory::ClientSpecific,
+            | Self::SetVizFocus { .. }
+            | Self::ClientSeed => IpcCategory::ClientSpecific,
             Self::PlaybackGet
             | Self::PlaybackCommand { .. }
             | Self::DevicesList
@@ -401,6 +409,7 @@ impl Request {
             Self::Shutdown => "shutdown",
             Self::GetDaemonStatus => "get-daemon-status",
             Self::GetDoctorReport => "get-doctor-report",
+            Self::ClientSeed => "client-seed",
             Self::PlaybackGet => "playback-get",
             Self::PlaybackCommand { .. } => "playback-command",
             Self::DevicesList => "devices-list",
@@ -719,6 +728,13 @@ pub enum ResponseData {
     },
     Queue {
         queue: Queue,
+    },
+    ClientSeed {
+        playback: Playback,
+        queue: Queue,
+        devices: Vec<Device>,
+        recent: Vec<MediaItem>,
+        viz: VizDiagnostics,
     },
     Playlists {
         playlists: Vec<Playlist>,
@@ -1312,6 +1328,7 @@ mod request_category_tests {
             Request::SubscribeEvents.category(),
             IpcCategory::AdminMaintenance
         );
+        assert_eq!(Request::ClientSeed.category(), IpcCategory::ClientSpecific);
         assert_eq!(
             Request::SetVizFocus { focused: true }.category(),
             IpcCategory::ClientSpecific
@@ -1695,6 +1712,7 @@ mod tests {
         // tracing JSON and wire payloads.
         let kinds = [
             (Request::Ping, "ping"),
+            (Request::ClientSeed, "client-seed"),
             (Request::PlaybackGet, "playback-get"),
             (
                 Request::PlaybackCommand {

@@ -103,6 +103,20 @@ async fn dispatch(
                 report
             },
         }),
+        Request::ClientSeed => {
+            let playback = state.snapshot_playback();
+            let queue = state.store().latest_queue(500).await?.unwrap_or_default();
+            let devices = cached_devices_with_own_device(&state).await?;
+            let recent = state.store().list_recent_items(20).await?;
+            let viz = state.viz_coordinator().diagnostics().await;
+            Ok(ResponseData::ClientSeed {
+                playback,
+                queue,
+                devices,
+                recent,
+                viz,
+            })
+        }
         Request::PlaybackGet => {
             // Phase 2 — sub-millisecond `PlaybackClock` snapshot. No
             // SQLite read on the hot path: the clock is in-memory and

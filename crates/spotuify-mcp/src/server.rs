@@ -280,6 +280,7 @@ fn kind_label(data: &spotuify_protocol::ResponseData) -> &'static str {
         D::Image { .. } => "image",
         D::CoverArt { .. } => "cover_art",
         D::Queue { .. } => "queue",
+        D::ClientSeed { .. } => "client_seed",
         D::Playlists { .. } => "playlists",
         D::MediaItems { .. } => "media_items",
         D::Logs { .. } => "logs",

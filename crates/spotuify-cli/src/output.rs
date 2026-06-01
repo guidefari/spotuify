@@ -1090,6 +1090,7 @@ pub fn print_response_data(
         D::Reindex { stats } => return print_reindex_stats(stats, format),
         D::Sync { summary } => return print_sync_summary(summary, format),
         D::Queue { queue } => return print_queue(queue, format),
+        D::ClientSeed { .. } => return render_json_or_summary(format, data, |_| {}),
         D::Playlists { playlists } => return print_playlists(playlists, format),
         D::Image { bytes } => {
             print!("<image {} bytes>", bytes.len());
