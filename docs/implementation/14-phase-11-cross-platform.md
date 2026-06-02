@@ -4,6 +4,26 @@
 
 Make spotuify installable on Linux and Windows, not just macOS-with-apple-native-keyring. Ship signed, installable artifacts so the README quickstart is actually one command per platform.
 
+## Current status on 2026-06-02
+
+This phase doc started as an implementation plan. The shipped slice is narrower
+than the original target, and the code/docs should be read with this current
+truth:
+
+- Shipped release artifacts: Linux x86_64, macOS Apple Silicon, and macOS Intel
+  tarballs from `.github/workflows/release.yml`.
+- Shipped channels: GitHub Releases, Homebrew tap, `cargo install --git`, Nix
+  flake/source build, and the checksum-verifying `install.sh` path.
+- Shipped supervision templates: launchd, systemd user, and Windows Task
+  Scheduler XML, wired through `daemon install-service` / `uninstall-service`.
+- Not shipped as prebuilt release channels: Windows binaries, Linux musl,
+  Linux arm64, AUR, Scoop, and `.deb` packages.
+- Not shipped: macOS codesigning/notarization. README documents the Gatekeeper
+  quarantine workaround instead.
+- Release Please uses `release-type = "simple"` for changelog, manifest, and
+  `Cargo.toml`; `.github/workflows/release-lockfile.yml` owns `Cargo.lock`
+  synchronization for release PRs.
+
 ## Evidence base
 
 - ncspot CI matrix: ubuntu-latest, ubuntu-24.04-arm, macos-14, windows-latest. Each gets a different audio backend default.
@@ -62,36 +82,52 @@ std::env::set_var("PULSE_PROP_stream.description", "Spotify (spotuify)");
 - Windows: SMTC requires a window handle. Same strategy as macOS — hidden window only when a UI is up.
 
 ### Cross-compilation & releases
-- Use `cargo dist` or hand-rolled `cargo build --target <triple>` matrix in CI.
-- Targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `x86_64-pc-windows-msvc`.
-- Each release artifact is a tarball/zip with: `spotuify` binary, `LICENSE`, `README.md`, `install/` directory with platform service files, completions for bash/zsh/fish/PowerShell.
-- macOS: codesign + notarize via Apple Developer account. The non-notarized binary triggers Gatekeeper warnings.
-- Linux musl build for portability (alpine, NixOS, containers).
-- Windows: signed with self-signed cert at minimum; document SmartScreen workaround. Long-term: EV cert.
+- Current implementation is a hand-rolled `cargo build --target <triple>` matrix
+  in `.github/workflows/release.yml`, not `cargo dist`.
+- Current release targets:
+  `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, and
+  `x86_64-apple-darwin`.
+- Each current release artifact is a tarball with the `spotuify` binary,
+  `install.sh`, `README.md`, `install/` service templates, and `docs/recipes/`.
+- macOS tarballs are not signed or notarized today. README documents the
+  Gatekeeper quarantine workaround and points users at checksums/provenance.
+- Linux musl, Linux arm64, and Windows remain source-build paths, not published
+  binary artifacts.
 
 ### Distribution channels
 - **Homebrew tap**: separate repo `planetaryescape/homebrew-spotuify`, auto-bumped by the tag-driven release workflow.
-- **AUR package**: `spotuify-bin` (binary) + `spotuify` (source). PKGBUILD in a separate AUR repo.
-- **Scoop manifest**: `spotuify` in a separate `bhekanik/scoop-bucket` repo.
+- **AUR package**: not shipped yet.
+- **Scoop manifest**: not shipped yet.
 - **Nix flake**: `flake.nix` in main repo following spotatui pattern.
-- **cargo-deb**: Debian package via CI for Ubuntu/Debian users.
-- **GitHub Releases**: source of truth for all artifacts; checksums + signature files attached.
+- **cargo-deb**: not in the current release matrix.
+- **GitHub Releases**: source of truth for tarballs; checksums + provenance attestations attached.
 - Document `cargo install spotuify` works for developers who want from-source.
 
 ### CLI completions and man pages
 - `spotuify generate completions bash|zsh|fish|powershell|elvish` (clap-derived).
 - `spotuify generate man-page` outputs man-page source.
-- Built into release artifacts under `install/completions/` and `install/man/`.
+- Current release artifacts do not bundle generated completion or man-page
+  files. Generate them locally from the installed binary when needed.
 
 ### release-please integration
-- Existing `.release-please-manifest.json` and `release-please-config.json` get wired to publish artifacts.
-- `cargo dist init` integrates with release-please.
-- Each release bumps version in `Cargo.toml`, generates changelog, builds matrix, uploads artifacts, bumps Homebrew tap.
+- `.release-please-manifest.json` and `release-please-config.json` drive the
+  release PR and changelog.
+- `release-type = "simple"` updates `CHANGELOG.md`, the manifest, and
+  workspace `Cargo.toml`. It does not update `Cargo.lock` by itself.
+- `.github/workflows/release-lockfile.yml` runs only on same-repo
+  release-please PRs and commits `Cargo.lock` when `cargo update --workspace`
+  changes workspace package versions.
+- The tag-driven release workflow decides artifact scope with
+  `scripts/release_change_scope.sh`; docs-only or metadata-only tags can create
+  a GitHub Release without rebuilding binaries or Homebrew.
 
 ## Platform-specific gotchas
 
 ### Linux
-- Secret Service required; document GNOME Keyring / KWallet prerequisite or `--allow-file-credentials`.
+- Secret Service is required for stable Linux credential storage; document the
+  GNOME Keyring / KWallet prerequisite and fail clearly when DBus/keyring is
+  unavailable. The headless encrypted-file fallback remains planned, not a
+  stable CLI flag.
 - `XDG_RUNTIME_DIR` may be unset on minimal systems; fall back to `/run/user/$uid/` then `/tmp/`.
 - PipeWire is now ubiquitous on modern distros; alsa-backend works through pipewire-alsa compatibility shim by default.
 
@@ -114,37 +150,40 @@ std::env::set_var("PULSE_PROP_stream.description", "Spotify (spotuify)");
 2. [x] Centralize path resolution in `spotuify-protocol::paths`. Runtime/socket/cache/config/data paths no longer use cache dir for sockets. Windows named-pipe paths and IPC aliases are pre-staged; the daemon accept loop still needs the final named-pipe wrapper before Windows IPC is fully live.
 3. [x] Add Pulse env vars in `spotuify-player::embedded` init (Linux-only `#[cfg]`).
 4. [x] Author launchd plist, systemd unit, Windows Task XML. Add `daemon install-service`/`uninstall-service` subcommands.
-5. [x] Set up release matrices in `.github/workflows/release.yml` and `.github/workflows/release-matrix.yml`.
-6. [x] CI matrix covers Linux GNU, Linux musl, macOS arm64, macOS Intel, and Windows MSVC. Linux arm64 remains a release-matrix follow-up.
-7. [x] Apple Developer signing key setup; codesign + notarize in CI via env-stored credentials is classified as external release-ops work, not repo implementation.
+5. [x] Set up the release matrix in `.github/workflows/release.yml`.
+6. [x] Release workflow covers Linux GNU x86_64, macOS arm64, and macOS Intel. Linux musl, Linux arm64, and Windows remain release-matrix follow-ups.
+7. [ ] Apple Developer signing key setup; codesign + notarize in CI remains external release-ops work.
 8. [x] Homebrew formula generation/update workflow exists. The separate tap repo/token must be provisioned outside this repo.
-9. [x] AUR PKGBUILD repo + maintenance docs are classified as distribution-channel follow-up outside this repo.
-10. [x] Scoop bucket repo + manifest are classified as distribution-channel follow-up outside this repo.
+9. [ ] AUR PKGBUILD repo + maintenance docs are classified as distribution-channel follow-up outside this repo.
+10. [ ] Scoop bucket repo + manifest are classified as distribution-channel follow-up outside this repo.
 11. [x] Nix flake.
-12. [x] cargo-deb integration in the release matrix.
+12. [ ] cargo-deb integration in the release matrix.
 13. [x] Per-platform quickstart sections in README rewritten. Clean-VM verification remains manual release QA.
 14. [x] Headless encrypted-file credentials are deliberately not documented as a stable flag; README says the fallback is planned, not shipped.
 15. [x] Document the Windows/macOS daemon-mode media-key limitation in troubleshooting.
 
 ## Verification
 
-- Ubuntu 24.04 fresh install: `apt-get install spotuify` (via .deb) works, `spotuify doctor` clean, `spotuify login` round-trips through Secret Service.
-- Fedora 42: same via dnf or `cargo install`.
-- Arch Linux: `yay -S spotuify-bin` works.
-- macOS Sequoia (M1 + Intel): `brew tap planetaryescape/spotuify && brew install spotuify` works, `spotuify login` round-trips to Keychain.
-- Windows 11: `scoop install spotuify` works, Credential Manager round-trip succeeds, named-pipe IPC works.
-- Headless Linux server (no DBus): `spotuify --allow-file-credentials login` works.
-- `systemctl --user start spotuify-daemon` on Linux → daemon running, survives logout if `loginctl enable-linger`.
-- `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.spotuify.daemon.plist` on macOS → daemon running.
-- A GH Release tagged via release-please produces all six binary artifacts with valid checksums and codesigning where applicable.
-- `spotuify generate completions zsh > _spotuify && fpath=(. $fpath)` makes tab-completion work in a fresh zsh.
+Current release QA should verify:
+
+- GitHub Release tag produces Linux x86_64, macOS Apple Silicon, and macOS
+  Intel tarballs with valid `.sha256` files and provenance attestations.
+- Homebrew install/upgrade works from `planetaryescape/spotuify`.
+- `cargo install --git https://github.com/planetaryescape/spotuify --tag v{version} --locked spotuify` installs the tagged version.
+- `install.sh` installs the Linux x86_64 archive after checksum verification.
+- `systemctl --user start spotuify-daemon` on Linux starts the user service.
+- `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.spotuify.daemon.plist` on macOS starts the user service.
 - `scripts/cargo-test -p spotuify-mcp default_socket_path_uses_shared_runtime_resolver --quiet` and `scripts/cargo-test -p spotuify-protocol default_socket_path_uses_shared_runtime_resolver --quiet` cover shared socket-path resolution.
+
+AUR, Scoop, Windows prebuilt binaries, `.deb`, Linux musl, and Linux arm64 are
+not current release verification gates because those channels are not shipped.
 
 ## Definition of done
 
 The shipped Phase 11 slice provides cross-platform credential-store
 selection, centralized path resolution, service-file templates, install
-commands, CI/release matrices, Nix/deb/Homebrew plumbing, and README
-quickstarts. Fully verified signed distribution across every external
-channel (Apple notarization, AUR, Scoop, clean-VM smoke) remains release
-operations follow-up rather than core app functionality.
+commands, a three-target release matrix, Nix/Homebrew/source-build paths, and
+README quickstarts. Fully verified signed distribution across every external
+channel (Apple notarization, AUR, Scoop, `.deb`, Windows prebuilt binaries,
+clean-VM smoke) remains release-operations follow-up rather than core app
+functionality.

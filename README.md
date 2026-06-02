@@ -165,16 +165,20 @@ Releases are managed by Release Please and GitHub Actions.
 The flow:
 
 1. Merge normal feature/fix PRs into `main` using conventional commit messages such as `fix: improve diagnostics` or `feat: add playlist view`.
-2. Release Please opens or updates a release PR with the next version, `CHANGELOG.md`, `Cargo.toml`, and `Cargo.lock` updates.
-3. Merge the Release Please PR.
-4. Release Please creates the GitHub release and tag.
-5. The release workflow builds macOS arm64 and Intel binaries, uploads them to the GitHub release, generates a Homebrew formula, and updates the tap.
+2. Release Please opens or updates a release PR with the next version, `CHANGELOG.md`, `.release-please-manifest.json`, and `Cargo.toml`.
+3. The release-lockfile workflow runs on that release PR and commits `Cargo.lock` if `cargo update --workspace` changes the workspace package versions.
+4. Merge the Release Please PR once CI is green.
+5. Release Please creates the GitHub release and tag.
+6. The tag-driven release workflow builds Linux x86_64, macOS arm64, and macOS Intel binaries, uploads them to the GitHub release, generates a Homebrew formula, and updates the tap.
 
 Required GitHub setup:
 
 ```text
+Secret: RELEASE_PLEASE_TOKEN
 Secret: HOMEBREW_TAP_TOKEN
 ```
+
+`RELEASE_PLEASE_TOKEN` should be a PAT with `contents:write` and workflow permission so Release Please tags trigger the downstream release workflow. The workflows fall back to `GITHUB_TOKEN`, but tags created with the default token do not trigger other workflows.
 
 `HOMEBREW_TAP_TOKEN` must be a token with write access to the Homebrew tap repository:
 
@@ -187,7 +191,7 @@ The tap repo should contain a `Formula/` directory. The release workflow will cr
 Manual release rebuild:
 
 ```text
-GitHub Actions -> Release -> Run workflow -> tag v0.1.0
+GitHub Actions -> Release -> Run workflow -> select an existing v* tag
 ```
 
 ## First Run
@@ -388,8 +392,8 @@ Command behavior:
 
 - `spotuify` opens the TUI. If config or OAuth are missing, it starts setup first, syncs, then opens the TUI.
 - `spotuify onboard` runs the same setup flow intentionally: a browser login, then the first sync.
-- `spotuify login` opens the browser to log in and stores the OAuth token in the OS keychain plus local auth cache.
-- `spotuify logout` removes the OS keychain token and local auth cache.
+- `spotuify login` opens the browser to log in and stores the OAuth token in the platform credential vault plus local auth cache.
+- `spotuify logout` removes the platform credential vault token and local auth cache.
 - `spotuify doctor` checks config, token status, API access timings, visible devices, recent playback, queue, playlists, logs, cache version, lyrics, MCP, and player backend state.
 - `spotuify logs path` prints the log file path.
 - `spotuify logs tail --follow --format json` streams structured log lines.
@@ -663,9 +667,9 @@ If librespot cannot bind an audio backend, the daemon reports a player failure/d
 
 ## Security Notes
 
-- The default dev-app OAuth token is stored in the OS keychain and mirrored to `<data_dir>/auth/token.json` with mode `0600` on Unix. The mirror is guarded by `<data_dir>/auth/token.lock` so daemon and CLI refreshes do not race.
+- The default dev-app OAuth token is stored in the platform credential vault and mirrored to `<data_dir>/auth/token.json` with mode `0600` on Unix. The mirror is guarded by `<data_dir>/auth/token.lock` so daemon and CLI refreshes do not race.
 - First-party/keymaster auth is experimental and opt-in via `SPOTUIFY_USE_FIRST_PARTY=1`; that path stores only refresh token + scopes in `first-party.json`.
-- `spotuify logout` removes the stored token from Keychain and the local auth cache.
+- `spotuify logout` removes the stored token from the platform credential vault and the local auth cache.
 - To re-authenticate, run `spotuify login` again.
 - `spotuify auth bearer` and `spotuify config get client_secret` require `--reveal-secret` before printing secrets.
 - Config files are written with mode `0600` on Unix. Prefer `SPOTUIFY_CLIENT_SECRET` when you do not want a client secret written to disk.

@@ -48,7 +48,7 @@ impl QueueWarmScheduler {
     }
 
     pub(crate) fn enqueue_uris(&self, uris: Vec<String>) {
-        self.enqueue(uris, false);
+        self.enqueue(uris, true);
     }
 
     fn enqueue(&self, uris: Vec<String>, audio_prewarm: bool) {
@@ -316,7 +316,7 @@ async fn warm_lyrics(state: &DaemonState, item: &MediaItem) {
 
 #[cfg(test)]
 mod tests {
-    use super::{unique_warmable_uris, upcoming_queue_uris};
+    use super::{unique_warmable_uris, upcoming_queue_uris, QueueWarmScheduler};
     use spotuify_core::{MediaItem, MediaKind, Queue};
 
     fn item(uri: &str, kind: MediaKind) -> MediaItem {
@@ -370,5 +370,15 @@ mod tests {
                 "spotify:episode:c".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn added_queue_uris_request_audio_prewarm() {
+        let (scheduler, mut rx) = QueueWarmScheduler::new();
+
+        scheduler.enqueue_uris(vec!["spotify:track:next".to_string()]);
+
+        let request = rx.try_recv().expect("queue warm request");
+        assert!(request.audio_prewarm);
     }
 }

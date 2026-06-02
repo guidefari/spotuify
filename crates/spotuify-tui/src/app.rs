@@ -2417,6 +2417,9 @@ fn request_force_lyrics(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncRes
     }
     app.lyrics_loading = true;
     app.lyrics_error = None;
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
     let async_tx = async_tx.clone();
     tokio::spawn(async move {
         let started = Instant::now();
@@ -2441,6 +2444,24 @@ fn request_force_lyrics(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncRes
             elapsed_ms: started.elapsed().as_millis(),
         })));
     });
+}
+
+fn request_force_media(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    request_force_cover(app, async_tx);
+    request_force_lyrics(app, async_tx);
+}
+
+fn request_force_cover(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    let Some(url) = app
+        .playback
+        .item
+        .as_ref()
+        .and_then(|item| item.image_url.clone())
+    else {
+        return;
+    };
+    app.current_art_url = Some(url.clone());
+    spawn_cover_fetch(url, async_tx.clone());
 }
 
 /// Fire a single cover-art fetch for `url`, decode the response, and
@@ -3767,6 +3788,7 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
             Some(TuiAction::AddSelectionToPlaylist)
         }
         (KeyCode::Char('l'), KeyModifiers::NONE) => Some(TuiAction::LikeSelection),
+        (KeyCode::Char('U'), _) => Some(TuiAction::RefreshMedia),
         (KeyCode::Char('u'), KeyModifiers::NONE) => {
             // Contextual: on Diagnostics, `u` undoes the last reversible
             // op (the safety-net key); everywhere else it refreshes.
@@ -3840,6 +3862,7 @@ fn apply_tui_action(
             }
             app.request_refresh();
         }
+        TuiAction::RefreshMedia => request_force_media(app, async_tx),
         TuiAction::StartSearchInput => {
             app.screen = Screen::Search;
             app.search_input_active = true;
@@ -6727,6 +6750,24 @@ mod tests {
             refresh_plan(&app).lyrics,
             "refresh plan must still enqueue the lyrics request"
         );
+    }
+
+    #[test]
+    fn force_media_refresh_requests_cover_and_lyrics_for_current_track() {
+        let mut app = test_app();
+        let mut current = item("spotify:track:lyrics", "Lyrics Track");
+        current.image_url = Some("https://i.scdn.co/image/current".to_string());
+        app.playback.item = Some(current);
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        request_force_media(&mut app, &tx);
+
+        assert_eq!(
+            app.current_art_url.as_deref(),
+            Some("https://i.scdn.co/image/current")
+        );
+        assert!(app.lyrics_loading);
+        assert!(app.lyrics_error.is_none());
     }
 
     #[test]

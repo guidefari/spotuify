@@ -321,6 +321,54 @@ pub async fn ipc_lyrics(command: crate::LyricsCommand) -> Result<()> {
     }
 }
 
+pub async fn ipc_refresh_media(format: OutputFormat) -> Result<()> {
+    let playback = daemon_current_playback().await?.unwrap_or_default();
+    let item = playback
+        .item
+        .context("no active track; start playback before refreshing media")?;
+
+    let cover_art = match item.image_url.clone() {
+        Some(url) => match daemon_request(Request::CoverArt { url }).await? {
+            ResponseData::CoverArt {
+                path,
+                cache_hit,
+                bytes,
+                ..
+            } => Some(output::MediaRefreshCover {
+                path,
+                cache_hit,
+                bytes,
+            }),
+            _ => return unexpected_response(),
+        },
+        None => None,
+    };
+
+    let lyrics_data = daemon_request(Request::LyricsGet {
+        track_uri: Some(item.uri.clone()),
+        force_refresh: true,
+    })
+    .await?;
+    let lyrics = match lyrics_data {
+        ResponseData::Lyrics { lyrics, offset_ms } => output::MediaRefreshLyrics {
+            found: lyrics.is_some(),
+            lines: lyrics.as_ref().map_or(0, |lyrics| lyrics.lines.len()),
+            offset_ms,
+        },
+        _ => return unexpected_response(),
+    };
+
+    output::print_media_refresh(
+        &output::MediaRefreshOutput {
+            track_uri: item.uri,
+            track_name: item.name,
+            cover_art,
+            lyrics,
+        },
+        format,
+    )
+}
+
 pub async fn ipc_sync(target: SyncTargetData, format: OutputFormat) -> Result<()> {
     match daemon_request(Request::Sync { target }).await? {
         ResponseData::Sync { summary } => output::print_sync_summary(&summary, format),
@@ -859,7 +907,7 @@ fn cli_login_progress(event: spotuify_spotify::auth::LoginProgress) {
         }
         LoginProgress::WaitingForCallback => {}
         LoginProgress::Saved => {
-            eprintln!("Spotify auth saved in macOS Keychain.");
+            eprintln!("Spotify auth saved in the platform credential vault.");
         }
     }
 }

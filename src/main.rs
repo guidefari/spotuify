@@ -70,13 +70,13 @@ struct Cli {
 enum Command {
     /// Guided BYO Spotify app setup: config, browser login, and initial Spotify sync.
     Onboard,
-    /// Log in to Spotify in your browser and store a refresh token in the keychain.
+    /// Log in to Spotify in your browser and store a refresh token in the platform credential vault.
     Login {
         /// Override the redirect URI (only used with your own SPOTUIFY_CLIENT_ID app).
         #[arg(long)]
         redirect_uri: Option<String>,
     },
-    /// Remove the stored Spotify token from macOS Keychain.
+    /// Remove the stored Spotify token from the platform credential vault and local auth cache.
     Logout,
     /// Authentication-adjacent debug commands.
     Auth {
@@ -290,6 +290,12 @@ enum Command {
     Lyrics {
         #[command(subcommand)]
         command: LyricsCommand,
+    },
+    /// Refresh current track cover art and lyrics.
+    RefreshMedia {
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
     },
     /// Configure the audio visualizer.
     Viz {
@@ -806,7 +812,7 @@ fn cli_login_progress(event: spotuify_spotify::auth::LoginProgress) {
         }
         LoginProgress::WaitingForCallback => {}
         LoginProgress::Saved => {
-            println!("Spotify auth saved in macOS Keychain.");
+            println!("Spotify auth saved in the platform credential vault.");
         }
     }
 }
@@ -1111,6 +1117,7 @@ async fn run() -> Result<()> {
         Some(Command::Playlist { command }) => commands::ipc_playlist(command).await,
         Some(Command::Library { command }) => commands::ipc_library(command).await,
         Some(Command::Lyrics { command }) => commands::ipc_lyrics(command).await,
+        Some(Command::RefreshMedia { format }) => commands::ipc_refresh_media(format).await,
         Some(Command::Viz { command }) => commands::ipc_viz(command).await,
         Some(Command::Like { target, format }) => {
             commands::ipc_save_target("like", &target, format).await
@@ -3026,6 +3033,16 @@ support_email = "user@example.com"
                 command: LyricsCommand::Offset { offset, .. },
             }) => assert_eq!(offset, "+50ms"),
             _ => panic!("expected lyrics offset command"),
+        }
+    }
+
+    #[test]
+    fn refresh_media_command_parses_output_format() {
+        let cli = Cli::try_parse_from(["spotuify", "refresh-media", "--format", "json"]).unwrap();
+
+        match cli.command {
+            Some(Command::RefreshMedia { format }) => assert_eq!(format, OutputFormat::Json),
+            _ => panic!("expected refresh-media command"),
         }
     }
 

@@ -26,8 +26,8 @@ Usage: spotuify [OPTIONS] [COMMAND]
 
 Commands:
   onboard         Guided BYO Spotify app setup: config, browser login, and initial Spotify sync
-  login           Log in to Spotify in your browser and store a refresh token in the keychain
-  logout          Remove the stored Spotify token from macOS Keychain
+  login           Log in to Spotify in your browser and store a refresh token in the platform credential vault
+  logout          Remove the stored Spotify token from the platform credential vault and local auth cache
   auth            Authentication-adjacent debug commands
   doctor          Check config, auth, Spotify API access, and visible devices
   daemon          Manage the local spotuify daemon

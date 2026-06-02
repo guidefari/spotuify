@@ -14,7 +14,7 @@ use spotuify_spotify::selection;
 
 use crate::analytics::AnalyticsStore;
 use crate::retention::retention_cutoffs;
-use crate::state::DaemonState;
+use crate::state::{DaemonState, FastTransportStatus};
 
 const LYRICS_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const LYRICS_NEGATIVE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -25,6 +25,7 @@ const LYRICS_NEGATIVE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const MERCURY_LYRICS_TIMEOUT: Duration = Duration::from_secs(6);
 const MUTATION_BODY_TIMEOUT: Duration = Duration::from_secs(30);
 const TRANSPORT_BACKEND_TIMEOUT: Duration = Duration::from_secs(5);
+const FAST_TRANSPORT_TIMEOUT: Duration = Duration::from_millis(250);
 const DEVICE_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const DEVICE_REGISTRY_TIMEOUT: Duration = Duration::from_secs(8);
 const DEVICE_REGISTRY_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -167,6 +168,10 @@ async fn dispatch(
             let op_kind = playback_command_operation_kind(&command);
             let viz_playing = playback_command_viz_state(&command);
             let state_for = state.clone();
+            let pre_command_playback = state.snapshot_playback();
+            let command_kind = playback_command_kind(command.clone());
+            let fast_transport =
+                transport_cmd_for_command_kind(&command_kind, &pre_command_playback);
             reject_if_auth_blocked(&state)?;
             // Bump the mutation seq BEFORE the Spotify call so any
             // background poll-in-flight (sync_loop, spawn_*_refresh)
@@ -200,6 +205,15 @@ async fn dispatch(
                     playback: Some(state.snapshot_playback()),
                 });
             }
+            let fast_transport_result =
+                if let Some((cmd, effective_command)) = fast_transport.as_ref() {
+                    apply_fast_transport(&state, cmd.clone(), effective_command, action).await
+                } else {
+                    None
+                };
+            let background_command_kind = fast_transport
+                .map(|(_, effective_command)| effective_command)
+                .unwrap_or(command_kind);
             spawn_optimistic_mutation(
                 &state,
                 op_kind,
@@ -213,21 +227,34 @@ async fn dispatch(
                 }),
                 mutation_lane,
                 move |_op_id| async move {
-                    let mut client = state_for.spotify_client().await?;
-                    // Belt-and-suspenders: catch a latch flip between the
-                    // sync pre-check and the body's spotify_client() call.
-                    if let Some(err) = state_for.auth_gate_error() {
-                        return Err(anyhow::Error::new(err));
-                    }
-                    let command_kind = playback_command_kind(command);
                     // Capture seq INSIDE the closure so we measure against
                     // the mutation that just fired (the bump happened
                     // before `spawn_optimistic_mutation`). A second mutation
                     // that arrives while this awaits will advance the seq
                     // and `persist_command_result` will drop us.
                     let captured_seq = state_for.current_mutation_seq();
-                    let result =
-                        execute_with_device_recovery(&state_for, &mut client, command_kind).await?;
+                    let result = if let Some(result) = fast_transport_result {
+                        result
+                    } else {
+                        // Belt-and-suspenders: catch a latch flip between the
+                        // sync pre-check and the body's spotify_client() call.
+                        if let Some(err) = state_for.auth_gate_error() {
+                            return Err(anyhow::Error::new(err));
+                        }
+                        if let Some(result) =
+                            try_embedded_transport(&state_for, &background_command_kind).await
+                        {
+                            result
+                        } else {
+                            let mut client = state_for.spotify_client().await?;
+                            execute_with_device_recovery(
+                                &state_for,
+                                &mut client,
+                                background_command_kind,
+                            )
+                            .await?
+                        }
+                    };
                     // Phase 1: persist BEFORE the event so subscribers
                     // that fetch on the event see fresh state.
                     let outcome = persist_command_result(
@@ -279,6 +306,9 @@ async fn dispatch(
                             action: action.to_string(),
                             devices: result.devices.clone(),
                         });
+                    }
+                    if result.request_refresh && outcome.playback.is_none() {
+                        spawn_playback_refresh(state_for.clone());
                     }
                     emit_mutation_finished(&state_for, action, &message);
                     Ok(())
@@ -3503,63 +3533,8 @@ async fn execute_with_device_recovery(
     client: &mut spotuify_spotify::SpotifyClient,
     command: CommandKind,
 ) -> anyhow::Result<spotuify_spotify::actions::CommandResult> {
-    // Prefer the embedded librespot (Spirc) path — instant, no HTTP
-    // round-trip, and it still works while Spotify read endpoints are
-    // in cooldown. Do not preflight with GET /me/player here: that
-    // read path is exactly what can be rate-limited during startup
-    // sync, and a transport command should not inherit that cooldown.
-    let transport_snapshot = state.snapshot_playback();
-    if let Some((cmd, effective_command)) =
-        transport_cmd_for_command_kind(&command, &transport_snapshot)
-    {
-        let mut player_connected = state.player_is_connected().await;
-        if !player_connected {
-            let device_name = DaemonState::configured_device_name();
-            player_connected = match tokio::time::timeout(
-                DEVICE_RECOVERY_TIMEOUT,
-                state.reconnect_player(&device_name),
-            )
-            .await
-            {
-                Ok(Ok(_)) => true,
-                Ok(Err(err)) => {
-                    tracing::debug!(error = %err, "embedded device reconnect before transport failed");
-                    false
-                }
-                Err(_) => {
-                    tracing::debug!(
-                        timeout_secs = DEVICE_RECOVERY_TIMEOUT.as_secs(),
-                        "embedded device reconnect before transport timed out"
-                    );
-                    false
-                }
-            };
-        }
-        if player_connected {
-            match tokio::time::timeout(TRANSPORT_BACKEND_TIMEOUT, state.transport(cmd)).await {
-                Err(_) => {
-                    tracing::warn!(
-                        timeout_secs = TRANSPORT_BACKEND_TIMEOUT.as_secs(),
-                        "embedded transport timed out; falling back to Web API"
-                    );
-                }
-                Ok(result) => match result {
-                    Ok(()) => {
-                        return Ok(spotuify_spotify::actions::CommandResult {
-                            playback: local_transport_playback_snapshot(state, &effective_command),
-                            request_refresh: true,
-                            ..Default::default()
-                        });
-                    }
-                    Err(spotuify_player::PlayerError::Unsupported(_)) => {
-                        // Fall through to Web API.
-                    }
-                    Err(err) => {
-                        tracing::warn!(error = %err, "embedded transport failed; falling back to Web API");
-                    }
-                },
-            }
-        }
+    if let Some(result) = try_embedded_transport(state, &command).await {
+        return Ok(result);
     }
     match actions::execute(client, command.clone()).await {
         Ok(result) => Ok(result),
@@ -3614,6 +3589,71 @@ async fn execute_with_device_recovery(
     }
 }
 
+async fn try_embedded_transport(
+    state: &Arc<DaemonState>,
+    command: &CommandKind,
+) -> Option<spotuify_spotify::actions::CommandResult> {
+    // Prefer the embedded librespot (Spirc) path — instant, no HTTP
+    // round-trip, and it still works while Spotify read endpoints are
+    // in cooldown. Do not preflight with GET /me/player here: that
+    // read path is exactly what can be rate-limited during startup
+    // sync, and a transport command should not inherit that cooldown.
+    let transport_snapshot = state.snapshot_playback();
+    if let Some((cmd, effective_command)) =
+        transport_cmd_for_command_kind(command, &transport_snapshot)
+    {
+        let mut player_connected = state.player_is_connected().await;
+        if !player_connected {
+            let device_name = DaemonState::configured_device_name();
+            player_connected = match tokio::time::timeout(
+                DEVICE_RECOVERY_TIMEOUT,
+                state.reconnect_player(&device_name),
+            )
+            .await
+            {
+                Ok(Ok(_)) => true,
+                Ok(Err(err)) => {
+                    tracing::debug!(error = %err, "embedded device reconnect before transport failed");
+                    false
+                }
+                Err(_) => {
+                    tracing::debug!(
+                        timeout_secs = DEVICE_RECOVERY_TIMEOUT.as_secs(),
+                        "embedded device reconnect before transport timed out"
+                    );
+                    false
+                }
+            };
+        }
+        if player_connected {
+            match tokio::time::timeout(TRANSPORT_BACKEND_TIMEOUT, state.transport(cmd)).await {
+                Err(_) => {
+                    tracing::warn!(
+                        timeout_secs = TRANSPORT_BACKEND_TIMEOUT.as_secs(),
+                        "embedded transport timed out; falling back to Web API"
+                    );
+                }
+                Ok(result) => match result {
+                    Ok(()) => {
+                        return Some(spotuify_spotify::actions::CommandResult {
+                            playback: local_transport_playback_snapshot(state, &effective_command),
+                            request_refresh: true,
+                            ..Default::default()
+                        });
+                    }
+                    Err(spotuify_player::PlayerError::Unsupported(_)) => {
+                        // Fall through to Web API.
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, "embedded transport failed; falling back to Web API");
+                    }
+                },
+            }
+        }
+    }
+    None
+}
+
 fn local_transport_playback_snapshot(
     state: &DaemonState,
     command: &CommandKind,
@@ -3661,6 +3701,43 @@ fn local_transport_playback_snapshot(
     }
 
     Some(playback)
+}
+
+async fn apply_fast_transport(
+    state: &DaemonState,
+    cmd: crate::state::TransportCmd,
+    effective_command: &CommandKind,
+    action: &str,
+) -> Option<spotuify_spotify::actions::CommandResult> {
+    match state.transport_fast(cmd, FAST_TRANSPORT_TIMEOUT).await {
+        Ok(FastTransportStatus::Applied) => {
+            tracing::debug!(action, "fast local transport applied");
+            Some(local_transport_command_result(state, effective_command))
+        }
+        Ok(FastTransportStatus::Dispatched) => {
+            tracing::debug!(
+                timeout_ms = FAST_TRANSPORT_TIMEOUT.as_millis(),
+                action,
+                "fast local transport dispatched without waiting for backend ack"
+            );
+            Some(local_transport_command_result(state, effective_command))
+        }
+        Err(err) => {
+            tracing::debug!(error = %err, action, "fast local transport skipped");
+            None
+        }
+    }
+}
+
+fn local_transport_command_result(
+    state: &DaemonState,
+    effective_command: &CommandKind,
+) -> spotuify_spotify::actions::CommandResult {
+    spotuify_spotify::actions::CommandResult {
+        playback: local_transport_playback_snapshot(state, effective_command),
+        request_refresh: true,
+        ..Default::default()
+    }
 }
 
 async fn wait_for_preferred_device(client: &mut SpotifyClient) -> bool {
@@ -4285,7 +4362,7 @@ mod post_command_persist_tests {
     use tempfile::TempDir;
 
     use super::{
-        compute_optimistic_playback, dispatch, persist_command_result,
+        compute_optimistic_playback, dispatch, persist_command_result, playback_command_kind,
         transport_cmd_for_command_kind, DaemonState, ExpectedPlayback,
     };
 
@@ -4708,6 +4785,81 @@ mod post_command_persist_tests {
                 .expect("paused toggle with an item should resume locally");
         assert!(matches!(cmd, crate::state::TransportCmd::Resume));
         assert!(matches!(effective, CommandKind::Resume));
+    }
+
+    #[test]
+    fn fast_transport_freezes_toggle_before_optimistic_state() {
+        let playing = spotuify_core::Playback {
+            item: Some(track("spotify:track:test", "Test")),
+            is_playing: true,
+            ..Default::default()
+        };
+        let command_kind = playback_command_kind(PlaybackCommand::Toggle);
+        let (cmd, effective) = transport_cmd_for_command_kind(&command_kind, &playing)
+            .expect("playing toggle should freeze as pause");
+        assert!(matches!(cmd, crate::state::TransportCmd::Pause));
+        assert!(matches!(effective, CommandKind::Pause));
+
+        let mut optimistic_after_toggle = playing.clone();
+        optimistic_after_toggle.is_playing = false;
+        let (cmd, effective) =
+            transport_cmd_for_command_kind(&command_kind, &optimistic_after_toggle)
+                .expect("paused toggle should freeze as resume");
+        assert!(matches!(cmd, crate::state::TransportCmd::Resume));
+        assert!(matches!(effective, CommandKind::Resume));
+
+        assert!(
+            transport_cmd_for_command_kind(&command_kind, &spotuify_core::Playback::default())
+                .is_none()
+        );
+
+        let (cmd, effective) =
+            transport_cmd_for_command_kind(&playback_command_kind(PlaybackCommand::Next), &playing)
+                .expect("next should use fast local transport");
+        assert!(matches!(cmd, crate::state::TransportCmd::Next));
+        assert!(matches!(effective, CommandKind::Next));
+
+        let (cmd, effective) = transport_cmd_for_command_kind(
+            &playback_command_kind(PlaybackCommand::Previous),
+            &playing,
+        )
+        .expect("previous should use fast local transport");
+        assert!(matches!(cmd, crate::state::TransportCmd::Previous));
+        assert!(matches!(effective, CommandKind::Previous));
+
+        let (cmd, effective) = transport_cmd_for_command_kind(
+            &playback_command_kind(PlaybackCommand::Seek {
+                position_ms: 42_000,
+            }),
+            &playing,
+        )
+        .expect("seek should use fast local transport");
+        assert!(matches!(
+            cmd,
+            crate::state::TransportCmd::Seek {
+                position_ms: 42_000
+            }
+        ));
+        assert!(matches!(
+            effective,
+            CommandKind::Seek {
+                position_ms: 42_000
+            }
+        ));
+
+        let (cmd, effective) = transport_cmd_for_command_kind(
+            &playback_command_kind(PlaybackCommand::Volume { volume_percent: 50 }),
+            &playing,
+        )
+        .expect("volume should use fast local transport");
+        assert!(matches!(
+            cmd,
+            crate::state::TransportCmd::Volume { percent: 50 }
+        ));
+        assert!(matches!(
+            effective,
+            CommandKind::Volume { volume_percent: 50 }
+        ));
     }
 
     #[tokio::test]

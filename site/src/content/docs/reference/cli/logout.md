@@ -1,13 +1,13 @@
 ---
 title: "spotuify logout"
-description: "Remove the stored Spotify token from macOS Keychain"
+description: "Remove the stored Spotify token from the platform credential vault and local auth cache"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Remove the stored Spotify token from macOS Keychain
+Remove the stored Spotify token from the platform credential vault and local auth cache
 
 ## Examples
 
@@ -18,7 +18,7 @@ spotuify logout
 ## Help
 
 ```text
-Remove the stored Spotify token from macOS Keychain
+Remove the stored Spotify token from the platform credential vault and local auth cache
 
 Usage: spotuify logout [OPTIONS]
 

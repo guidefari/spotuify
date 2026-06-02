@@ -73,6 +73,21 @@ Start music, quit with `q`, then check:
 spotuify status
 ```
 
+## Opening the TUI is not a refresh
+
+The TUI seeds Home from cached daemon state. It does not fetch playback,
+devices, queue, playlists, or library data from Spotify just because a window
+opened. That keeps provider budget available for the action you actually take,
+like play, transfer, queue, or search.
+
+Force fresh data when you need it:
+
+```bash
+spotuify sync library
+spotuify playlists --format json
+spotuify doctor
+```
+
 ## Recover a stale session
 
 ```bash

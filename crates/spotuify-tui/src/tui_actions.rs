@@ -20,6 +20,7 @@ pub enum TuiAction {
     JumpBottom,
     Back,
     Refresh,
+    RefreshMedia,
     StartSearchInput,
     StartListFilter,
     SubmitSearch,
@@ -271,6 +272,14 @@ pub fn default_actions() -> Vec<ActionSpec> {
             contexts: ALL_CONTEXTS,
             category: "Sync",
             cli: Some("spotuify sync playback"),
+        },
+        ActionSpec {
+            id: A::RefreshMedia,
+            label: "Refresh Media",
+            shortcut: "U",
+            contexts: ALL_CONTEXTS,
+            category: "Sync",
+            cli: Some("spotuify refresh-media"),
         },
         ActionSpec {
             id: A::MoveDown,
@@ -629,6 +638,7 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         | TuiAction::OpenDiagnostics
         | TuiAction::OpenLyrics
         | TuiAction::Refresh
+        | TuiAction::RefreshMedia
         | TuiAction::StartSearchInput
         | TuiAction::SubmitSearch
         | TuiAction::PlayPause
@@ -1013,6 +1023,7 @@ mod tests {
             TuiAction::JumpBottom,
             TuiAction::Back,
             TuiAction::Refresh,
+            TuiAction::RefreshMedia,
             TuiAction::StartSearchInput,
             TuiAction::StartListFilter,
             TuiAction::SubmitSearch,

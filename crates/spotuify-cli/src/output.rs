@@ -44,6 +44,80 @@ pub struct MutationOutputError {
     pub error: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct MediaRefreshOutput {
+    pub track_uri: String,
+    pub track_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cover_art: Option<MediaRefreshCover>,
+    pub lyrics: MediaRefreshLyrics,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MediaRefreshCover {
+    pub path: String,
+    pub cache_hit: bool,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MediaRefreshLyrics {
+    pub found: bool,
+    pub lines: usize,
+    pub offset_ms: i64,
+}
+
+pub fn print_media_refresh(summary: &MediaRefreshOutput, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(summary),
+        OutputFormat::Jsonl => print_json_line(summary),
+        OutputFormat::Csv => {
+            println!("track_uri,track_name,cover_path,cover_cache_hit,cover_bytes,lyrics_found,lyrics_lines,lyrics_offset_ms");
+            let empty = String::new();
+            let cover = summary.cover_art.as_ref();
+            println!(
+                "{}",
+                csv_row(&[
+                    &summary.track_uri,
+                    &summary.track_name,
+                    cover.map_or(empty.as_str(), |cover| cover.path.as_str()),
+                    &cover.is_some_and(|cover| cover.cache_hit).to_string(),
+                    &cover.map_or(0, |cover| cover.bytes).to_string(),
+                    &summary.lyrics.found.to_string(),
+                    &summary.lyrics.lines.to_string(),
+                    &summary.lyrics.offset_ms.to_string(),
+                ])
+            );
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            println!("{}", summary.track_uri);
+            Ok(())
+        }
+        OutputFormat::Table => {
+            println!("Track: {} ({})", summary.track_name, summary.track_uri);
+            match &summary.cover_art {
+                Some(cover) => println!(
+                    "Cover: {} ({} bytes, cache_hit={})",
+                    cover.path, cover.bytes, cover.cache_hit
+                ),
+                None => println!("Cover: none"),
+            }
+            println!(
+                "Lyrics: {} ({} lines, offset {} ms)",
+                if summary.lyrics.found {
+                    "found"
+                } else {
+                    "not found"
+                },
+                summary.lyrics.lines,
+                summary.lyrics.offset_ms
+            );
+            Ok(())
+        }
+    }
+}
+
 pub fn print_playback(playback: &Playback, format: OutputFormat) -> Result<()> {
     match format {
         OutputFormat::Json => print_json(playback),

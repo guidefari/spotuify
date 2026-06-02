@@ -30,6 +30,7 @@ Representative request variants:
 
 | Request | CLI surface |
 | --- | --- |
+| `ClientSeed` | TUI/event clients only; cached startup seed |
 | `PlaybackGet` | `spotuify status` |
 | `PlaybackCommand` | `pause`, `resume`, `toggle`, `next`, `previous`, `seek`, `volume`, `shuffle`, `repeat` |
 | `DevicesList` | `spotuify devices` |
@@ -43,6 +44,8 @@ Representative request variants:
 | `LibrarySave` | `spotuify like`, `spotuify save` |
 | `LyricsGet` | `spotuify lyrics show` |
 | `SetVizEnabled` | `spotuify viz enable/disable` |
+
+`ClientSeed` is deliberately client-specific. It hydrates event-driven clients from cached playback, queue, devices, recent items, and visualizer state. It must not trigger Spotify refreshes; live refreshes belong to daemon warm/sync loops or explicit CLI requests.
 
 ## Admin requests
 

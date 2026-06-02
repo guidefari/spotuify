@@ -2,7 +2,23 @@
 
 > Independent second-pass audit conducted against [`security-audit-rubric-v2.md`](./security-audit-rubric-v2.md). Performed 2026-05-27 on commit `98f707c` (`release: prepare spotuify 0.1.24`).
 
-## Verdict: **Ship now, with three fixable Medium follow-ups**
+## Current status on 2026-06-02
+
+This report is historical evidence, not the current bug list. The original
+Medium findings have been fixed on `main`:
+
+| Finding | Current status | Code truth |
+|---|---|---|
+| M1 - floating GitHub Action tags | Resolved | `.github/workflows/*.yml` pins third-party actions to commit SHAs with tag comments. |
+| M2 - missing license gate | Resolved | `deny.toml` has a `[licenses]` allowlist, and CI runs `cargo deny check advisories licenses`. |
+| M3 - MCP HTTP origin/host hardening | Resolved by Host validation | `crates/spotuify-mcp/src/http.rs` requires a loopback `Host`; `Origin` is still optional for non-browser clients. |
+| L2 - log directory mode | Resolved | `crates/spotuify-daemon/src/logging.rs` sets the log directory to `0700` on Unix. |
+| L5 - site dependency lags | Resolved | `site/package.json` is on the audited target versions: Starlight `0.39.2`, Astro `6.3.6`, Sharp `0.34.5`. |
+
+Still valid: macOS release archives are unsigned/not notarized, and the two
+accepted RustSec advisories remain documented in `deny.toml`.
+
+## Original verdict: **Ship now, with three fixable Medium follow-ups**
 
 No Critical or High findings. The binary, daemon, and docs site behave the way a Spotify controller should: tokens stay in the OS credential vault, the live bearer is never persisted, network egress is limited to Spotify endpoints (+ optional lyrics) and library `lrclib.net`, the daemon socket lives in user-owned runtime dirs, the MCP HTTP bridge is loopback + bearer-gated, and there is no telemetry, no auto-updater, no silent autostart.
 

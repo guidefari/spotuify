@@ -507,8 +507,8 @@ pub fn stored_credential_snapshot() -> SpotifyResult<Option<StoredCredential>> {
 }
 
 /// Disk-only credential snapshot for daemon recovery probes. This never
-/// touches the OS keychain, so it is safe to call while an auth-required
-/// latch is suppressing interactive keychain prompts.
+/// touches the platform credential vault, so it is safe to call while an
+/// auth-required latch is suppressing interactive credential prompts.
 pub fn stored_credential_disk_snapshot() -> Option<StoredCredential> {
     if let Some(creds) = load_first_party_from_disk() {
         return Some(StoredCredential::FirstParty(creds));

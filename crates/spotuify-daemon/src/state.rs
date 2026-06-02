@@ -108,15 +108,14 @@ enum PlayerCommand {
         uri: String,
         resp: oneshot::Sender<PlayerResult<()>>,
     },
-    /// Transport commands routed through the embedded librespot
-    /// backend (Spirc) — bypasses the slow Web API path.
-    Transport {
-        cmd: TransportCmd,
-        resp: oneshot::Sender<PlayerResult<()>>,
-    },
     Shutdown {
         resp: oneshot::Sender<()>,
     },
+}
+
+struct PlayerTransportCommand {
+    cmd: TransportCmd,
+    resp: oneshot::Sender<PlayerResult<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +129,12 @@ pub(crate) enum TransportCmd {
     Volume { percent: u8 },
     Shuffle { on: bool },
     Repeat { mode: RepeatMode },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FastTransportStatus {
+    Applied,
+    Dispatched,
 }
 
 enum PlayerWarmCommand {
@@ -206,6 +211,7 @@ pub(crate) struct DaemonState {
     // Background refresh keeps this fresh; backends snapshot it
     // synchronously on every API call.
     player_tx: mpsc::Sender<PlayerCommand>,
+    player_transport_tx: mpsc::Sender<PlayerTransportCommand>,
     player_warm_tx: mpsc::Sender<PlayerWarmCommand>,
     player_token_slot: PlayerTokenSlot,
     /// Cross-request cache of the first-party Web API bearer. Keeps the
@@ -316,7 +322,8 @@ impl DaemonState {
             build_player_or_default(Some(viz_coordinator.shared_analyzer()))
                 .context("daemon failed to construct player backend")?;
         let embedded_sink_on_ready = player_box.kind() == BackendKind::Embedded;
-        let (player_tx, player_warm_tx, player_actor) = spawn_player_actor(player_box);
+        let (player_tx, player_transport_tx, player_warm_tx, player_actor) =
+            spawn_player_actor(player_box);
         let (queue_warm, queue_warm_rx) = QueueWarmScheduler::new();
         let system_config = build_system_config();
         let system_integration = Arc::new(spotuify_system::SystemIntegration::spawn(system_config));
@@ -426,6 +433,7 @@ impl DaemonState {
             event_log,
             first_party_bearer: Arc::new(parking_lot::Mutex::new(None)),
             player_tx,
+            player_transport_tx,
             player_warm_tx,
             player_token_slot: token_slot,
             player_actor: tokio::sync::Mutex::new(Some(player_actor)),
@@ -672,8 +680,8 @@ impl DaemonState {
     pub(crate) async fn transport(&self, cmd: TransportCmd) -> PlayerResult<()> {
         let (resp, rx) = oneshot::channel();
         if self
-            .player_tx
-            .send(PlayerCommand::Transport { cmd, resp })
+            .player_transport_tx
+            .send(PlayerTransportCommand { cmd, resp })
             .await
             .is_err()
         {
@@ -686,6 +694,31 @@ impl DaemonState {
                 "player actor stopped".to_string(),
             ))
         })
+    }
+
+    pub(crate) async fn transport_fast(
+        &self,
+        cmd: TransportCmd,
+        timeout: Duration,
+    ) -> PlayerResult<FastTransportStatus> {
+        let (resp, rx) = oneshot::channel();
+        if self
+            .player_transport_tx
+            .try_send(PlayerTransportCommand { cmd, resp })
+            .is_err()
+        {
+            return Err(spotuify_player::PlayerError::Playback(
+                "player transport queue unavailable".to_string(),
+            ));
+        }
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(Ok(()))) => Ok(FastTransportStatus::Applied),
+            Ok(Ok(Err(err))) => Err(err),
+            Ok(Err(_)) => Err(spotuify_player::PlayerError::Playback(
+                "player actor stopped".to_string(),
+            )),
+            Err(_) => Ok(FastTransportStatus::Dispatched),
+        }
     }
 
     /// Append `uri` to the active device's queue via the in-process
@@ -1382,18 +1415,34 @@ fn spawn_player_actor(
     mut player: PlayerBox,
 ) -> (
     mpsc::Sender<PlayerCommand>,
+    mpsc::Sender<PlayerTransportCommand>,
     mpsc::Sender<PlayerWarmCommand>,
     JoinHandle<()>,
 ) {
     let (tx, mut rx) = mpsc::channel(32);
+    let (transport_tx, mut transport_rx) = mpsc::channel(32);
     let (warm_tx, mut warm_rx) = mpsc::channel(16);
     let handle = tokio::spawn(async move {
+        let mut transport_open = true;
+        let mut command_open = true;
+        let mut warm_open = true;
         loop {
+            if !transport_open && !command_open && !warm_open {
+                break;
+            }
             tokio::select! {
                 biased;
-                command = rx.recv() => {
+                transport = transport_rx.recv(), if transport_open => {
+                    let Some(transport) = transport else {
+                        transport_open = false;
+                        continue;
+                    };
+                    handle_transport_command(&mut player, transport).await;
+                }
+                command = rx.recv(), if command_open => {
                     let Some(command) = command else {
-                        break;
+                        command_open = false;
+                        continue;
                     };
                     match command {
                         PlayerCommand::RegisterDevice { name, resp } => {
@@ -1430,22 +1479,6 @@ fn spawn_player_actor(
                         PlayerCommand::QueueAdd { uri, resp } => {
                             let _ = resp.send(player.queue_add(&uri).await);
                         }
-                        PlayerCommand::Transport { cmd, resp } => {
-                            let result = match cmd {
-                                TransportCmd::PlayUri { uri, position_ms } => {
-                                    player.play_uri(&uri, position_ms).await
-                                }
-                                TransportCmd::Pause => player.pause().await,
-                                TransportCmd::Resume => player.resume().await,
-                                TransportCmd::Next => player.next().await,
-                                TransportCmd::Previous => player.previous().await,
-                                TransportCmd::Seek { position_ms } => player.seek(position_ms).await,
-                                TransportCmd::Volume { percent } => player.volume(percent).await,
-                                TransportCmd::Shuffle { on } => player.shuffle(on).await,
-                                TransportCmd::Repeat { mode } => player.repeat(mode).await,
-                            };
-                            let _ = resp.send(result);
-                        }
                         PlayerCommand::Shutdown { resp } => {
                             if let Err(err) = player.shutdown().await {
                                 tracing::warn!(error = %err, "player backend shutdown failed");
@@ -1455,11 +1488,9 @@ fn spawn_player_actor(
                         }
                     }
                 }
-                warm = warm_rx.recv() => {
+                warm = warm_rx.recv(), if warm_open => {
                     let Some(warm) = warm else {
-                        if rx.is_closed() {
-                            break;
-                        }
+                        warm_open = false;
                         continue;
                     };
                     match warm {
@@ -1478,7 +1509,22 @@ fn spawn_player_actor(
             }
         }
     });
-    (tx, warm_tx, handle)
+    (tx, transport_tx, warm_tx, handle)
+}
+
+async fn handle_transport_command(player: &mut PlayerBox, command: PlayerTransportCommand) {
+    let result = match command.cmd {
+        TransportCmd::PlayUri { uri, position_ms } => player.play_uri(&uri, position_ms).await,
+        TransportCmd::Pause => player.pause().await,
+        TransportCmd::Resume => player.resume().await,
+        TransportCmd::Next => player.next().await,
+        TransportCmd::Previous => player.previous().await,
+        TransportCmd::Seek { position_ms } => player.seek(position_ms).await,
+        TransportCmd::Volume { percent } => player.volume(percent).await,
+        TransportCmd::Shuffle { on } => player.shuffle(on).await,
+        TransportCmd::Repeat { mode } => player.repeat(mode).await,
+    };
+    let _ = command.resp.send(result);
 }
 
 fn player_result<T>(result: PlayerResult<T>) -> Result<T> {

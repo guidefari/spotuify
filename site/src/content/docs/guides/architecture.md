@@ -3,7 +3,7 @@ title: "Architecture"
 description: "Read the daemon, protocol, cache, search, player, CLI, and TUI shape."
 ---
 
-`spotuify` is moving from a single binary shape to a daemon-backed runtime. The daemon is the system. The CLI, TUI, scripts, and agents are clients.
+`spotuify` is a daemon-backed runtime. The daemon is the system. The CLI, TUI, scripts, and agents are clients.
 
 ## System shape
 
@@ -26,6 +26,16 @@ Run the surfaces:
 spotuify
 spotuify status --format json
 spotuify daemon status
+```
+
+## Startup state
+
+Event-driven clients seed themselves from cached daemon state first. The TUI asks for `ClientSeed`, which returns playback, queue, devices, recent items, and visualizer status from the daemon/store layer without touching Spotify's Web API. Live provider refreshes stay in daemon-owned warm/sync loops so opening the TUI does not spend rate-limit budget before the user acts.
+
+```bash
+spotuify status --format json
+spotuify queue --format json
+spotuify devices --format json
 ```
 
 ## IPC buckets

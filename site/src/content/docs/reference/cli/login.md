@@ -1,13 +1,13 @@
 ---
 title: "spotuify login"
-description: "Log in to Spotify in your browser and store a refresh token in the keychain"
+description: "Log in to Spotify in your browser and store a refresh token in the platform credential vault"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Log in to Spotify in your browser and store a refresh token in the keychain
+Log in to Spotify in your browser and store a refresh token in the platform credential vault
 
 ## Examples
 
@@ -19,7 +19,7 @@ spotuify login --redirect-uri http://127.0.0.1:8888/callback
 ## Help
 
 ```text
-Log in to Spotify in your browser and store a refresh token in the keychain
+Log in to Spotify in your browser and store a refresh token in the platform credential vault
 
 Usage: spotuify login [OPTIONS]
 

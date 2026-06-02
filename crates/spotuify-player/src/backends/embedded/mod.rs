@@ -55,7 +55,7 @@ use librespot_core::session::Session;
 use librespot_core::Error as LibrespotError;
 use librespot_core::SpotifyUri;
 use librespot_playback::audio_backend::Sink as LibrespotSink;
-use librespot_playback::config::PlayerConfig;
+use librespot_playback::config::{PlayerConfig, VolumeCtrl};
 use librespot_playback::mixer::{self, MixerConfig};
 use librespot_playback::player::{Player, PlayerEvent as LibrespotPlayerEvent};
 use parking_lot::Mutex;
@@ -281,7 +281,7 @@ impl EmbeddedBackend {
         let sink_builder = self.sink_builder()?;
         let mixer_builder = mixer::find(None)
             .ok_or_else(|| PlayerError::Playback("no librespot mixer available".to_string()))?;
-        let mixer = mixer_builder(MixerConfig::default())
+        let mixer = mixer_builder(mixer_config())
             .map_err(|err| PlayerError::Playback(format!("librespot mixer init: {err}")))?;
         let player = Player::new(
             player_config(),
@@ -357,6 +357,27 @@ impl EmbeddedBackend {
     fn initial_volume(&self) -> u16 {
         self.cache.volume().unwrap_or(u16::MAX / 2)
     }
+
+    fn set_cached_volume(&self, volume: u16) -> PlayerResult<()> {
+        let active = {
+            let state = self.state.lock();
+            if state.spirc.is_none() {
+                return Err(PlayerError::NotInitialised);
+            }
+            state.spirc_activated
+        };
+
+        if active {
+            self.send_spirc(|spirc| spirc.set_volume(volume))?;
+        }
+        self.cache.save_volume(volume);
+        Ok(())
+    }
+
+    fn apply_current_volume(&self) -> PlayerResult<()> {
+        let volume = self.initial_volume();
+        self.send_spirc(|spirc| spirc.set_volume(volume))
+    }
 }
 
 #[async_trait]
@@ -386,6 +407,7 @@ impl PlayerBackend for EmbeddedBackend {
         // before loading; both commands queue on the same Spirc channel
         // and are processed in order, so the load lands post-activation.
         self.ensure_active()?;
+        self.apply_current_volume()?;
         self.send_spirc(|spirc| spirc.load(request))
     }
 
@@ -398,6 +420,7 @@ impl PlayerBackend for EmbeddedBackend {
         // inactive Spirc), so activate before playing — same Not-Active
         // gate as `play_uri`.
         self.ensure_active()?;
+        self.apply_current_volume()?;
         self.send_spirc(Spirc::play)
     }
 
@@ -414,7 +437,7 @@ impl PlayerBackend for EmbeddedBackend {
     }
 
     async fn volume(&mut self, percent: u8) -> PlayerResult<()> {
-        self.send_spirc(|spirc| spirc.set_volume(volume_percent_to_librespot(percent)))
+        self.set_cached_volume(volume_percent_to_librespot(percent))
     }
 
     async fn shuffle(&mut self, on: bool) -> PlayerResult<()> {
@@ -582,6 +605,13 @@ fn player_config() -> PlayerConfig {
     }
 }
 
+fn mixer_config() -> MixerConfig {
+    MixerConfig {
+        volume_ctrl: VolumeCtrl::Linear,
+        ..MixerConfig::default()
+    }
+}
+
 fn volume_percent_to_librespot(percent: u8) -> u16 {
     ((percent.min(100) as u32 * u16::MAX as u32) / 100) as u16
 }
@@ -681,13 +711,14 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_device_id, librespot_volume_to_percent, load_request_for_uri, preloadable_uri,
-        translate_librespot_player_event, volume_percent_to_librespot, EmbeddedBackend,
-        EmbeddedCachePaths,
+        derive_device_id, librespot_volume_to_percent, load_request_for_uri, mixer_config,
+        preloadable_uri, translate_librespot_player_event, volume_percent_to_librespot,
+        EmbeddedBackend, EmbeddedCachePaths,
     };
     use crate::backends::token_bridge::StaticTokenProvider;
     use crate::{PlayerBackend, PlayerError, PlayerEvent};
     use librespot_core::SpotifyUri;
+    use librespot_playback::config::VolumeCtrl;
     use librespot_playback::player::PlayerEvent as LibrespotPlayerEvent;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -769,6 +800,11 @@ mod tests {
         assert_eq!(volume_percent_to_librespot(200), u16::MAX);
         assert!(volume_percent_to_librespot(50) > 32_000);
         assert!(volume_percent_to_librespot(50) < 33_000);
+    }
+
+    #[test]
+    fn mixer_uses_linear_volume_scale() {
+        assert!(matches!(mixer_config().volume_ctrl, VolumeCtrl::Linear));
     }
 
     #[test]

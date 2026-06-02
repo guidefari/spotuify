@@ -2,7 +2,7 @@
 source: tests/cli_help.rs
 expression: normalize_help_output(&stdout)
 ---
-Log in to Spotify in your browser and store a refresh token in the keychain
+Log in to Spotify in your browser and store a refresh token in the platform credential vault
 
 Usage: spotuify login [OPTIONS]
 

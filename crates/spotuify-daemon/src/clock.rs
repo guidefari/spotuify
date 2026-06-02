@@ -645,7 +645,16 @@ mod tests {
         clock.apply_command_result(&pb, 1);
         // Seed closure must NOT run when a device already exists — updating
         // in place preserves the richer poll/command device fields.
-        clock.apply_device_volume(75, || panic!("seed must not run"), 2);
+        let mut seed_called = false;
+        clock.apply_device_volume(
+            75,
+            || {
+                seed_called = true;
+                None
+            },
+            2,
+        );
+        assert!(!seed_called, "seed must not run");
         let snap = clock.snapshot();
         assert_eq!(
             snap.device.as_ref().and_then(|d| d.volume_percent),

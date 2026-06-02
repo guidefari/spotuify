@@ -1,5 +1,10 @@
 # spotuify - Roadmap
 
+> Status: historical blueprint. Use
+> [`docs/implementation/00-current-state.md`](../implementation/00-current-state.md)
+> and the docs site roadmap for current shipped surfaces. This file preserves the
+> original phase shape and product intent.
+
 ## Guiding principle
 
 Each phase must produce a usable improvement. Do not build inert infrastructure that cannot be exercised by CLI or TUI.
