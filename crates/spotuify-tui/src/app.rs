@@ -790,8 +790,11 @@ impl App {
                 .selected_playlist()
                 .map(|playlist| ArtworkSubject::from_playlist(&playlist)),
             Screen::Library | Screen::Search => self.selected_item().and_then(|item| {
-                matches!(item.kind, MediaKind::Album | MediaKind::Playlist)
-                    .then(|| ArtworkSubject::from_media_item(&item))
+                matches!(
+                    item.kind,
+                    MediaKind::Album | MediaKind::Playlist | MediaKind::Show | MediaKind::Episode
+                )
+                .then(|| ArtworkSubject::from_media_item(&item))
             }),
             _ => None,
         }
@@ -4257,7 +4260,28 @@ fn fetch_search_page(
 fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     match app.screen {
         Screen::Playlists if app.selected_playlist_id.is_none() => {
-            open_playlist(app, async_tx);
+            if let Some((playlist_id, playlist_name)) = app.selected_playlist_target() {
+                command_then_refresh(
+                    app,
+                    async_tx,
+                    CommandKind::PlayUri {
+                        uri: format!("spotify:playlist:{playlist_id}"),
+                    },
+                );
+                app.toast = Some(format!("Playing playlist {playlist_name}"));
+            }
+        }
+        Screen::Playlists if app.selected_playlist_id.is_some() => {
+            if let Some((playlist_id, playlist_name)) = app.selected_playlist_target() {
+                command_then_refresh(
+                    app,
+                    async_tx,
+                    CommandKind::PlayUri {
+                        uri: format!("spotify:playlist:{playlist_id}"),
+                    },
+                );
+                app.toast = Some(format!("Playing playlist {playlist_name}"));
+            }
         }
         Screen::Devices => transfer_selected(app, async_tx),
         _ => {
@@ -4570,7 +4594,25 @@ fn clear_marks(app: &mut App) {
 }
 
 fn player_space_should_play_selected(app: &App) -> bool {
-    app.screen == Screen::Player && app.playback.item.is_none() && app.selected_item().is_some()
+    if app.playback.is_playing || playback_can_resume_current(&app.playback) {
+        return false;
+    }
+
+    match app.screen {
+        Screen::Player | Screen::Search | Screen::Library => app.selected_item().is_some(),
+        Screen::Playlists if app.selected_playlist_id.is_none() => {
+            app.selected_playlist().is_some()
+        }
+        Screen::Playlists => app.selected_item().is_some(),
+        _ => false,
+    }
+}
+
+fn playback_can_resume_current(playback: &spotuify_core::Playback) -> bool {
+    let Some(item) = playback.item.as_ref() else {
+        return false;
+    };
+    item.duration_ms == 0 || playback.progress_ms.saturating_add(750) < item.duration_ms
 }
 
 fn command_then_refresh(
@@ -5508,6 +5550,28 @@ mod tests {
 
         app.playback.item = Some(item("spotify:track:current", "Current"));
         assert!(!player_space_should_play_selected(&app));
+
+        if let Some(current) = app.playback.item.as_mut() {
+            current.duration_ms = 180_000;
+        }
+        app.playback.progress_ms = 180_000;
+        assert!(player_space_should_play_selected(&app));
+    }
+
+    #[test]
+    fn playlist_space_can_start_selected_playlist_when_idle() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        app.playlists = vec![Playlist {
+            id: "quiet-storm".to_string(),
+            name: "Quiet Storm".to_string(),
+            owner: "me".to_string(),
+            tracks_total: 12,
+            image_url: None,
+            snapshot_id: None,
+        }];
+
+        assert!(player_space_should_play_selected(&app));
     }
 
     #[test]
@@ -7082,14 +7146,27 @@ mod tests {
     }
 
     #[test]
-    fn selected_artwork_subject_only_includes_albums_and_playlists() {
+    fn selected_artwork_subject_includes_albums_playlists_and_podcasts() {
         let mut app = test_app();
         app.screen = Screen::Library;
-        app.library_items = vec![item_kind("spotify:track:t", "Track", MediaKind::Track), {
-            let mut album = item_kind("spotify:album:a", "Album", MediaKind::Album);
-            album.image_url = Some("https://example.com/album.jpg".to_string());
-            album
-        }];
+        app.library_items = vec![
+            item_kind("spotify:track:t", "Track", MediaKind::Track),
+            {
+                let mut album = item_kind("spotify:album:a", "Album", MediaKind::Album);
+                album.image_url = Some("https://example.com/album.jpg".to_string());
+                album
+            },
+            {
+                let mut show = item_kind("spotify:show:s", "Show", MediaKind::Show);
+                show.image_url = Some("https://example.com/show.jpg".to_string());
+                show
+            },
+            {
+                let mut episode = item_kind("spotify:episode:e", "Episode", MediaKind::Episode);
+                episode.image_url = Some("https://example.com/episode.jpg".to_string());
+                episode
+            },
+        ];
 
         app.selected = 0;
         assert!(app.selected_artwork_subject().is_none());
@@ -7102,6 +7179,26 @@ mod tests {
         assert_eq!(
             subject.image_url.as_deref(),
             Some("https://example.com/album.jpg")
+        );
+
+        app.selected = 2;
+        let subject = app
+            .selected_artwork_subject()
+            .expect("show selection should expose artwork subject");
+        assert_eq!(subject.title, "Show");
+        assert_eq!(
+            subject.image_url.as_deref(),
+            Some("https://example.com/show.jpg")
+        );
+
+        app.selected = 3;
+        let subject = app
+            .selected_artwork_subject()
+            .expect("episode selection should expose artwork subject");
+        assert_eq!(subject.title, "Episode");
+        assert_eq!(
+            subject.image_url.as_deref(),
+            Some("https://example.com/episode.jpg")
         );
     }
 

@@ -172,6 +172,11 @@ async fn dispatch(
             let command_kind = playback_command_kind(command.clone());
             let fast_transport =
                 transport_cmd_for_command_kind(&command_kind, &pre_command_playback);
+            let context_queue_uri = match &command_kind {
+                CommandKind::PlayUri { uri } => Some(uri.clone()),
+                CommandKind::PlayItem { item } => Some(item.uri.clone()),
+                _ => None,
+            };
             reject_if_auth_blocked(&state)?;
             // Bump the mutation seq BEFORE the Spotify call so any
             // background poll-in-flight (sync_loop, spawn_*_refresh)
@@ -300,6 +305,24 @@ async fn dispatch(
                             uris: Vec::new(),
                             queue: queue_snapshot,
                         });
+                    }
+                    if let Some(uri) = context_queue_uri.as_deref() {
+                        if let Some(queue) =
+                            context_queue_snapshot_for_play_uri(&state_for, uri).await
+                        {
+                            let uris = queue
+                                .items
+                                .iter()
+                                .map(|item| item.uri.clone())
+                                .collect::<Vec<_>>();
+                            cache_queue(&state_for, &queue).await;
+                            state_for.warm_queue_uris(uris.clone());
+                            state_for.emit_event(DaemonEvent::QueueChanged {
+                                action: "play-context".to_string(),
+                                uris,
+                                queue: Some(queue),
+                            });
+                        }
                     }
                     if outcome.devices.is_some() {
                         state_for.emit_event(DaemonEvent::DevicesChanged {
@@ -2264,6 +2287,50 @@ async fn optimistic_queue_with_appends(
     Some(queue_with_appended_items(base, queued_items, now_ms()))
 }
 
+async fn context_queue_snapshot_for_play_uri(
+    state: &DaemonState,
+    uri: &str,
+) -> Option<spotuify_core::Queue> {
+    let kind = selection::media_kind_from_uri(uri).ok()?;
+    if !matches!(kind, MediaKind::Album | MediaKind::Playlist) {
+        return None;
+    }
+    let mut client = match state.spotify_client().await {
+        Ok(client) => client,
+        Err(err) => {
+            tracing::debug!(error = %err, uri, "could not build context queue snapshot");
+            return None;
+        }
+    };
+    let items = match queueable_items_for_selection(state, &mut client, uri).await {
+        Ok(items) => items,
+        Err(err) => {
+            tracing::debug!(error = %err, uri, "could not resolve context queue items");
+            return None;
+        }
+    };
+    queue_for_started_context(items, now_ms())
+}
+
+fn queue_for_started_context(
+    mut context_items: Vec<MediaItem>,
+    as_of_ms: i64,
+) -> Option<spotuify_core::Queue> {
+    if context_items.is_empty() {
+        return None;
+    }
+    let currently_playing = context_items.first().cloned();
+    context_items.drain(..1);
+    let mut queue = spotuify_core::Queue {
+        currently_playing,
+        items: context_items,
+        session_active: true,
+        as_of_ms,
+    };
+    queue.dedupe_items();
+    Some(queue)
+}
+
 fn queue_with_appended_items(
     mut queue: spotuify_core::Queue,
     queued_items: Vec<MediaItem>,
@@ -3774,11 +3841,13 @@ fn transport_cmd_for_command_kind(
     // controls, so they stay on their mutation-specific paths.
     match kind {
         CommandKind::Pause => Some((TransportCmd::Pause, CommandKind::Pause)),
-        CommandKind::Resume => Some((TransportCmd::Resume, CommandKind::Resume)),
+        CommandKind::Resume if playback_can_resume_locally(playback) => {
+            Some((TransportCmd::Resume, CommandKind::Resume))
+        }
         CommandKind::TogglePlayback if playback.is_playing => {
             Some((TransportCmd::Pause, CommandKind::Pause))
         }
-        CommandKind::TogglePlayback if playback.item.is_some() || playback.device.is_some() => {
+        CommandKind::TogglePlayback if playback_can_resume_locally(playback) => {
             Some((TransportCmd::Resume, CommandKind::Resume))
         }
         CommandKind::Next => Some((TransportCmd::Next, CommandKind::Next)),
@@ -3833,7 +3902,8 @@ fn transport_cmd_for_command_kind(
             )),
             _ => None,
         },
-        CommandKind::TogglePlayback
+        CommandKind::Resume
+        | CommandKind::TogglePlayback
         | CommandKind::QueueItem { .. }
         | CommandKind::QueueUri { .. }
         | CommandKind::Transfer { .. }
@@ -3841,6 +3911,13 @@ fn transport_cmd_for_command_kind(
         | CommandKind::SaveItem { .. }
         | CommandKind::SaveCurrent => None,
     }
+}
+
+fn playback_can_resume_locally(playback: &Playback) -> bool {
+    let Some(item) = playback.item.as_ref() else {
+        return false;
+    };
+    item.duration_ms == 0 || playback.progress_ms.saturating_add(750) < item.duration_ms
 }
 
 fn is_no_active_device_error(err: &spotuify_spotify::SpotifyError) -> bool {
@@ -3974,7 +4051,8 @@ fn media_item_from_uri(uri: &str) -> anyhow::Result<MediaItem> {
 #[cfg(test)]
 mod queue_tests {
     use super::{
-        idle_context_start_label, queue_with_appended_items, queueable_uris_for_selection,
+        idle_context_start_label, queue_for_started_context, queue_with_appended_items,
+        queueable_uris_for_selection,
     };
     use spotuify_core::{MediaItem, MediaKind, Queue};
     use spotuify_spotify::client::SpotifyClient;
@@ -4073,6 +4151,30 @@ mod queue_tests {
         assert_eq!(uris, vec!["spotify:track:a", "spotify:track:b"]);
         assert!(queue.session_active);
         assert_eq!(queue.as_of_ms, 2);
+    }
+
+    #[test]
+    fn context_queue_snapshot_sets_current_and_up_next() {
+        let queue = queue_for_started_context(
+            vec![
+                track("spotify:track:first", "First"),
+                track("spotify:track:second", "Second"),
+            ],
+            3,
+        )
+        .expect("context with tracks should produce a queue snapshot");
+
+        assert_eq!(
+            queue
+                .currently_playing
+                .as_ref()
+                .map(|item| item.uri.as_str()),
+            Some("spotify:track:first")
+        );
+        let uris: Vec<&str> = queue.items.iter().map(|item| item.uri.as_str()).collect();
+        assert_eq!(uris, vec!["spotify:track:second"]);
+        assert!(queue.session_active);
+        assert_eq!(queue.as_of_ms, 3);
     }
 }
 
@@ -4763,6 +4865,74 @@ mod post_command_persist_tests {
         state.shutdown_player().await;
     }
 
+    #[tokio::test]
+    async fn play_uri_context_publishes_context_queue_snapshot() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        let mut rx = state.event_tx.subscribe();
+
+        let response = dispatch(
+            state.clone(),
+            Request::PlaybackCommand {
+                command: PlaybackCommand::PlayUri {
+                    uri: "spotify:playlist:quiet-storm".to_string(),
+                },
+            },
+            None,
+        )
+        .await
+        .expect("play context response");
+        assert!(matches!(response, ResponseData::Mutation { .. }));
+
+        match next_queue_event(&mut rx, "play-context").await {
+            DaemonEvent::QueueChanged { queue, .. } => {
+                let queue = queue.expect("play-context event should embed queue");
+                assert_eq!(
+                    queue
+                        .currently_playing
+                        .as_ref()
+                        .map(|item| item.uri.as_str()),
+                    Some("spotify:track:never-too-much")
+                );
+                let up_next = queue
+                    .items
+                    .iter()
+                    .map(|item| item.uri.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(up_next, vec!["spotify:track:sweet-thing"]);
+                assert!(queue.session_active);
+            }
+            other => assert!(
+                matches!(other, DaemonEvent::QueueChanged { .. }),
+                "expected QueueChanged"
+            ),
+        }
+
+        let cached = state
+            .store()
+            .latest_queue(10)
+            .await
+            .expect("latest queue")
+            .expect("play context should cache queue snapshot");
+        assert_eq!(
+            cached
+                .currently_playing
+                .as_ref()
+                .map(|item| item.uri.as_str()),
+            Some("spotify:track:never-too-much")
+        );
+        let cached_up_next = cached
+            .items
+            .iter()
+            .map(|item| item.uri.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(cached_up_next, vec!["spotify:track:sweet-thing"]);
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
     #[test]
     fn toggle_transport_uses_daemon_clock_state() {
         let playing = spotuify_core::Playback {
@@ -4785,6 +4955,25 @@ mod post_command_persist_tests {
                 .expect("paused toggle with an item should resume locally");
         assert!(matches!(cmd, crate::state::TransportCmd::Resume));
         assert!(matches!(effective, CommandKind::Resume));
+
+        let no_item = spotuify_core::Playback {
+            item: None,
+            device: Some(spotuify_core::Device {
+                id: Some("active-device".to_string()),
+                name: "spotuify-hume".to_string(),
+                kind: "Speaker".to_string(),
+                is_active: true,
+                is_restricted: false,
+                volume_percent: Some(25),
+                supports_volume: true,
+            }),
+            is_playing: false,
+            ..Default::default()
+        };
+        assert!(
+            transport_cmd_for_command_kind(&CommandKind::TogglePlayback, &no_item).is_none(),
+            "toggle with only an active device must use Web API recovery, not local resume"
+        );
     }
 
     #[test]
@@ -4811,6 +5000,17 @@ mod post_command_persist_tests {
         assert!(
             transport_cmd_for_command_kind(&command_kind, &spotuify_core::Playback::default())
                 .is_none()
+        );
+
+        let ended = spotuify_core::Playback {
+            item: Some(track("spotify:track:ended", "Ended")),
+            is_playing: false,
+            progress_ms: 180_000,
+            ..Default::default()
+        };
+        assert!(
+            transport_cmd_for_command_kind(&command_kind, &ended).is_none(),
+            "ended tracks must not call librespot resume"
         );
 
         let (cmd, effective) =
