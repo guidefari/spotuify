@@ -11,6 +11,11 @@ Current code defaults to user dev-app PKCE (`client_id` in config or
 rate-limited harder. `login5().auth_token()` remains a useful pattern for
 first-party mode and future native-session reads, not the default Web API path.
 
+Update 2026-06-03: spotuify removed macOS Keychain/keyring storage. Auth now
+lives in private config-dir files (`<config_dir>/auth/*.json`, `0700` auth dir
+and `0600` files on Unix), matching the power-user CLI trade-off used by the
+other terminal clients while keeping an auto-generated config-dir `.gitignore`.
+
 ## The landscape
 
 | Project | Maintained | Stack | Playback | CLI surface | Local cache | Search | Differentiation today |
@@ -30,7 +35,7 @@ first-party mode and future native-session reads, not the default Web API path.
 | IPC | line-delimited JSON over UDS (Linux+macOS) | **UDP localhost** (4KB max), chunked responses with `\\n` literal escapes | none | length-prefixed JSON over UDS + Windows named pipe |
 | Multi-client | broadcast `tokio::sync::watch` | best-effort UDP | n/a | request/response correlation + event broadcast |
 | Auth | two OAuth flows (librespot + rspotify) | bridges via `login5().auth_token()`; only one flow | two flows | dev-app PKCE default; first-party/login5 opt-in/future |
-| Credential storage | librespot Cache + JSON | librespot Cache + JSON | JSON file + `.gitignore` autogen | **OS keyring per platform** (Phase 11) |
+| Credential storage | librespot Cache + JSON | librespot Cache + JSON | JSON file + `.gitignore` autogen | private config auth files + `.gitignore` autogen |
 | Rate-limit handling | blocking `thread::sleep` (freezes UI) | none | two-tier inconsistent | unified middleware + jittered backoff (Phase 6) |
 | snapshot_id | used as refetch gate during sync | stored, only used for reorder | not visible | refetch gate + operation-rollback token (Phase 6/12) |
 | ETag / If-None-Match | not used | not used | not used | per-row freshness w/ ETag (Phase 6) |
@@ -97,7 +102,7 @@ first-party mode and future native-session reads, not the default Web API path.
 8. **Hand-rolled 793-line command parser** (ncspot). Use a parser combinator or generate from a schema. Adding commands compounds linearly.
 9. **5x retrieve-after-action polling** (spotify-player). Use `PlayerEvent` stream as truth (Phase 6); fall back to polling on disagreement only.
 10. **Two-tier inconsistent rate-limit handling** (spotatui — raw-reqwest path respects Retry-After but rspotify-direct path doesn't). Route every call through one middleware tier.
-11. **Plaintext token storage in config dir** (all three). Use OS keychain per platform.
+11. **Loose plaintext token storage in config dir** (all three). Accept the file-backed CLI trade-off, but make it explicit: private auth directory, mode `0600` files on Unix, atomic writes, lock file, and `.gitignore` autogen.
 12. **5ms `try_recv` busy-poll on IO task** (spotatui `runtime.rs:1007-1020`). Use proper `tokio::select!`.
 13. **Hardcoded retry counts** (spotify-player's "5 retries every time" pattern). Adaptive retry with rate-limit awareness.
 14. **YAML config** (spotatui). TOML is better — more forgiving, less indentation-sensitive, supported by `config_parser2` for nested overrides.
@@ -135,7 +140,6 @@ spotuify's existing stack already matches the 2026 state of the art:
 | crossterm | 0.29 | matching | Aligned |
 | tokio | 1 full | matching | Aligned |
 | reqwest | 0.12 rustls | matching | Aligned |
-| keyring | 3 | none use a keyring crate | **spotuify ahead** |
 | sqlx | 0.8 sqlite | none use SQL | **spotuify ahead** |
 | tantivy | 0.22 | none use Tantivy | **spotuify ahead** |
 | ratatui-image | (Phase 15) | spotatui uses it; spotify-player uses `viuer` instead | Right choice |

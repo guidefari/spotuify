@@ -24,7 +24,6 @@ spotuify/
 │   ├── spotuify-store/              # SQLite migrations + queries (Phase 6 freshness)
 │   ├── spotuify-search/             # Tantivy indexing/query
 │   ├── spotuify-spotify/            # Web API client + auth + compat normalizer (Phase 6)
-│   ├── spotuify-keychain/            # credential-storage leaf crate
 │   ├── spotuify-player/             # PlayerBackend trait + embedded librespot impl (Phase 9)
 │   ├── spotuify-sync/               # background sync + reconciliation (Phase 6)
 │   ├── spotuify-system/             # MPRIS/notifications/hooks/Discord (Phase 14)
@@ -42,7 +41,7 @@ spotuify/
 1. `spotuify-core` depends on nothing internal.
 2. `spotuify-protocol` depends on `spotuify-core` only.
 3. `spotuify-store` depends on `spotuify-core` and `spotuify-protocol`; `spotuify-search` depends on core/protocol/store.
-4. `spotuify-spotify` depends on `spotuify-core`, `spotuify-protocol`, and `spotuify-keychain`.
+4. `spotuify-spotify` depends on `spotuify-core` and `spotuify-protocol`.
 5. `spotuify-player` depends on `spotuify-core`, `spotuify-spotify`, and `spotuify-audio` for embedded sink taps.
 6. `spotuify-sync` depends on core/protocol/store/search/spotify/player.
 7. `spotuify-system` depends on `spotuify-core` and `spotuify-protocol`.
@@ -60,7 +59,7 @@ spotuify/
 3. [x] Move `src/protocol.rs` → `crates/spotuify-protocol/`.
 4. [x] Move `src/store.rs` → `crates/spotuify-store/`.
 5. [x] Move `src/search.rs`, `src/reindex.rs` → `crates/spotuify-search/`.
-6. [x] Move `src/spotify.rs`, `src/auth.rs`, `src/config.rs` → `crates/spotuify-spotify/`; credential storage moved into `spotuify-keychain`.
+6. [x] Move `src/spotify.rs`, `src/auth.rs`, `src/config.rs` → `crates/spotuify-spotify/`; credential storage now lives in `spotuify-spotify::auth` as private auth files.
 7. [x] Move player code and create `spotuify-player::backends::embedded` plus test mock per Phase 9.
 8. [x] Move `src/sync.rs` implementation → `crates/spotuify-sync/`.
 9. [x] New crate `spotuify-system` (filled by Phase 14).

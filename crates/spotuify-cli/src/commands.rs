@@ -907,7 +907,7 @@ fn cli_login_progress(event: spotuify_spotify::auth::LoginProgress) {
         }
         LoginProgress::WaitingForCallback => {}
         LoginProgress::Saved => {
-            eprintln!("Spotify auth saved in the platform credential vault.");
+            eprintln!("Spotify auth saved in the local auth file.");
         }
     }
 }

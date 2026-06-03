@@ -26,7 +26,7 @@ impl spotuify_spotify::WebApiBearerProvider for StaticBearerProvider {
     }
 }
 
-const KEYCHAIN_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
+const AUTH_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 const API_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn collect_report(
@@ -65,13 +65,13 @@ pub async fn collect_report_with_events(
     });
 
     let fake_spotify = std::env::var_os("SPOTUIFY_FAKE_SPOTIFY").is_some();
-    let keychain_token = if fake_spotify {
-        skipped_keychain_check("skipped in fake Spotify mode")
+    let auth_token = if fake_spotify {
+        skipped_auth_check("skipped in fake Spotify mode")
     } else {
-        keychain_check()
+        auth_file_check()
     };
     let disk_token_cache = DoctorCheck {
-        name: "auth disk cache".to_string(),
+        name: "auth file".to_string(),
         ok: true,
         message: disk_token_cache_status(),
         elapsed_ms: 0,
@@ -85,7 +85,7 @@ pub async fn collect_report_with_events(
     let store = Store::open_default().await.ok();
 
     let first_party = !fake_spotify && config.as_ref().is_some_and(Config::is_first_party);
-    if first_party && web_api_bearer.is_none() && keychain_token.ok {
+    if first_party && web_api_bearer.is_none() && auth_token.ok {
         // First-party login is present but no daemon-minted bearer was
         // supplied (daemon not running). This CLI process has no librespot
         // session to mint one itself, so the live API checks can't run.
@@ -98,7 +98,7 @@ pub async fn collect_report_with_events(
                 .to_string(),
             elapsed_ms: 0,
         });
-    } else if let Some(config) = config.as_ref().filter(|_| keychain_token.ok) {
+    } else if let Some(config) = config.as_ref().filter(|_| auth_token.ok) {
         let client_result = if fake_spotify {
             SpotifyClient::fake()
         } else {
@@ -162,7 +162,7 @@ pub async fn collect_report_with_events(
         client_id: config.as_ref().map(Config::redacted_client_id),
         client_secret_present: config.as_ref().map(|config| config.client_secret.is_some()),
         redirect_uri: config.as_ref().map(|config| config.redirect_uri.clone()),
-        keychain_token,
+        auth_token,
         daemon,
         api_checks,
         device_diagnostics: device_diagnostics_report,
@@ -239,43 +239,42 @@ pub fn print_report(report: &DoctorReport, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn keychain_check() -> DoctorCheck {
+fn auth_file_check() -> DoctorCheck {
     let started = Instant::now();
-    // First-party-aware: a first-party login stores under a separate slot,
+    // First-party-aware: first-party auth uses a separate credential file,
     // so `credential_status` reports logged-in for either credential kind.
-    let (result, elapsed_ms) =
-        timed_sync("keychain token", KEYCHAIN_CHECK_TIMEOUT, credential_status);
+    let (result, elapsed_ms) = timed_sync("auth token", AUTH_CHECK_TIMEOUT, credential_status);
     match result {
         Some(Ok(Some(status))) => DoctorCheck {
-            name: "keychain token".to_string(),
+            name: "auth token".to_string(),
             ok: true,
             message: status,
             elapsed_ms,
         },
         Some(Ok(None)) => DoctorCheck {
-            name: "keychain token".to_string(),
+            name: "auth token".to_string(),
             ok: false,
             message: "missing; run `spotuify login`".to_string(),
             elapsed_ms,
         },
         Some(Err(err)) => DoctorCheck {
-            name: "keychain token".to_string(),
+            name: "auth token".to_string(),
             ok: false,
             message: err,
             elapsed_ms,
         },
         None => DoctorCheck {
-            name: "keychain token".to_string(),
+            name: "auth token".to_string(),
             ok: false,
-            message: format!("timed out after {}s", KEYCHAIN_CHECK_TIMEOUT.as_secs()),
+            message: format!("timed out after {}s", AUTH_CHECK_TIMEOUT.as_secs()),
             elapsed_ms: started.elapsed().as_millis(),
         },
     }
 }
 
-fn skipped_keychain_check(message: &str) -> DoctorCheck {
+fn skipped_auth_check(message: &str) -> DoctorCheck {
     DoctorCheck {
-        name: "keychain token".to_string(),
+        name: "auth token".to_string(),
         ok: true,
         message: message.to_string(),
         elapsed_ms: 0,
@@ -436,11 +435,11 @@ fn build_findings(report: &DoctorReport) -> Vec<DoctorFinding> {
             remediation: vec!["spotuify daemon start".to_string()],
         });
     }
-    if !report.keychain_token.ok {
+    if !report.auth_token.ok {
         findings.push(DoctorFinding {
             category: DoctorFindingCategory::Auth,
             severity: DoctorFindingSeverity::Error,
-            message: format!("keychain token: {}", report.keychain_token.message),
+            message: format!("auth token: {}", report.auth_token.message),
             remediation: vec!["spotuify login".to_string()],
         });
     }
@@ -578,8 +577,8 @@ fn print_report_table(report: &DoctorReport) {
         report.redirect_uri.as_deref().unwrap_or("-")
     );
     println!(
-        "Keychain:     {} ({}ms)",
-        report.keychain_token.message, report.keychain_token.elapsed_ms
+        "Auth token:   {} ({}ms)",
+        report.auth_token.message, report.auth_token.elapsed_ms
     );
     if let Some(system) = &report.system {
         println!(
@@ -685,10 +684,10 @@ fn print_report_csv(report: &DoctorReport) {
     println!(
         "{}",
         csv_row(&[
-            "keychain token",
-            bool_str(report.keychain_token.ok),
-            &report.keychain_token.elapsed_ms.to_string(),
-            &report.keychain_token.message,
+            "auth token",
+            bool_str(report.auth_token.ok),
+            &report.auth_token.elapsed_ms.to_string(),
+            &report.auth_token.message,
         ])
     );
     for check in &report.api_checks {
@@ -820,8 +819,8 @@ mod tests {
             client_id: Some("present".into()),
             client_secret_present: Some(false),
             redirect_uri: Some("http://127.0.0.1:8888/callback".into()),
-            keychain_token: DoctorCheck {
-                name: "keychain token".into(),
+            auth_token: DoctorCheck {
+                name: "auth token".into(),
                 ok: true,
                 message: "present".into(),
                 elapsed_ms: 1,

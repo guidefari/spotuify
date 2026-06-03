@@ -37,7 +37,7 @@
 ## D. Async / Tokio
 
 - D1 **Never block the runtime.** No `std::fs`, `std::thread::sleep`, blocking HTTP, or CPU-heavy work (image decode, FFT, hashing) directly inside an `async fn` on a runtime worker. Use `tokio::task::spawn_blocking` (bounded work) or `tokio::fs`. **Check:** `rg 'std::fs::|std::thread::sleep|image::load' crates/*/src` then read for `async` context.
-- D2 **Every external operation has a bounded timeout** (`tokio::time::timeout` and/or a client-level timeout). Keychain, Spotify Web API, librespot, IPC, image fetch, LRCLIB. Non-negotiable (CLAUDE.md). **Check:** each external call site is wrapped or uses a timeout-bearing client.
+- D2 **Every external operation has a bounded timeout** (`tokio::time::timeout` and/or a client-level timeout). Auth file IO, Spotify Web API, librespot, IPC, image fetch, LRCLIB. Non-negotiable (CLAUDE.md). **Check:** each external call site is wrapped or uses a timeout-bearing client.
 - D3 Do not hold a `std`/`parking_lot` lock guard across `.await` (clone/snapshot then drop the guard first). Use `tokio::sync::Mutex` only when a hold across `.await` is truly required.
 - D4 Prefer bounded channels (`mpsc::channel(cap)`) over `unbounded_channel`; document any unbounded channel's backpressure rationale.
 - D5 Spawned tasks are tracked (`JoinHandle`/`JoinSet`) and aborted/joined on shutdown; long loops select on a shutdown signal (`watch`/`CancellationToken`).
@@ -59,7 +59,7 @@
 ## G. Compile-time safety & dependencies
 
 - G1 No `unsafe` without an audited `// SAFETY:` justification (workspace denies `unsafe_code`).
-- G2 Each crate uses the workspace dependency version (`{ workspace = true }`), not a drifting local pin. **spotuify hotspot:** keychain `thiserror = "1"` vs workspace `"2"`.
+- G2 Each crate uses the workspace dependency version (`{ workspace = true }`), not a drifting local pin.
 - G3 Schema-coupled SQL should be compile-time-checked (`sqlx::query!`/`query_as!` with an offline cache) rather than raw `query("...")` strings. **spotuify hotspot:** `store`.
 - G4 Every `#[allow(...)]` carries a `// reason:` or uses `#[expect(..., reason="...")]`.
 
@@ -100,10 +100,10 @@ Workspace lints (`[workspace.lints]`): `unsafe_code=deny`, `unused_must_use=deny
 
 ## Per-crate scorecard template
 
-| Dimension | core | protocol | store | search | spotify | player | sync | audio | lyrics | keychain | daemon | cli | tui | mcp | system |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| C panics | | | | | | | | | | | | | | | |
-| D async | | | | | | | | | | | | | | | |
+| Dimension | core | protocol | store | search | spotify | player | sync | audio | lyrics | daemon | cli | tui | mcp | system |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| C panics | | | | | | | | | | | | | | |
+| D async | | | | | | | | | | | | | | |
 | F structure | | | | | | | | | | | | | | | |
 | G deps/safety | | | | | | | | | | | | | | | |
 | H tests | | | | | | | | | | | | | | | |

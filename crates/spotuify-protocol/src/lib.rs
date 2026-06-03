@@ -275,7 +275,7 @@ pub enum Request {
     Reconnect,
     /// Drop the daemon's cached Spotify token + clear the
     /// `auth_revoked` latch so the next operation re-reads fresh
-    /// credentials from keychain/disk. Fired by clients after they've
+    /// credentials from the auth file. Fired by clients after they've
     /// completed an interactive OAuth flow (TUI's LoginModal flow,
     /// CLI's auto-retry on AuthRevoked).
     ReloadAuth,
@@ -1583,7 +1583,8 @@ pub struct DoctorReport {
     pub client_id: Option<String>,
     pub client_secret_present: Option<bool>,
     pub redirect_uri: Option<String>,
-    pub keychain_token: DoctorCheck,
+    #[serde(alias = "keychain_token")]
+    pub auth_token: DoctorCheck,
     pub daemon: DaemonStatus,
     pub api_checks: Vec<DoctorCheck>,
     pub device_diagnostics: Option<DeviceDiagnostics>,

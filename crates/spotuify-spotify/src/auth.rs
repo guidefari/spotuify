@@ -14,7 +14,6 @@ use rand::{thread_rng, Rng};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use spotuify_keychain as keychain;
 use tokio::sync::Mutex;
 
 use crate::client::user_agent_string;
@@ -23,13 +22,6 @@ use crate::error::{SpotifyError, SpotifyResult};
 use crate::first_party::{classify_credential, FirstPartyCredentials, StoredCredential};
 use url::form_urlencoded;
 
-const KEYCHAIN_USER: &str = "spotify";
-/// Keychain account for first-party (keymaster) credentials. Kept
-/// separate from the legacy `KEYCHAIN_USER` slot so the two coexist
-/// during migration and the legacy dev-app reader never sees a
-/// first-party blob it can't parse.
-const KEYCHAIN_USER_FIRST_PARTY: &str = "spotify-first-party";
-const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(20);
 const TOKEN_LOCK_TIMEOUT: Duration = Duration::from_secs(15);
 const TOKEN_LOCK_POLL: Duration = Duration::from_millis(50);
 const SPOTIFY_TOKEN_ENDPOINT: &str = "https://accounts.spotify.com/api/token";
@@ -164,60 +156,14 @@ pub fn logout() -> SpotifyResult<()> {
     Ok(delete_token_bounded()?)
 }
 
-fn keychain_get_token() -> Result<String, keychain::KeychainError> {
-    #[cfg(test)]
-    {
-        Err(keychain::KeychainError::NoEntry {
-            service: keychain_service(),
-            account: KEYCHAIN_USER.to_string(),
-        })
-    }
-    #[cfg(not(test))]
-    {
-        let service = keychain_service();
-        keychain::get_password(&service, KEYCHAIN_USER)
-    }
-}
-
-fn keychain_set_token(raw: &str) -> Result<(), keychain::KeychainError> {
-    #[cfg(test)]
-    {
-        let _ = raw;
-        Ok(())
-    }
-    #[cfg(not(test))]
-    {
-        let service = keychain_service();
-        keychain::set_password(&service, KEYCHAIN_USER, raw)
-    }
-}
-
-fn keychain_delete_token() -> Result<(), keychain::KeychainError> {
-    #[cfg(test)]
-    {
-        Ok(())
-    }
-    #[cfg(not(test))]
-    {
-        let service = keychain_service();
-        keychain::delete_password(&service, KEYCHAIN_USER)
-    }
-}
-
-fn keychain_service() -> String {
-    std::env::var("SPOTUIFY_KEYCHAIN_SERVICE")
-        .ok()
-        .filter(|service| !service.trim().is_empty())
-        .unwrap_or_else(spotuify_protocol::paths::app_instance_name)
-}
-
 fn delete_token(verbose: bool) -> AnyResult<()> {
-    match keychain_delete_token() {
-        Ok(()) if verbose => println!("Removed Spotify token from system keychain."),
-        Ok(()) => {}
-        Err(err) if err.is_no_entry() && verbose => println!("No Spotify token was stored."),
-        Err(err) if err.is_no_entry() => {}
-        Err(err) => return Err(anyhow!("failed to remove keychain token: {err}")),
+    let removed = delete_token_from_disk();
+    if verbose {
+        if removed {
+            println!("Removed Spotify token from auth file.");
+        } else {
+            println!("No Spotify token was stored.");
+        }
     }
     Ok(())
 }
@@ -252,8 +198,8 @@ pub async fn access_token_cached(
     http: &Client,
     cache: &Arc<Mutex<Option<StoredToken>>>,
 ) -> SpotifyResult<String> {
-    // Single-flight token acquisition keeps cold concurrent daemon requests from
-    // triggering multiple macOS Keychain prompts.
+    // Single-flight token acquisition keeps cold concurrent daemon requests
+    // from racing the shared auth file.
     let mut cached = cache.lock().await;
     let token = match cached.clone() {
         Some(token) => token,
@@ -312,10 +258,9 @@ pub async fn refresh_access_token_cached(
         .map(|token| token.access_token)
 }
 
-/// Snapshot the stored Spotify token from the system keychain so
-/// callers (e.g. the daemon's startup check) can inspect its scopes
-/// without going through the refresh path. Returns `Ok(None)` when the
-/// user isn't logged in yet.
+/// Snapshot the stored Spotify token so callers (e.g. the daemon's
+/// startup check) can inspect its scopes without going through the
+/// refresh path. Returns `Ok(None)` when the user isn't logged in yet.
 pub fn stored_token_snapshot() -> SpotifyResult<Option<StoredToken>> {
     Ok(load_token_bounded()?)
 }
@@ -323,153 +268,132 @@ pub fn stored_token_snapshot() -> SpotifyResult<Option<StoredToken>> {
 // ---------------------------------------------------------------------
 // First-party (keymaster) credential persistence.
 //
-// Mirrors the StoredToken machinery (bounded keychain reads, disk cache
-// to avoid the macOS prompt storm, atomic 0600 writes) but stores a
-// `FirstPartyCredentials` blob under a distinct keychain account/disk
-// file. The Web API bearer is never persisted here — only the long-lived
-// librespot-oauth refresh token. The bearer is minted live (login5).
+// Mirrors the StoredToken machinery but stores a `FirstPartyCredentials`
+// blob in a distinct file. The Web API bearer is never persisted here —
+// only the long-lived librespot-oauth refresh token. The bearer is
+// minted live (login5).
 // ---------------------------------------------------------------------
-
-fn keychain_get_account(account: &str) -> Result<String, keychain::KeychainError> {
-    #[cfg(test)]
-    {
-        Err(keychain::KeychainError::NoEntry {
-            service: keychain_service(),
-            account: account.to_string(),
-        })
-    }
-    #[cfg(not(test))]
-    {
-        keychain::get_password(&keychain_service(), account)
-    }
-}
-
-fn keychain_set_account(account: &str, raw: &str) -> Result<(), keychain::KeychainError> {
-    #[cfg(test)]
-    {
-        let _ = (account, raw);
-        Ok(())
-    }
-    #[cfg(not(test))]
-    {
-        keychain::set_password(&keychain_service(), account, raw)
-    }
-}
-
-fn keychain_delete_account(account: &str) -> Result<(), keychain::KeychainError> {
-    #[cfg(test)]
-    {
-        let _ = account;
-        Ok(())
-    }
-    #[cfg(not(test))]
-    {
-        keychain::delete_password(&keychain_service(), account)
-    }
-}
 
 fn first_party_cache_file() -> PathBuf {
     token_cache_dir().join("first-party.json")
 }
 
-fn load_first_party_from_disk() -> Option<FirstPartyCredentials> {
-    let path = first_party_cache_file();
-    let raw = std::fs::read_to_string(&path).ok()?;
-    match serde_json::from_str::<FirstPartyCredentials>(&raw) {
-        Ok(creds) if creds.is_first_party() && !creds.refresh_token.is_empty() => Some(creds),
-        _ => None,
-    }
+fn legacy_first_party_cache_file() -> PathBuf {
+    legacy_token_cache_dir().join("first-party.json")
 }
 
-fn save_first_party_to_disk(creds: &FirstPartyCredentials) {
-    let path = first_party_cache_file();
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if let Err(err) = std::fs::create_dir_all(parent) {
-        tracing::warn!(path = %parent.display(), error = %err, "failed to create first-party cache dir");
-        return;
-    }
-    let raw = match creds.to_json() {
+fn read_first_party_file(path: &std::path::Path) -> AnyResult<Option<FirstPartyCredentials>> {
+    let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
         Err(err) => {
-            tracing::warn!(error = %err, "failed to encode first-party credentials for disk cache");
-            return;
+            return Err(err).with_context(|| {
+                format!("failed to read first-party credentials {}", path.display())
+            })
         }
     };
-    if let Err(err) = atomic_write_mode_0600(&path, raw.as_bytes()) {
-        tracing::warn!(path = %path.display(), error = %err, "failed to write first-party cache");
+    let creds = serde_json::from_str::<FirstPartyCredentials>(&raw).with_context(|| {
+        format!(
+            "stored first-party credentials at {} are invalid JSON",
+            path.display()
+        )
+    })?;
+    if creds.is_first_party() && !creds.refresh_token.is_empty() {
+        Ok(Some(creds))
+    } else {
+        Ok(None)
     }
 }
 
-fn delete_first_party_from_disk() {
-    let _ = std::fs::remove_file(first_party_cache_file());
+fn load_first_party_from_disk() -> AnyResult<Option<FirstPartyCredentials>> {
+    let path = first_party_cache_file();
+    if let Some(creds) = read_first_party_file(&path)? {
+        return Ok(Some(creds));
+    }
+
+    let legacy_path = legacy_first_party_cache_file();
+    if legacy_path != path {
+        match read_first_party_file(&legacy_path) {
+            Ok(Some(creds)) => {
+                save_first_party_to_disk(&creds)?;
+                return Ok(Some(creds));
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    path = %legacy_path.display(),
+                    error = %err,
+                    "legacy first-party credential file is unreadable; ignoring migration source"
+                );
+            }
+        }
+    }
+    Ok(None)
 }
 
-fn save_first_party(creds: &FirstPartyCredentials) -> AnyResult<()> {
+fn save_first_party_to_disk(creds: &FirstPartyCredentials) -> AnyResult<()> {
+    let path = first_party_cache_file();
+    let Some(parent) = path.parent() else {
+        bail!("first-party credential path has no parent");
+    };
+    spotuify_protocol::paths::ensure_private_dir(parent).with_context(|| {
+        format!(
+            "failed to create first-party credential dir {}",
+            parent.display()
+        )
+    })?;
     let raw = creds
         .to_json()
-        .context("failed to encode first-party credentials")?;
-    keychain_set_account(KEYCHAIN_USER_FIRST_PARTY, &raw)
-        .map_err(|err| anyhow!("failed to save first-party credentials to keychain: {err}"))?;
-    save_first_party_to_disk(creds);
+        .context("failed to encode first-party credentials for disk")?;
+    atomic_write_mode_0600(&path, raw.as_bytes())
+        .with_context(|| format!("failed to write first-party credentials {}", path.display()))?;
     Ok(())
 }
 
-/// Persist first-party credentials to the keychain (and disk mirror),
-/// serialized through the shared token-store lock so a concurrent login
-/// can't interleave with a read.
+fn remove_file_if_exists(path: PathBuf) -> bool {
+    match std::fs::remove_file(&path) {
+        Ok(()) => true,
+        Err(err) if err.kind() == ErrorKind::NotFound => false,
+        Err(err) => {
+            tracing::warn!(path = %path.display(), error = %err, "failed to remove auth file");
+            false
+        }
+    }
+}
+
+fn delete_first_party_from_disk() -> bool {
+    let current = first_party_cache_file();
+    let legacy = legacy_first_party_cache_file();
+    let mut removed = remove_file_if_exists(current.clone());
+    if legacy != current {
+        removed |= remove_file_if_exists(legacy);
+    }
+    removed
+}
+
+fn save_first_party(creds: &FirstPartyCredentials) -> AnyResult<()> {
+    save_first_party_to_disk(creds)
+}
+
+/// Persist first-party credentials to the auth file, serialized through
+/// the shared token-store lock so a concurrent login can't interleave
+/// with a read.
 pub fn save_first_party_credentials(creds: &FirstPartyCredentials) -> SpotifyResult<()> {
     let _lock = acquire_token_store_lock_bounded()?;
-    let creds = creds.clone();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(save_first_party(&creds));
-    });
-    Ok(recv_keychain_result(rx, "save first-party credentials")?)
+    Ok(save_first_party(creds)?)
 }
 
-/// Load first-party credentials. Disk-first (no keychain prompt), then
-/// keychain. Returns `Ok(None)` when no first-party login has happened.
+/// Load first-party credentials from the auth file. Returns `Ok(None)`
+/// when no first-party login has happened.
 pub fn load_first_party_credentials() -> SpotifyResult<Option<FirstPartyCredentials>> {
-    if let Some(creds) = load_first_party_from_disk() {
-        return Ok(Some(creds));
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let result = match keychain_get_account(KEYCHAIN_USER_FIRST_PARTY) {
-            Ok(raw) => match serde_json::from_str::<FirstPartyCredentials>(&raw) {
-                Ok(creds) if creds.is_first_party() && !creds.refresh_token.is_empty() => {
-                    save_first_party_to_disk(&creds);
-                    Ok(Some(creds))
-                }
-                Ok(_) => Ok(None),
-                Err(err) => Err(anyhow!(
-                    "stored first-party credentials are invalid JSON: {err}"
-                )),
-            },
-            Err(err) if err.is_no_entry() => Ok(None),
-            Err(err) => Err(anyhow!("failed to read first-party credentials: {err}")),
-        };
-        let _ = tx.send(result);
-    });
-    Ok(recv_keychain_result(rx, "read first-party credentials")?)
+    Ok(load_first_party_from_disk()?)
 }
 
-/// Remove first-party credentials from keychain + disk.
+/// Remove first-party credentials from disk.
 pub fn delete_first_party_credentials() -> SpotifyResult<()> {
     let _lock = acquire_token_store_lock_bounded()?;
     delete_first_party_from_disk();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let result = match keychain_delete_account(KEYCHAIN_USER_FIRST_PARTY) {
-            Ok(()) => Ok(()),
-            Err(err) if err.is_no_entry() => Ok(()),
-            Err(err) => Err(anyhow!("failed to delete first-party credentials: {err}")),
-        };
-        let _ = tx.send(result);
-    });
-    Ok(recv_keychain_result(rx, "delete first-party credentials")?)
+    Ok(())
 }
 
 /// Human-readable login status across both credential kinds, for
@@ -507,10 +431,10 @@ pub fn stored_credential_snapshot() -> SpotifyResult<Option<StoredCredential>> {
 }
 
 /// Disk-only credential snapshot for daemon recovery probes. This never
-/// touches the platform credential vault, so it is safe to call while an
+/// touches anything outside the auth directory, so it is safe to call while an
 /// auth-required latch is suppressing interactive credential prompts.
 pub fn stored_credential_disk_snapshot() -> Option<StoredCredential> {
-    if let Some(creds) = load_first_party_from_disk() {
+    if let Ok(Some(creds)) = load_first_party_from_disk() {
         return Some(StoredCredential::FirstParty(creds));
     }
     let token = load_token_from_disk()?;
@@ -527,29 +451,32 @@ pub fn disk_token_cache_status() -> String {
         Err(_) => "unreadable",
     };
     format!(
-        "{state}; full OAuth token mirror at {} with mode 0600 on Unix",
+        "{state}; OAuth token file at {} with mode 0600 on Unix",
         path.display()
     )
 }
 
-/// File-backed mirror of the keychain entry, kept beside the rest of
-/// the daemon's data. Exists because the macOS Keychain prompts the
-/// user (via GUI dialog) for permission whenever a binary with a new
-/// code signature wants to read an entry — and a backgrounded daemon
-/// can't show that dialog, so the read hangs until the 20 s timeout.
+/// File-backed credential store.
 ///
-/// The disk cache lives at `<data_dir>/auth/token.json` with mode
-/// 0600. On read we try disk first; if absent or invalid, we fall
-/// through to the keychain (which prompts once, and the result gets
-/// written to disk so future reads bypass the prompt entirely). On
-/// save we write to both so the keychain stays the source of truth
-/// for `spotuify login`/`spotuify logout` semantics.
+/// The auth files live under the app config directory:
+/// `<config_dir>/auth/token.json` and `<config_dir>/auth/first-party.json`.
+/// On Unix the directory is mode 0700 and files are written atomically
+/// with mode 0600. Older `<data_dir>/auth/*.json` mirrors are read once
+/// as a migration source, then copied into the config auth directory.
 fn token_cache_dir() -> PathBuf {
+    spotuify_protocol::paths::config_dir().join("auth")
+}
+
+fn legacy_token_cache_dir() -> PathBuf {
     spotuify_protocol::paths::data_dir().join("auth")
 }
 
 fn token_cache_file() -> PathBuf {
     token_cache_dir().join("token.json")
+}
+
+fn legacy_token_cache_file() -> PathBuf {
+    legacy_token_cache_dir().join("token.json")
 }
 
 fn token_lock_file() -> PathBuf {
@@ -574,7 +501,7 @@ fn acquire_token_store_lock_bounded() -> AnyResult<TokenStoreLock> {
 fn acquire_token_store_lock_with_timeout(timeout: Duration) -> AnyResult<TokenStoreLock> {
     let path = token_lock_file();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
+        spotuify_protocol::paths::ensure_private_dir(parent).with_context(|| {
             format!(
                 "failed to create Spotify token lock dir {}",
                 parent.display()
@@ -612,46 +539,76 @@ fn acquire_token_store_lock_with_timeout(timeout: Duration) -> AnyResult<TokenSt
     }
 }
 
-fn load_token_from_disk() -> Option<StoredToken> {
-    let path = token_cache_file();
-    let raw = std::fs::read_to_string(&path).ok()?;
-    match serde_json::from_str::<StoredToken>(&raw) {
-        Ok(token) => Some(token),
+fn read_token_file(path: &std::path::Path) -> AnyResult<Option<StoredToken>> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
         Err(err) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %err,
-                "token cache file is invalid JSON; falling through to keychain"
-            );
-            None
+            return Err(err)
+                .with_context(|| format!("failed to read Spotify token file {}", path.display()))
         }
-    }
+    };
+    serde_json::from_str::<StoredToken>(&raw)
+        .map(Some)
+        .with_context(|| format!("stored token at {} is invalid JSON", path.display()))
 }
 
-fn save_token_to_disk(token: &StoredToken) {
+fn load_token_from_store() -> AnyResult<Option<StoredToken>> {
+    let path = token_cache_file();
+    if let Some(token) = read_token_file(&path)? {
+        return Ok(Some(token));
+    }
+
+    let legacy_path = legacy_token_cache_file();
+    if legacy_path != path {
+        match read_token_file(&legacy_path) {
+            Ok(Some(token)) => {
+                save_token_to_disk(&token)?;
+                return Ok(Some(token));
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    path = %legacy_path.display(),
+                    error = %err,
+                    "legacy token file is unreadable; ignoring migration source"
+                );
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn load_token_from_disk() -> Option<StoredToken> {
+    load_token_from_store().ok().flatten()
+}
+
+fn save_token_to_disk(token: &StoredToken) -> AnyResult<()> {
     let path = token_cache_file();
     let Some(parent) = path.parent() else {
-        return;
+        bail!("Spotify token path has no parent");
     };
-    if let Err(err) = std::fs::create_dir_all(parent) {
-        tracing::warn!(path = %parent.display(), error = %err, "failed to create token cache dir");
-        return;
-    }
+    spotuify_protocol::paths::ensure_private_dir(parent)
+        .with_context(|| format!("failed to create Spotify token dir {}", parent.display()))?;
     let raw = match serde_json::to_string(token) {
         Ok(raw) => raw,
         Err(err) => {
-            tracing::warn!(error = %err, "failed to encode token for disk cache");
-            return;
+            return Err(err).context("failed to encode token for disk");
         }
     };
-    if let Err(err) = atomic_write_mode_0600(&path, raw.as_bytes()) {
-        tracing::warn!(path = %path.display(), error = %err, "failed to write token cache");
-    }
+    atomic_write_mode_0600(&path, raw.as_bytes())
+        .with_context(|| format!("failed to write Spotify token file {}", path.display()))?;
+    Ok(())
 }
 
-fn delete_token_from_disk() {
-    let path = token_cache_file();
-    let _ = std::fs::remove_file(&path);
+fn delete_token_from_disk() -> bool {
+    let current = token_cache_file();
+    let legacy = legacy_token_cache_file();
+    let mut removed = remove_file_if_exists(current.clone());
+    if legacy != current {
+        removed |= remove_file_if_exists(legacy);
+    }
+    removed
 }
 
 #[cfg(unix)]
@@ -660,91 +617,61 @@ fn atomic_write_mode_0600(path: &std::path::Path, bytes: &[u8]) -> std::io::Resu
     let Some(parent) = path.parent() else {
         return Err(std::io::Error::new(
             ErrorKind::InvalidInput,
-            "token cache path has no parent",
+            "auth file path has no parent",
         ));
     };
-    std::fs::create_dir_all(parent)?;
+    spotuify_protocol::paths::ensure_private_dir(parent).map_err(std::io::Error::other)?;
     let file_name = path
         .file_name()
         .map_or_else(|| "token".into(), |name| name.to_string_lossy());
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let tmp = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
-    {
-        let mut file = std::fs::OpenOptions::new()
+    for attempt in 0..16 {
+        let nonce: u64 = thread_rng().gen();
+        let tmp = parent.join(format!(
+            ".{file_name}.{}.{}.{}.tmp",
+            std::process::id(),
+            nonce,
+            attempt
+        ));
+        let mut file = match std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
-            .open(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
+            .open(&tmp)
+        {
+            Ok(file) => file,
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        };
+        if let Err(err) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err);
+        }
+        let result = std::fs::rename(&tmp, path);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        return result;
     }
-    let result = std::fs::rename(&tmp, path);
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
+    Err(std::io::Error::new(
+        ErrorKind::AlreadyExists,
+        "failed to allocate a unique auth temp file",
+    ))
 }
 
 #[cfg(not(unix))]
 fn atomic_write_mode_0600(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        spotuify_protocol::paths::ensure_private_dir(parent).map_err(std::io::Error::other)?;
+    }
     std::fs::write(path, bytes)
 }
 
 fn load_token() -> AnyResult<Option<StoredToken>> {
-    // Try the disk cache first. If it hits, we skip the keychain
-    // entirely — no GUI prompt, no 20 s hang for detached daemons.
-    if let Some(token) = load_token_from_disk() {
-        return Ok(Some(token));
-    }
-    // Fall through: ask the keychain (may prompt), then mirror to
-    // disk so the prompt never fires again for this binary.
-    match keychain_get_token() {
-        Ok(raw) => match serde_json::from_str::<StoredToken>(&raw) {
-            Ok(token) => {
-                save_token_to_disk(&token);
-                Ok(Some(token))
-            }
-            Err(err) => Err(anyhow!("stored token is invalid JSON: {err}")),
-        },
-        Err(err) if err.is_no_entry() => Ok(None),
-        Err(err) => Err(anyhow!("failed to read keychain token: {err}")),
-    }
+    load_token_from_store()
 }
 
 fn load_token_bounded() -> AnyResult<Option<StoredToken>> {
-    // Fast path: disk hit. Bypass the worker-thread + timeout dance
-    // entirely so a cold daemon doesn't pay a 20 s ceiling on its
-    // first read.
-    if let Some(token) = load_token_from_disk() {
-        return Ok(Some(token));
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(load_token());
-    });
-    let token_result = recv_keychain_result(rx, "read keychain token");
-    #[cfg(target_os = "macos")]
-    {
-        match token_result {
-            Ok(token) => Ok(token),
-            Err(err) if keychain_access_needs_user(&err) => Err(err),
-            Err(err) => {
-                tracing::debug!(
-                    error = %err,
-                    "keychain crate read failed; trying macOS security CLI fallback"
-                );
-                load_token_via_security_cli()
-            }
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        token_result
-    }
+    load_token()
 }
 
 fn load_token_for_access() -> SpotifyResult<Option<StoredToken>> {
@@ -752,72 +679,11 @@ fn load_token_for_access() -> SpotifyResult<Option<StoredToken>> {
 }
 
 fn map_token_load_error(err: anyhow::Error) -> SpotifyError {
-    if keychain_access_needs_user(&err) {
-        SpotifyError::AuthRequired
-    } else {
-        SpotifyError::from(err)
-    }
-}
-
-fn keychain_access_needs_user(err: &anyhow::Error) -> bool {
-    let message = err.to_string();
-    message.contains("timed out trying to read keychain token")
-        || message.contains("failed to read keychain token:")
-        || message.contains("macOS security CLI could not read Spotify token")
-        || message.contains("timed out trying to read keychain token via macOS security CLI")
-        || message.contains("keychain worker exited while trying to read keychain token")
-}
-
-#[cfg(target_os = "macos")]
-fn load_token_via_security_cli() -> AnyResult<Option<StoredToken>> {
-    use std::process::{Command, Stdio};
-
-    let service = keychain_service();
-    let mut child = Command::new("/usr/bin/security")
-        .arg("find-generic-password")
-        .arg("-s")
-        .arg(&service)
-        .arg("-a")
-        .arg(KEYCHAIN_USER)
-        .arg("-w")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to start macOS security CLI")?;
-    let started = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait().context("failed to poll security CLI")? {
-            if !status.success() {
-                return Err(anyhow!("macOS security CLI could not read Spotify token"));
-            }
-            let mut raw = String::new();
-            child
-                .stdout
-                .take()
-                .context("security CLI stdout unavailable")?
-                .read_to_string(&mut raw)
-                .context("failed to read security CLI output")?;
-            let token = serde_json::from_str::<StoredToken>(raw.trim())
-                .context("stored token from security CLI is invalid JSON")?;
-            save_token_to_disk(&token);
-            return Ok(Some(token));
-        }
-        if started.elapsed() >= KEYCHAIN_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("timed out trying to read keychain token via macOS security CLI");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    SpotifyError::from(err)
 }
 
 fn save_token(token: &StoredToken) -> AnyResult<()> {
-    let raw = serde_json::to_string(token).context("failed to encode token")?;
-    keychain_set_token(&raw).map_err(|err| anyhow!("failed to save token to keychain: {err}"))?;
-    // Mirror to disk so the next cold-start daemon doesn't have to
-    // prompt the keychain again.
-    save_token_to_disk(token);
-    Ok(())
+    save_token_to_disk(token)
 }
 
 fn save_token_bounded(token: &StoredToken) -> AnyResult<()> {
@@ -826,12 +692,7 @@ fn save_token_bounded(token: &StoredToken) -> AnyResult<()> {
 }
 
 fn save_token_unlocked_bounded(token: &StoredToken) -> AnyResult<()> {
-    let token = token.clone();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(save_token(&token));
-    });
-    recv_keychain_result(rx, "save keychain token")
+    save_token(token)
 }
 
 fn delete_token_bounded() -> AnyResult<()> {
@@ -840,15 +701,7 @@ fn delete_token_bounded() -> AnyResult<()> {
 }
 
 fn delete_token_unlocked_bounded(verbose: bool) -> AnyResult<()> {
-    // Clear the disk cache first regardless of keychain outcome —
-    // we never want a stale on-disk token to outlive an explicit
-    // logout, even if the keychain delete races or fails.
-    delete_token_from_disk();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(delete_token(verbose));
-    });
-    recv_keychain_result(rx, "delete keychain token")
+    delete_token(verbose)
 }
 
 fn purge_revoked_token_unlocked(
@@ -869,25 +722,10 @@ fn purge_revoked_token_unlocked(
             if let Err(err) = delete_token_unlocked_bounded(false) {
                 tracing::warn!(
                     error = %err,
-                    "failed to clear revoked Spotify token from keychain; re-login will overwrite it"
+                    "failed to clear revoked Spotify token file; re-login will overwrite it"
                 );
             }
             None
-        }
-    }
-}
-
-fn recv_keychain_result<T>(
-    rx: std::sync::mpsc::Receiver<AnyResult<T>>,
-    action: &str,
-) -> AnyResult<T> {
-    match rx.recv_timeout(KEYCHAIN_TIMEOUT) {
-        Ok(result) => result,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            bail!("timed out trying to {action}")
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            bail!("keychain worker exited while trying to {action}")
         }
     }
 }
@@ -1193,17 +1031,21 @@ mod tests {
 
     struct TestAuthEnv {
         _temp: tempfile::TempDir,
+        old_config_dir: Option<OsString>,
         old_data_dir: Option<OsString>,
     }
 
     impl TestAuthEnv {
         fn new() -> Self {
             let temp = tempfile::tempdir().expect("tempdir");
+            let old_config_dir = std::env::var_os("SPOTUIFY_CONFIG_DIR");
             let old_data_dir = std::env::var_os("SPOTUIFY_DATA_DIR");
+            std::env::set_var("SPOTUIFY_CONFIG_DIR", temp.path().join("config"));
             std::env::set_var("SPOTUIFY_DATA_DIR", temp.path());
             *TEST_TOKEN_ENDPOINT.lock().expect("endpoint lock") = None;
             Self {
                 _temp: temp,
+                old_config_dir,
                 old_data_dir,
             }
         }
@@ -1211,6 +1053,10 @@ mod tests {
 
     impl Drop for TestAuthEnv {
         fn drop(&mut self) {
+            match &self.old_config_dir {
+                Some(value) => std::env::set_var("SPOTUIFY_CONFIG_DIR", value),
+                None => std::env::remove_var("SPOTUIFY_CONFIG_DIR"),
+            }
             match &self.old_data_dir {
                 Some(value) => std::env::set_var("SPOTUIFY_DATA_DIR", value),
                 None => std::env::remove_var("SPOTUIFY_DATA_DIR"),
@@ -1323,26 +1169,26 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_disk_token_mirrors_do_not_share_temp_path() {
+    fn concurrent_auth_file_writes_do_not_share_temp_path() {
         with_auth_env(|| {
             let handles = (0..16)
                 .map(|idx| {
                     std::thread::spawn(move || {
                         let token =
                             fresh_token(&format!("access-{idx}"), &format!("refresh-{idx}"));
-                        save_token_to_disk(&token);
+                        save_token_to_disk(&token).expect("save token");
                     })
                 })
                 .collect::<Vec<_>>();
 
             for handle in handles {
-                handle.join().expect("token mirror writer should not panic");
+                handle.join().expect("token file writer should not panic");
             }
 
-            let token = load_token_from_disk().expect("one mirrored token should remain");
+            let token = load_token_from_disk().expect("one token should remain");
             assert!(token.access_token.starts_with("access-"));
             let leftovers = std::fs::read_dir(token_cache_dir())
-                .expect("token cache dir should exist")
+                .expect("auth dir should exist")
                 .filter_map(Result::ok)
                 .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
                 .count();
@@ -1378,7 +1224,7 @@ mod tests {
     fn disk_token_cache_status_never_prints_token_material() {
         with_auth_env(|| {
             let token = fresh_token("access-secret-should-not-print", "refresh-secret-hidden");
-            save_token_to_disk(&token);
+            save_token_to_disk(&token).expect("save token");
 
             let status = disk_token_cache_status();
 
@@ -1391,23 +1237,61 @@ mod tests {
     }
 
     #[test]
-    fn keychain_timeout_maps_to_auth_required() {
-        let err =
-            super::map_token_load_error(anyhow::anyhow!("timed out trying to read keychain token"));
+    fn legacy_data_dir_token_migrates_to_config_auth_file() {
+        with_auth_env(|| {
+            let token = fresh_token("legacy-access", "legacy-refresh");
+            let legacy = super::legacy_token_cache_file();
+            std::fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy dir");
+            std::fs::write(&legacy, serde_json::to_string(&token).expect("json"))
+                .expect("legacy token");
 
-        assert!(matches!(err, SpotifyError::AuthRequired));
+            assert!(!super::token_cache_file().exists());
+
+            let loaded = super::load_token_bounded()
+                .expect("load token")
+                .expect("token present");
+
+            assert_eq!(loaded.access_token, "legacy-access");
+            assert!(super::token_cache_file().exists());
+        });
     }
 
     #[test]
-    fn disk_credential_snapshot_never_requires_keychain() {
+    fn invalid_auth_file_returns_error() {
         with_auth_env(|| {
-            save_token_to_disk(&existing_token());
+            let path = super::token_cache_file();
+            spotuify_protocol::paths::ensure_private_dir(path.parent().expect("auth parent"))
+                .expect("auth dir");
+            std::fs::write(&path, "{ definitely-not-json").expect("bad token file");
 
-            match super::stored_credential_disk_snapshot() {
-                Some(crate::first_party::StoredCredential::LegacyDevApp(token)) => {
-                    assert_eq!(token.access_token, "old-access");
-                }
-                other => panic!("expected disk legacy token, got {other:?}"),
+            let err = super::load_token_bounded().expect_err("invalid auth file should fail");
+
+            assert!(err.to_string().contains("invalid JSON"), "{err:#}");
+        });
+    }
+
+    #[test]
+    fn auth_file_load_error_maps_to_client_error() {
+        let err = super::map_token_load_error(anyhow::anyhow!("stored token is invalid JSON"));
+
+        assert!(matches!(err, SpotifyError::Client { .. }));
+    }
+
+    #[test]
+    fn disk_credential_snapshot_reads_auth_file_only() {
+        with_auth_env(|| {
+            save_token_to_disk(&existing_token()).expect("save token");
+
+            let snapshot = super::stored_credential_disk_snapshot();
+            assert!(
+                matches!(
+                    snapshot,
+                    Some(crate::first_party::StoredCredential::LegacyDevApp(_))
+                ),
+                "expected disk legacy token, got {snapshot:?}"
+            );
+            if let Some(crate::first_party::StoredCredential::LegacyDevApp(token)) = snapshot {
+                assert_eq!(token.access_token, "old-access");
             }
         });
     }
@@ -1427,7 +1311,7 @@ mod tests {
                 .await;
 
             let old = existing_token();
-            save_token_to_disk(&old);
+            save_token_to_disk(&old).expect("save token");
             let cache = Arc::new(Mutex::new(Some(old)));
 
             let err = access_token_cached(&config(), &http_client(), &cache)
@@ -1438,7 +1322,7 @@ mod tests {
             assert!(cache.lock().await.is_none(), "memory cache should clear");
             assert!(
                 load_token_from_disk().is_none(),
-                "disk cache should be removed"
+                "auth file should be removed"
             );
         });
     }
@@ -1464,7 +1348,7 @@ mod tests {
                 .await;
 
             let old = existing_token();
-            save_token_to_disk(&old);
+            save_token_to_disk(&old).expect("save token");
             let cache = Arc::new(Mutex::new(Some(old)));
 
             let access = access_token_cached(&config(), &http_client(), &cache)
@@ -1495,7 +1379,7 @@ mod tests {
             set_token_endpoint("http://127.0.0.1:9/api/token".to_string());
             let old = existing_token();
             let newer = fresh_token("newer-access", "newer-refresh");
-            save_token_to_disk(&newer);
+            save_token_to_disk(&newer).expect("save token");
             let cache = Arc::new(Mutex::new(Some(old)));
 
             let access = access_token_cached(&config(), &http_client(), &cache)
@@ -1520,7 +1404,7 @@ mod tests {
             set_token_endpoint("http://127.0.0.1:9/api/token".to_string());
             let old = fresh_token("old-access", "old-refresh");
             let newer = fresh_token("newer-access", "newer-refresh");
-            save_token_to_disk(&newer);
+            save_token_to_disk(&newer).expect("save token");
             let cache = Arc::new(Mutex::new(Some(old)));
 
             let access = refresh_access_token_cached(&config(), &http_client(), &cache)
@@ -1586,13 +1470,18 @@ mod tests {
             let creds = crate::first_party::FirstPartyCredentials::new("rt-first-party", vec![]);
             super::save_first_party_credentials(&creds).expect("save first-party");
             // A legacy token also present must NOT shadow the first-party one.
-            super::save_token_to_disk(&existing_token());
+            super::save_token_to_disk(&existing_token()).expect("save token");
 
-            match super::stored_credential_snapshot().expect("snapshot") {
-                Some(crate::first_party::StoredCredential::FirstParty(c)) => {
-                    assert_eq!(c.refresh_token, "rt-first-party");
-                }
-                other => panic!("expected first-party, got {other:?}"),
+            let snapshot = super::stored_credential_snapshot().expect("snapshot");
+            assert!(
+                matches!(
+                    snapshot,
+                    Some(crate::first_party::StoredCredential::FirstParty(_))
+                ),
+                "expected first-party, got {snapshot:?}"
+            );
+            if let Some(crate::first_party::StoredCredential::FirstParty(c)) = snapshot {
+                assert_eq!(c.refresh_token, "rt-first-party");
             }
         });
     }
@@ -1600,12 +1489,17 @@ mod tests {
     #[test]
     fn stored_credential_snapshot_reports_legacy_dev_app_when_only_legacy_present() {
         with_auth_env(|| {
-            super::save_token_to_disk(&existing_token());
-            match super::stored_credential_snapshot().expect("snapshot") {
-                Some(crate::first_party::StoredCredential::LegacyDevApp(token)) => {
-                    assert_eq!(token.access_token, "old-access");
-                }
-                other => panic!("expected legacy dev-app, got {other:?}"),
+            super::save_token_to_disk(&existing_token()).expect("save token");
+            let snapshot = super::stored_credential_snapshot().expect("snapshot");
+            assert!(
+                matches!(
+                    snapshot,
+                    Some(crate::first_party::StoredCredential::LegacyDevApp(_))
+                ),
+                "expected legacy dev-app, got {snapshot:?}"
+            );
+            if let Some(crate::first_party::StoredCredential::LegacyDevApp(token)) = snapshot {
+                assert_eq!(token.access_token, "old-access");
             }
         });
     }

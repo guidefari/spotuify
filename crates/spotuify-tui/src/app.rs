@@ -291,9 +291,8 @@ pub struct App {
     pub devices_updated_at: Option<Instant>,
     /// Wall-clock the TUI process started. Used by the cold-start
     /// auth-modal grace window: if `DaemonEvent::AuthError` lands
-    /// within ~5s of launch, defer the modal so the macOS Keychain
-    /// dialog (often shown at the same moment) can be dealt with
-    /// first without a second modal stacking on top.
+    /// within ~5s of launch, defer the modal so startup auth recovery
+    /// can settle without a second modal stacking on top.
     pub started_at: Instant,
     /// Set to `true` when an `AuthError { InvalidGrant }` event
     /// arrives; cleared on any subsequent success signal
@@ -1843,9 +1842,7 @@ impl App {
                     let can_defer = tokio::runtime::Handle::try_current().is_ok();
                     if in_cold_start && can_defer && self.pending_auth_modal_until.is_none() {
                         // Cold-start grace window: defer the modal by
-                        // ~3.5s. macOS often pops a Keychain dialog at
-                        // the same moment; stacking a TUI modal on top
-                        // is confusing. If the daemon self-heals
+                        // ~3.5s. If the daemon self-heals
                         // (auth_revoked latch clears + a success
                         // event arrives) during the grace window, the
                         // deferred handler suppresses the modal.

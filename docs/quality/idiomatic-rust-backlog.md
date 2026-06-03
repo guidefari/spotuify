@@ -10,7 +10,7 @@ Judged against [`idiomatic-rust-rubric.md`](./idiomatic-rust-rubric.md). Rubric 
 
 ## A. Async: blocking work on the Tokio runtime [D1]
 
-1. **`spotuify-spotify/src/auth.rs:267,290,397`** — `acquire_token_store_lock_bounded` runs a blocking `fs2` file-lock poll loop with `std::thread::sleep`, and `load_token_bounded` reads the macOS Keychain, both on a runtime worker inside the token-refresh path while the `cache.lock().await` tokio mutex is held. **Fix:** move the blocking lock + keychain read into `tokio::task::spawn_blocking`. **Deferred because:** this is the hottest cross-cutting path (every Spotify call refreshes through it); there is no fake token-store seam to TDD it, and exercising it hits the real Keychain, which risks the prompt-storm documented in the `project_dev_build_keychain` memory. Needs a fake token-store/keychain seam first.
+1. **`spotuify-spotify/src/auth.rs`** — `acquire_token_store_lock_bounded` still runs a blocking `fs2` file-lock poll loop with `std::thread::sleep` inside the token-refresh path while the `cache.lock().await` tokio mutex is held. The old macOS Keychain read was removed by the file-backed auth store. **Fix:** move the blocking lock + auth-file IO into `tokio::task::spawn_blocking`. **Deferred because:** this is the hottest cross-cutting path (every Spotify call refreshes through it), and it needs a focused before/after test around concurrent refresh behavior.
 
 2. **`spotuify-system/src/cover_cache.rs:228,244`** — `image::load_from_memory` (CPU) and `std::fs::write`/`rename` (blocking IO) run inside `async fn fetch_and_persist_inner`. **Fix:** wrap decode + write in `tokio::task::spawn_blocking` (or `tokio::fs`). **Deferred because:** only reached on a cache miss, and there is no `get_or_fetch` behavior test; add a wiremock-backed test asserting fetched bytes + on-disk cache before refactoring.
 
@@ -49,7 +49,6 @@ Judged against [`idiomatic-rust-rubric.md`](./idiomatic-rust-rubric.md). Rubric 
 ## Fixed in the 2026-05-23 pass (TDD: green → refactor → green)
 
 - `protocol/event_log.rs` — bounded FIFO `Vec` + `remove(0)` (O(n) shift) → `VecDeque` + `pop_front` (O(1)). Covered by `event_log_drops_oldest_when_over_capacity` (asserts eviction order; survives the swap). [F4, D-perf]
-- `keychain/Cargo.toml` — `thiserror = "1"` → `{ workspace = true }` (v2); removes a duplicate-major direct dependency. [G2]
 - `search/lib.rs:320` — removed a discarded `Count` collector query that ran full-result counting on every search and threw the result away. [F3, perf]
 - `spotify/rate_limit.rs:204,211` — `&PathBuf` → `&Path` on `BackoffState::load`/`save` (clippy `ptr_arg`; accepts more callers). [F4]
 - `daemon/server.rs:155` — accept-loop `accepted?` (a transient accept error killed the whole daemon and skipped graceful drain) → log + brief backoff + continue. [D5, robustness]

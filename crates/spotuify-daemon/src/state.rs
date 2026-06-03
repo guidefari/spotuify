@@ -290,19 +290,20 @@ impl DaemonState {
         }
 
         // Scope-drift detection used to fire here as a proactive
-        // keychain read; on macOS that triggered a "spotuify wants to
-        // access the keychain" prompt at every cold start, on top of
-        // the prompts the lazy `access_token_cached` path already
-        // causes. Net effect: 3–5 prompts on every fresh launch.
+        // credential read. With the old Keychain-backed auth that triggered a
+        // "spotuify wants to access the keychain" prompt at every cold
+        // start, on top of the prompts the lazy `access_token_cached`
+        // path already caused. Net effect: 3–5 prompts on every fresh
+        // launch.
         //
         // Recovery: defer the scope-drift check to the first real API
         // call. `SpotifyClient::access_token_cached` already loads the
         // token once and caches it for the process; we hook the
         // scope-drift check off that single read (see
         // `emit_scope_reauth_event_if_needed` wiring in the request
-        // handler). Net effect: keychain is read exactly as many
-        // times as a vanilla "fetch token, refresh when expiring"
-        // path would read it — no extra prompts.
+        // handler). Net effect: the auth file is read exactly as many
+        // times as a vanilla "fetch token, refresh when expiring" path
+        // would read it.
         //
         // The keep-only-on-explicit-opt-in escape hatch is gone for
         // the same reason; if a future build wants the proactive
@@ -945,7 +946,7 @@ impl DaemonState {
 
     /// Drop the daemon's in-memory token cache and clear the
     /// `auth_revoked` latch so the next `spotify_client()` call
-    /// re-reads fresh credentials from keychain/disk. Called by the
+    /// re-reads fresh credentials from the auth file. Called by the
     /// `Request::ReloadAuth` IPC handler after a client has completed
     /// an interactive OAuth re-authentication.
     ///
@@ -1251,7 +1252,7 @@ impl DaemonState {
         // Scope-drift surface — legacy dev-app only. login5 tokens always
         // report empty scopes, so the drift check would fire a permanent
         // false "re-login" banner in first-party mode. Reuses the token
-        // that's now in `self.token_cache` (no extra keychain read).
+        // that's now in `self.token_cache` (no extra auth file read).
         if !first_party
             && !self
                 .scope_reauth_emitted

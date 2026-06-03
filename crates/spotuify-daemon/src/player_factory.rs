@@ -14,7 +14,7 @@ use spotuify_spotify::config::Config;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 /// Synchronous token provider backed by an `Arc<RwLock<_>>` slot the
-/// daemon refreshes from the keyring-cached token. Embedded
+/// daemon refreshes from the auth-file-backed token. Embedded
 /// librespot's TokenProvider reads it on every Web API call.
 #[cfg(feature = "embedded-playback")]
 pub(crate) struct DaemonTokenProvider {

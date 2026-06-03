@@ -3,7 +3,7 @@ title: "Config"
 description: "Document config paths, keys, defaults, env vars, and one-shot overrides."
 ---
 
-Config is TOML. Secrets belong in the OS credential store when possible. On Unix, `spotuify` writes its config file with mode `0600`.
+Config is TOML. OAuth tokens live in the private config auth directory, not in `spotuify.toml`. On Unix, `spotuify` writes config and auth files with mode `0600`.
 
 ## Paths
 
@@ -90,15 +90,14 @@ SPOTUIFY_USE_FIRST_PARTY=1 spotuify login
 For local development and tests:
 
 ```bash
-# Run the whole stack against fake Spotify data; never touches the
-# keychain. Honored by the CLI, daemon, and TUI uniformly.
+# Run the whole stack against fake Spotify data; never touches live
+# Spotify auth. Honored by the CLI, daemon, and TUI uniformly.
 SPOTUIFY_FAKE_SPOTIFY=1 spotuify
 ```
 
-The old proactive scope-drift keychain read no longer runs at daemon
-startup. Scope checks now reuse the first real token read. If that read
-needs interactive Keychain approval, the daemon latches the auth-required
-state and waits for `spotuify login` instead of prompting repeatedly.
+The old proactive scope-drift credential read no longer runs at daemon
+startup. Scope checks now reuse the first real token read from the auth
+file.
 
 ## One-shot overrides
 

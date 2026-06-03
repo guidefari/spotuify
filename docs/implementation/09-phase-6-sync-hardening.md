@@ -59,9 +59,9 @@ Cross-checked against ncspot, spotify-player, and spotatui (all current as of Ma
 
 ### Token refresh hardening
 - After every token refresh, if response lacks `refresh_token`, merge the existing `refresh_token` from cache before writing.
-- Persist credentials via the per-platform keyring plus a mode-0600 disk mirror. The mirror is intentional: it prevents detached daemons from hanging behind OS keychain prompts.
+- Persist credentials via private config auth files with mode `0600` on Unix. This intentionally avoids detached daemons hanging behind OS credential prompts.
 - Refresh proactively at `expires_at - 60s`, not on 401. 401 handling stays as a safety net.
-- Token-refresh race: an in-process `tokio::sync::Mutex<TokenState>` serializes callers inside one daemon, and `<data_dir>/auth/token.lock` serializes daemon/CLI processes. Under the file lock, reload persisted credentials before refreshing stale memory.
+- Token-refresh race: an in-process `tokio::sync::Mutex<TokenState>` serializes callers inside one daemon, and `<config_dir>/auth/token.lock` serializes daemon/CLI processes. Under the file lock, reload persisted credentials before refreshing stale memory.
 
 ### New daemon events
 - `RateLimited { retry_after_secs, scope }`

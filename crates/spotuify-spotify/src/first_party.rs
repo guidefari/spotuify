@@ -75,7 +75,7 @@ pub enum StoredCredential {
     LegacyDevApp(StoredToken),
 }
 
-/// Classify a raw credential blob read from the keychain or disk cache.
+/// Classify a raw credential blob read from the auth file.
 ///
 /// First-party blobs carry `auth_kind: "first-party"`; legacy dev-app
 /// blobs are bare [`StoredToken`]s with no such field. We try
@@ -125,11 +125,13 @@ mod tests {
         let json = FirstPartyCredentials::new("rt-abc", vec![])
             .to_json()
             .expect("serialize");
-        match classify_credential(&json) {
-            Some(StoredCredential::FirstParty(creds)) => {
-                assert_eq!(creds.refresh_token, "rt-abc");
-            }
-            other => panic!("expected first-party, got {other:?}"),
+        let credential = classify_credential(&json);
+        assert!(
+            matches!(credential, Some(StoredCredential::FirstParty(_))),
+            "expected first-party, got {credential:?}"
+        );
+        if let Some(StoredCredential::FirstParty(creds)) = credential {
+            assert_eq!(creds.refresh_token, "rt-abc");
         }
     }
 
@@ -138,11 +140,13 @@ mod tests {
         // Adversarial: a dev-app StoredToken also has a `refresh_token`,
         // so without the discriminator guard it could be misread as
         // first-party. It must classify as legacy.
-        match classify_credential(&legacy_token_json()) {
-            Some(StoredCredential::LegacyDevApp(token)) => {
-                assert_eq!(token.access_token, "dev-access");
-            }
-            other => panic!("expected legacy dev-app, got {other:?}"),
+        let credential = classify_credential(&legacy_token_json());
+        assert!(
+            matches!(credential, Some(StoredCredential::LegacyDevApp(_))),
+            "expected legacy dev-app, got {credential:?}"
+        );
+        if let Some(StoredCredential::LegacyDevApp(token)) = credential {
+            assert_eq!(token.access_token, "dev-access");
         }
     }
 

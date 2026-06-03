@@ -23,12 +23,15 @@ Implemented CLI commands:
 - daemon lifecycle and IPC-backed one-shot commands
 - cache status/reset/repair/reindex
 - operations log: ops list/show/undo/redo
-- analytics, lyrics, MCP, and visualization commands
+- analytics, lyrics, current-track media refresh, MCP, and visualization
+  commands
 
 Implemented TUI areas:
 
 - search
 - grouped search result rendering by media kind, including podcasts/shows
+- selection artwork previews for albums, playlists, shows, and episodes in
+  Search/Library where image metadata exists
 - queue
 - playlists
 - library
@@ -39,6 +42,9 @@ Implemented TUI areas:
 - optional right rail for queue, lyrics, and contextual key hints
 - fullscreen queue and lyrics overlays
 - playlist picker modal for add-to-playlist
+- Space starts the selected Home, Search, Library, or Playlist item when there
+  is no resumable current item, including ended-track state
+- manual cover-art and lyrics refresh for the current track
 
 Implemented Spotify API capabilities:
 
@@ -51,6 +57,8 @@ Implemented Spotify API capabilities:
 - playlist tracks
 - play/pause
 - play URI/context
+- album/playlist context playback emits and caches a queue snapshot, with the
+  first context track as currently playing and the rest as up next
 - next/previous
 - seek
 - volume
@@ -64,6 +72,7 @@ Implemented Spotify API capabilities:
 - save track/episode
 - library save/unsave by URI for tracks, albums, episodes, and artist
   follow/unfollow routing where the provider supports it
+- cached cover-art and lyrics refresh for the current track
 
 ## Current fixes already applied
 
@@ -80,16 +89,33 @@ Implemented Spotify API capabilities:
 - TUI mouse support covers tabs, rows, progress seeking, right-rail controls,
   bottom-player play/pause, and bottom-player volume scrolling.
 - Spotify search limit changed to the current valid max.
-- Keychain reads/writes bounded to avoid indefinite hangs.
-- Keychain reads that need user approval now latch `AuthRequired` in the
-  daemon; auth-error desktop notifications are deduped so an unattended
-  prompt does not become a notification storm.
+- Auth file reads/writes use private app config paths and fail clearly.
+- Auth errors latch in the daemon; auth-error desktop notifications are
+  deduped so unattended auth failures do not become a notification storm.
 - embedded player device name set to `spotuify-hume`.
 - legacy `[spotifyd] device_name` remains accepted as a migration fallback.
 - daemon, Unix-socket JSON IPC, workspace split, SQLite cache,
   operation receipts, typed Spotify errors, rate-limit handling,
   MCP stdio/HTTP surfaces, embedded librespot sink-chain wiring, local
   lyrics, and visualization plumbing have landed in later phases.
+- Embedded player volume uses librespot's linear volume controller and
+  re-applies the cached 0..100 volume when the device activates, so first
+  playback does not start silently at a mis-scaled volume.
+- Playback controls now use a daemon hot path: the command kind is frozen
+  before optimistic state changes, embedded transport is tried within a
+  bounded fast window, and the player actor services transport commands before
+  normal commands and warm preloads.
+- Queue additions schedule non-blocking warming for queued track metadata,
+  cover art, lyrics, search-index rows, and next-track audio preload where the
+  embedded backend supports it.
+- `spotuify refresh-media` and TUI `U` refetch the current track's cover art
+  and lyrics without clearing existing media before the new fetch returns.
+- Playlist/album `PlayUri` commands publish `QueueChanged(play-context)` so
+  Home, Queue, TUI rails, CLI watchers, MCP clients, and agents see the same
+  context queue instead of an empty queue after context playback starts.
+- Fast local resume/toggle skips ended or item-less playback snapshots, so
+  Space after an ended track starts the selected item instead of sending a
+  stale local resume to the embedded player.
 
 ## Current gaps
 

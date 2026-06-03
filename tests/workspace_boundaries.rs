@@ -62,14 +62,9 @@ fn allowed_deps(crate_name: &str) -> Option<BTreeSet<&'static str>> {
         // core-only; the practical reality is they consume protocol types.
         "spotuify-store" => &["spotuify-core", "spotuify-protocol"],
         "spotuify-search" => &["spotuify-core", "spotuify-protocol", "spotuify-store"],
-        // Phase 11 (F5): spotuify-keychain is a pure leaf crate that
-        // wraps cross-platform credential storage. Zero internal deps.
-        "spotuify-keychain" => &[],
         // SpotifyError maps to IpcErrorKind from protocol; AuthErrorKind serialises
         // into DaemonEvent::AuthError variants. Protocol dep is intentional.
-        // spotuify-keychain is a leaf crate (cross-platform creds) consumed
-        // by auth.rs.
-        "spotuify-spotify" => &["spotuify-core", "spotuify-protocol", "spotuify-keychain"],
+        "spotuify-spotify" => &["spotuify-core", "spotuify-protocol"],
         // Phase 17: player owns the embedded sink-tap and feeds raw
         // samples into spotuify-audio's analyzer handle. Keep FFT and
         // loopback code out of player, but allow this one-way edge.

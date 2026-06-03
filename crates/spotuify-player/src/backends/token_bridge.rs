@@ -23,7 +23,7 @@ use crate::backends::clock::Clock;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const REFRESH_HEADROOM: Duration = Duration::from_secs(60);
 
-/// Synchronous source of the Web API bearer token. The keyring-backed
+/// Synchronous source of the Web API bearer token. The daemon-backed
 /// implementation lives in the daemon wiring; tests use
 /// `StaticTokenProvider`. Used by EmbeddedBackend to bridge librespot's
 /// auth into spotuify's Web API client.

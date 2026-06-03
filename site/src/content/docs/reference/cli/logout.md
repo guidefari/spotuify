@@ -1,13 +1,13 @@
 ---
 title: "spotuify logout"
-description: "Remove the stored Spotify token from the platform credential vault and local auth cache"
+description: "Remove the stored Spotify token from the local auth file"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Remove the stored Spotify token from the platform credential vault and local auth cache
+Remove the stored Spotify token from the local auth file
 
 ## Examples
 
@@ -18,7 +18,7 @@ spotuify logout
 ## Help
 
 ```text
-Remove the stored Spotify token from the platform credential vault and local auth cache
+Remove the stored Spotify token from the local auth file
 
 Usage: spotuify logout [OPTIONS]
 

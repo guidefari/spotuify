@@ -11,7 +11,7 @@ It should isolate Spotify-specific quirks from the daemon, CLI, and TUI.
 ### Auth
 
 - OAuth PKCE for local CLI/TUI use.
-- Refresh token stored in system keyring.
+- Refresh token stored in the private auth file.
 - Scope requests should be minimal and explained.
 
 ### Catalog

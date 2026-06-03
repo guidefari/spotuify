@@ -1521,7 +1521,7 @@ The player repair should be considered successful when:
   - TUI input
   - IPC accept
   - mutation lock wait
-  - token/keychain
+  - token/auth file
   - rate limiter
   - Spotify round trip
   - command result
@@ -1567,4 +1567,3 @@ Local project docs:
 - `docs/implementation/09-phase-6-sync-hardening.md`
 - `docs/implementation/12-phase-9-librespot-embed.md`
 - `docs/implementation/20-phase-17-audio-visualization.md`
-

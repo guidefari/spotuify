@@ -50,7 +50,7 @@ Pass criteria:
 
 - No OAuth tokens, refresh tokens, bearers, passwords, private keys, signing keys, or API client secrets committed anywhere in the repo, docs, fixtures, tests, packaging, GitHub workflows, or the site bundle.
 - Spotify OAuth uses PKCE; `state` is validated; redirect URI is restricted to loopback.
-- Long-lived credentials stored in OS credential storage (Keychain / SecretService / DPAPI). Fallback file paths have `0600` perms on Unix.
+- Long-lived credentials stored in private auth files with `0600` perms on Unix.
 - Live Web API bearer is **not** persisted to disk. CLI surfaces that print secrets require an explicit `--reveal-secret`-style flag.
 - Log files, `bug-report` bundles, `doctor` output, and CLI human output redact `Authorization`, `refresh_token`, `client_secret`, and similar fields by default.
 - Config files containing user-tagged data are written `0600` on Unix.

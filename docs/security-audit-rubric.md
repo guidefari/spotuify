@@ -37,7 +37,7 @@ Pass criteria:
 Audit steps:
 
 - Search for secret-like literals and known credential field names.
-- Inspect auth/keychain code, logging, diagnostics, and bug-report output.
+- Inspect auth/credential storage code, logging, diagnostics, and bug-report output.
 - Inspect docs and generated site content for accidental token examples.
 
 ### SEC-02: Public Distribution Trust

@@ -70,13 +70,13 @@ struct Cli {
 enum Command {
     /// Guided BYO Spotify app setup: config, browser login, and initial Spotify sync.
     Onboard,
-    /// Log in to Spotify in your browser and store a refresh token in the platform credential vault.
+    /// Log in to Spotify in your browser and store a refresh token in the local auth file.
     Login {
         /// Override the redirect URI (only used with your own SPOTUIFY_CLIENT_ID app).
         #[arg(long)]
         redirect_uri: Option<String>,
     },
-    /// Remove the stored Spotify token from the platform credential vault and local auth cache.
+    /// Remove the stored Spotify token from the local auth file.
     Logout,
     /// Authentication-adjacent debug commands.
     Auth {
@@ -812,7 +812,7 @@ fn cli_login_progress(event: spotuify_spotify::auth::LoginProgress) {
         }
         LoginProgress::WaitingForCallback => {}
         LoginProgress::Saved => {
-            println!("Spotify auth saved in the platform credential vault.");
+            println!("Spotify auth saved in the local auth file.");
         }
     }
 }
@@ -865,7 +865,7 @@ fn clear_librespot_credentials() {
 /// completed `spotuify login` / `spotuify logout`. Without this, the
 /// daemon keeps refreshing against the previous (now-revoked)
 /// refresh token and surfacing the same `auth revoked; re-login
-/// required` error even though disk + keychain hold fresh
+/// required` error even though the auth file holds fresh
 /// credentials. Returns `Ok(())` if no daemon is running — the next
 /// daemon start will read the fresh tokens off disk on its own.
 async fn nudge_daemon_reload_auth() -> Result<()> {
@@ -1737,7 +1737,7 @@ fn needs_onboarding() -> Result<bool> {
     let token_present = match token_status_bounded(Duration::from_secs(3)) {
         Ok(status) => status.is_some(),
         Err(err) => {
-            eprintln!("warning: keychain token status unavailable: {err}");
+            eprintln!("warning: auth token status unavailable: {err}");
             true
         }
     };
@@ -2570,7 +2570,7 @@ fn token_status_bounded(timeout: Duration) -> Result<Option<String>> {
             Err(anyhow::anyhow!("timed out after {}s", timeout.as_secs()))
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            Err(anyhow::anyhow!("keychain status worker exited"))
+            Err(anyhow::anyhow!("auth status worker exited"))
         }
     }
 }

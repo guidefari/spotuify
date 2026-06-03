@@ -26,8 +26,8 @@ Usage: spotuify [OPTIONS] [COMMAND]
 
 Commands:
   onboard         Guided BYO Spotify app setup: config, browser login, and initial Spotify sync
-  login           Log in to Spotify in your browser and store a refresh token in the platform credential vault
-  logout          Remove the stored Spotify token from the platform credential vault and local auth cache
+  login           Log in to Spotify in your browser and store a refresh token in the local auth file
+  logout          Remove the stored Spotify token from the local auth file
   auth            Authentication-adjacent debug commands
   doctor          Check config, auth, Spotify API access, and visible devices
   daemon          Manage the local spotuify daemon
@@ -54,6 +54,7 @@ Commands:
   playlist        Playlist operations
   library         Cached library operations
   lyrics          Synced lyrics operations
+  refresh-media   Refresh current track cover art and lyrics
   viz             Configure the audio visualizer
   hooks           Test configured shell hooks
   mpris           Inspect OS media-control integration

@@ -39,9 +39,9 @@ cache_remote_results = true
 
 ## Secrets
 
-- Default dev-app PKCE credentials live in the system keyring and are mirrored to `<data_dir>/auth/token.json` with mode `0600` on Unix so detached daemons do not hang on keychain prompts.
-- `<data_dir>/auth/token.lock` serializes login, logout, refresh, and revocation purge across daemon/CLI processes.
-- First-party/keymaster credentials are opt-in via `SPOTUIFY_USE_FIRST_PARTY=1`; that path stores only refresh token + scopes in `first-party.json`.
+- Default dev-app PKCE credentials live in `<config_dir>/auth/token.json` with mode `0600` on Unix.
+- `<config_dir>/auth/token.lock` serializes login, logout, refresh, and revocation purge across daemon/CLI processes.
+- First-party/keymaster credentials are opt-in via `SPOTUIFY_USE_FIRST_PARTY=1`; that path stores only refresh token + scopes in `<config_dir>/auth/first-party.json`.
 - Client secret is optional for PKCE.
 - If a secret is stored for compatibility, `config show` must redact it.
 - Bug reports must never include secrets.
@@ -61,14 +61,11 @@ spotuify auth status
 spotuify auth bearer --reveal-secret
 ```
 
-## Keychain timeouts
+## Auth file failure behavior
 
-Every keychain call must be bounded. A hung keychain must degrade to a clear auth error, not freeze doctor, CLI, daemon, or TUI.
+Auth file reads and writes must fail clearly and never freeze doctor, CLI, daemon, or TUI.
 
-Interactive keychain approval is auth state, not a retry loop. If a daemon
-token read needs user approval, the daemon latches `AuthRequired`, emits one
-auth error, and lets later health checks fail fast until `spotuify login` or a
-disk-backed recovery probe clears the latch.
+Corrupt current auth files are source-of-truth errors. Legacy `<data_dir>/auth/*.json` files are migration inputs only: read once, copied into `<config_dir>/auth/`, then ignored if unreadable.
 
 ## Refresh-token revocation
 

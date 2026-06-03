@@ -353,18 +353,20 @@ mod tests {
             r#"{"error":{"status":403,"message":"Forbidden"}}"#,
             Utc::now(),
         );
-        match err {
-            SpotifyError::Api {
-                status, message, ..
-            } => {
-                assert_eq!(status, 403);
-                assert!(message.contains("Forbidden"));
-                assert!(
-                    message.contains("Extended Quota Mode"),
-                    "expected dev-app policy hint, got: {message}"
-                );
-            }
-            other => panic!("expected Api 403, got {other:?}"),
+        assert!(
+            matches!(err, SpotifyError::Api { status: 403, .. }),
+            "expected Api 403, got {err:?}"
+        );
+        if let SpotifyError::Api {
+            status, message, ..
+        } = err
+        {
+            assert_eq!(status, 403);
+            assert!(message.contains("Forbidden"));
+            assert!(
+                message.contains("Extended Quota Mode"),
+                "expected dev-app policy hint, got: {message}"
+            );
         }
     }
 }

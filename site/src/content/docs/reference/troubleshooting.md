@@ -62,40 +62,31 @@ spotuify logout
 spotuify login
 ```
 
-## macOS keychain prompt storm
+## Auth file issues
 
-`spotuify` first tries the private auth cache at
-`<data_dir>/auth/token.json`. If that file is missing, it falls back to
-the macOS Keychain. On a fresh or unsigned binary, macOS may prompt for
-approval.
+`spotuify` stores OAuth credentials in the private auth directory:
+`<config_dir>/auth/token.json` for the default dev-app flow and
+`<config_dir>/auth/first-party.json` for first-party/keymaster auth.
+Files are written with mode `0600` on Unix.
 
-The daemon treats an unanswered Keychain prompt as `AuthRequired`. It
-emits one auth event, the notification bridge shows one auth
-notification per error kind, and later health checks fail fast without
-touching Keychain again. Run `spotuify login` when you are ready to
-repair auth.
+If auth looks wrong, inspect the current paths first:
 
-To kill the prompts on a binary you trust:
+```bash
+spotuify config path
+spotuify doctor
+```
 
-- Click **Always Allow** the next time macOS prompts for that exact
-  binary. The grant is bound to the binary identity, so it survives
-  daemon restarts but resets when you rebuild from source.
-
-If you've run unsigned dev builds repeatedly, each one is a new identity
-that **Always Allow** can't pin, so the clicks pile up and can corrupt the
-token item's access list, after which even the trusted installed binary
-prompts on every ~20s read. Reset it by recreating the token from a
-trusted binary:
+Reset the auth file by recreating the token:
 
 ```bash
 spotuify daemon stop
-spotuify logout      # deletes the token + its corrupted access list
-spotuify login       # recreates a clean item, trusting the installed binary
+spotuify logout
+spotuify login
 spotuify daemon start
 ```
 
-For local development and tests, use fake mode when you do not want any
-Keychain access at all:
+For local development and tests, use fake mode when you do not want live
+Spotify auth at all:
 
 ```bash
 SPOTUIFY_FAKE_SPOTIFY=1 spotuify
@@ -160,10 +151,14 @@ spotuify sync all
 ```bash
 spotuify lyrics show
 spotuify lyrics fetch spotify:track:...
+spotuify refresh-media
 spotuify lyrics offset spotify:track:... +50ms
 ```
 
 Lyrics depend on configured providers and cache state. Spotify Web API itself does not guarantee lyrics.
+
+In the TUI, press `U` to refetch the current track's cover art and lyrics.
+The current display is not cleared while the new fetch is running.
 
 ## Visualizer is blank
 

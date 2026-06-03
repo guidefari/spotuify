@@ -92,7 +92,7 @@ impl MockPlayerBackend {
     }
 
     /// Inject a one-shot token so token-bridge tests can verify the
-    /// daemon prefers the backend's token over the keyring fallback.
+    /// daemon prefers the backend's token over the stored-token fallback.
     pub fn set_web_api_token(&mut self, token: Option<String>) {
         self.state.lock().web_api_token = token;
     }

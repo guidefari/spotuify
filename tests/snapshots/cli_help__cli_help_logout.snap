@@ -2,7 +2,7 @@
 source: tests/cli_help.rs
 expression: normalize_help_output(&stdout)
 ---
-Remove the stored Spotify token from the platform credential vault and local auth cache
+Remove the stored Spotify token from the local auth file
 
 Usage: spotuify logout [OPTIONS]
 

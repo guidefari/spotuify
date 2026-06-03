@@ -70,7 +70,7 @@ spotuify login
 spotuify doctor
 ```
 
-What you get: a browser opens, you approve, and the OAuth token is stored in the OS credential vault and local auth cache. The doctor report tells you whether auth, daemon, device visibility, and Spotify API access work.
+What you get: a browser opens, you approve, and the OAuth token is stored in the local auth file under the app config directory. The doctor report tells you whether auth, daemon, device visibility, and Spotify API access work.
 
 ## Set your Spotify app
 

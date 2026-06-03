@@ -12,7 +12,7 @@ Observability is user experience.
 
 - config path and parsed config
 - auth token status
-- keychain access latency
+- auth file status
 - daemon status
 - socket health
 - embedded player state

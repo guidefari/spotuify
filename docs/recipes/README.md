@@ -40,7 +40,7 @@ playback.
 ## Why this design
 
 Bundling Last.fm / ListenBrainz authentication in spotuify itself would
-expand the credential surface (more entries in your keychain) and tie us
+expand the credential surface (more stored secrets) and tie us
 to whichever scrobblers we picked. Punting to shell hooks keeps the
 core daemon focused on Spotify and lets the community ship recipes
 without touching Rust.

@@ -60,7 +60,7 @@ Playlist creation, playlist edits, bulk likes, bulk queueing, and follows should
 
 ### 8. Observability is product UX
 
-When Spotify, keychain, network, embedded playback, or the daemon fails, the app must explain what failed and what command fixes it.
+When Spotify, auth file IO, network, embedded playback, or the daemon fails, the app must explain what failed and what command fixes it.
 
 ## Differentiators
 

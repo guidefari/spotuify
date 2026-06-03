@@ -9,7 +9,6 @@ description = "Spotify Web API client, auth, config, and the typed error/compat/
 [dependencies]
 spotuify-core = { workspace = true }
 spotuify-protocol = { workspace = true }
-spotuify-keychain = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

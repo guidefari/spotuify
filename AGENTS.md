@@ -15,7 +15,7 @@ The user maintains the live state of their machine and account; you have everyth
 - **Restart dev daemon:** `./target/release/spotuify daemon stop && ./target/release/spotuify daemon start`
 - **Run the failing case:** `./target/release/spotuify <subcommand>` (`search`, `play`, `queue add`, `playlists`, etc.)
 - **Read the daemon log:** `./target/release/spotuify logs path` then tail that file; filter out tantivy noise with `grep -v tantivy`
-- **Auth token for raw Spotify probes:** use `spotuify auth bearer` to print the live Web API bearer, then `curl -H "Authorization: Bearer $(spotuify auth bearer)" https://api.spotify.com/v1/...` to probe upstream directly. Default auth is the user dev-app PKCE path; the keychain plus `<data_dir>/auth/token.json` 0600 disk mirror hold the OAuth token. First-party/keymaster auth is opt-in (`SPOTUIFY_USE_FIRST_PARTY=1`) and stores only refresh token + scopes under `spotify-first-party`.
+- **Auth token for raw Spotify probes:** use `spotuify auth bearer` to print the live Web API bearer, then `curl -H "Authorization: Bearer $(spotuify auth bearer)" https://api.spotify.com/v1/...` to probe upstream directly. Default auth is the user dev-app PKCE path; `<config_dir>/auth/token.json` holds the OAuth token with mode 0600 on Unix. First-party/keymaster auth is opt-in (`SPOTUIFY_USE_FIRST_PARTY=1`) and stores only refresh token + scopes in `<config_dir>/auth/first-party.json`.
 - **Tantivy lockfile stuck:** remove `.tantivy-*.lock` under the current instance `search_index` after stopping that instance's daemon.
 - **Stray daemons:** do not broad-`pkill` `spotuify daemon`; stop the current instance with its own binary/env so dev and prod do not kill each other.
 
@@ -46,7 +46,7 @@ The CLI-everywhere contract is non-negotiable. You ARE one of the agents this pr
 - TUI: Ratatui + crossterm.
 - HTTP: reqwest.
 - Config: TOML + serde.
-- Credentials: system keyring, currently macOS Keychain.
+- Credentials: private auth files under the app config directory.
 - Playback device: Spotify Connect via embedded librespot (in-daemon) or another visible Spotify device.
 - Target database: SQLite.
 - Target search: Tantivy.
@@ -54,7 +54,7 @@ The CLI-everywhere contract is non-negotiable. You ARE one of the agents this pr
 
 ## Current architecture
 
-The codebase is a Cargo workspace split into focused crates (`spotuify-core`, `spotuify-protocol`, `spotuify-store`, `spotuify-search`, `spotuify-spotify`, `spotuify-player`, `spotuify-sync`, `spotuify-mcp`, `spotuify-cli`, `spotuify-tui`, `spotuify-daemon`, `spotuify-system`, `spotuify-audio`, `spotuify-lyrics`, `spotuify-keychain`). The daemon owns runtime state; everything else is a client.
+The codebase is a Cargo workspace split into focused crates (`spotuify-core`, `spotuify-protocol`, `spotuify-store`, `spotuify-search`, `spotuify-spotify`, `spotuify-player`, `spotuify-sync`, `spotuify-mcp`, `spotuify-cli`, `spotuify-tui`, `spotuify-daemon`, `spotuify-system`, `spotuify-audio`, `spotuify-lyrics`). The daemon owns runtime state; everything else is a client.
 
 ## Target architecture
 
@@ -180,7 +180,7 @@ A flow is not done until it reaches the user-visible outcome and reports success
 
 ### Bounded external dependencies
 
-Keychain, Spotify Web API, embedded librespot, daemon IPC, and image loading must have bounded failure behavior. Never let TUI input, `doctor`, or CLI commands hang indefinitely.
+Auth file IO, Spotify Web API, embedded librespot, daemon IPC, and image loading must have bounded failure behavior. Never let TUI input, `doctor`, or CLI commands hang indefinitely.
 
 ## Target crate dependency rules
 

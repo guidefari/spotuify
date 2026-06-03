@@ -282,8 +282,8 @@ How (as built):
   the player actor's `PlayerBackend::web_api_token()` (login5). The
   entire legacy dev-app PKCE path is left intact behind this seam.
 - Persistence: only the librespot-oauth refresh token is stored
-  (`FirstPartyCredentials`, keychain account `spotify-first-party` +
-  0600 disk mirror). The bearer is never persisted; reusable native
+  (`FirstPartyCredentials` in `<config_dir>/auth/first-party.json` with
+  mode 0600 on Unix). The bearer is never persisted; reusable native
   playback credentials live in librespot's own cache.
 - Opt-out: set `SPOTUIFY_CLIENT_ID` (env) to use your own Spotify app
   (legacy dev-app flow). The opt-out is the **env var**, not a config
@@ -311,7 +311,7 @@ Why:
   librespot-native session channels instead of heavy `api.spotify.com`
   polling. Until then, it remains gated by `SPOTUIFY_USE_FIRST_PARTY=1`.
 - Default dev-app auth has sharper operational edges, so the token store must
-  be treated as shared mutable state: keychain plus 0600 disk mirror, a
+  be treated as shared mutable state: a private 0600 auth file, a
   cross-process lock, refresh-token replacement persistence, and `invalid_grant`
   purge/fail-fast behavior.
 
@@ -320,7 +320,5 @@ Current behavior:
 - `Config::load()` requires `client_id` from config or `SPOTUIFY_CLIENT_ID`.
 - `Config::is_first_party()` returns true only when
   `SPOTUIFY_USE_FIRST_PARTY=1`.
-- Default credentials are `StoredToken` values in the OS keychain plus
-  `<data_dir>/auth/token.json` with mode 0600 on Unix.
-- First-party credentials are separate `FirstPartyCredentials` under
-  `spotify-first-party` plus `<data_dir>/auth/first-party.json`.
+- Default credentials are `StoredToken` values in `<config_dir>/auth/token.json` with mode 0600 on Unix.
+- First-party credentials are separate `FirstPartyCredentials` values in `<config_dir>/auth/first-party.json`.

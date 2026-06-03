@@ -18,7 +18,7 @@ Make current Spotify auth/device/search/playback behavior reliable enough to bui
 
 ## Work items
 
-1. [x] Audit all keychain calls and keep timeout wrappers.
+1. [x] Audit and retire all keychain calls.
 2. [x] Audit all Spotify calls from TUI input path. TUI actions dispatch
    bounded async work instead of awaiting Spotify calls inside key handling.
 3. [x] Add CLI command surfaces for search/play/device/status verification.

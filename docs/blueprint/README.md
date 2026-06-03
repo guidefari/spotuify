@@ -17,7 +17,7 @@
 | 08 | [TUI](08-tui.md) | Layout, command palette, contextual hints, search/filter UX |
 | 09 | [Agent Workflows](09-agent-workflows.md) | Agent-native design, researched playlists, preview/commit loops |
 | 10 | [Observability](10-observability.md) | Doctor, logs, diagnostics, action traces, bug reports |
-| 11 | [Config and Auth](11-config-auth.md) | Config paths, OAuth, keychain, player configuration |
+| 11 | [Config and Auth](11-config-auth.md) | Config paths, OAuth, auth files, player configuration |
 | 12 | [Roadmap](12-roadmap.md) | Phased milestones and definitions of done |
 | 13 | [Decision Log](13-decision-log.md) | Settled decisions and alternatives considered |
 | 14 | [Reuse Strategy](14-reuse-strategy.md) | Copy-from-mxr policy, reusable crate candidates, extraction thresholds |
@@ -47,6 +47,6 @@ When mxr has already solved an architectural layer, copy first and adapt. Do not
 | TUI | Ratatui + crossterm |
 | HTTP/API client | reqwest |
 | CLI parser | clap |
-| Credentials | macOS Keychain first, cross-platform keyring later |
+| Credentials | Private auth files under the app config directory |
 | Playback device | embedded librespot plus Spotify Connect device control |
 | IPC | JSON over Unix socket |

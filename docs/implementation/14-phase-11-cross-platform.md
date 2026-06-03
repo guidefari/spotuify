@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make spotuify installable on Linux and Windows, not just macOS-with-apple-native-keyring. Ship signed, installable artifacts so the README quickstart is actually one command per platform.
+Make spotuify installable on Linux and Windows, not just macOS. Ship signed, installable artifacts so the README quickstart is actually one command per platform.
 
 ## Current status on 2026-06-02
 
@@ -23,6 +23,8 @@ truth:
 - Release Please uses `release-type = "simple"` for changelog, manifest, and
   `Cargo.toml`; `.github/workflows/release-lockfile.yml` owns `Cargo.lock`
   synchronization for release PRs.
+- Auth storage now uses private files under `<config_dir>/auth/` on every
+  platform. macOS Keychain support and the `keyring` dependency were removed.
 
 ## Evidence base
 
@@ -30,20 +32,19 @@ truth:
 - spotatui CD matrix: x86_64-linux-gnu, x86_64-apple-darwin (Intel runner), aarch64-apple-darwin, x86_64-pc-windows-msvc. Per-target audio feature sets baked in. `cargo-deb` for Debian. AUR + Homebrew publishing scripts in CI.
 - spotify-player: Windows/macOS quirk — souvlaki on those platforms needs a real window handle; they create a hidden winit window. Daemon mode is incompatible with souvlaki on those platforms (exit 1 documented).
 - ncspot moved IPC socket from cache dir → runtime dir in v1.0.0 because sockets in cache dir = staleness.
-- ncspot/spotatui both use `librespot::cache::Cache` for credential persistence — no keyring. spotuify should be different: use OS-native credential storage.
+- ncspot/spotatui both use file-backed credential persistence — no keyring.
+  spotuify now follows the same power-user-friendly direction with private
+  auth files under the config directory.
 
 ## Deliverables
 
-### Keyring per platform
-- `keyring` crate with platform-conditional features:
-  - macOS: `apple-native`
-  - Linux: `linux-native-sync-persistent` (Secret Service via DBus; requires GNOME Keyring or KWallet)
-  - Windows: `windows-native` (Credential Manager)
-- Bounded read/write timeouts (already implemented at 20s for mac; extend to other platforms).
-- Fall-through: if Secret Service is unavailable on Linux (headless
-  server), fail with a clear message. Encrypted file fallback was
-  considered but is not exposed as a stable credential path yet.
-- Document the GNOME Keyring / KWallet prerequisite in the Linux quickstart.
+### Auth files per platform
+- Store auth under `<config_dir>/auth/` on every platform.
+- On Unix, create the auth directory with mode `0700` and auth files with mode
+  `0600`.
+- Use `<config_dir>/auth/token.lock` for cross-process refresh serialization.
+- Avoid OS keyring dependencies so headless Linux, CI, and daemon startup do not
+  block on desktop credential-service prompts.
 
 ### Socket paths
 - macOS: `~/Library/Application Support/spotuify/spotuify.sock`
@@ -124,10 +125,8 @@ std::env::set_var("PULSE_PROP_stream.description", "Spotify (spotuify)");
 ## Platform-specific gotchas
 
 ### Linux
-- Secret Service is required for stable Linux credential storage; document the
-  GNOME Keyring / KWallet prerequisite and fail clearly when DBus/keyring is
-  unavailable. The headless encrypted-file fallback remains planned, not a
-  stable CLI flag.
+- Auth storage is file-backed, so no GNOME Keyring / KWallet prerequisite is
+  required.
 - `XDG_RUNTIME_DIR` may be unset on minimal systems; fall back to `/run/user/$uid/` then `/tmp/`.
 - PipeWire is now ubiquitous on modern distros; alsa-backend works through pipewire-alsa compatibility shim by default.
 
@@ -146,7 +145,7 @@ std::env::set_var("PULSE_PROP_stream.description", "Spotify (spotuify)");
 
 ## Work items
 
-1. [x] Audit every `keyring`, `dirs`, `directories` call site; gate features per `target_os`.
+1. [x] Audit every credential/path call site and remove the runtime `keyring` dependency.
 2. [x] Centralize path resolution in `spotuify-protocol::paths`. Runtime/socket/cache/config/data paths no longer use cache dir for sockets. Windows named-pipe paths and IPC aliases are pre-staged; the daemon accept loop still needs the final named-pipe wrapper before Windows IPC is fully live.
 3. [x] Add Pulse env vars in `spotuify-player::embedded` init (Linux-only `#[cfg]`).
 4. [x] Author launchd plist, systemd unit, Windows Task XML. Add `daemon install-service`/`uninstall-service` subcommands.

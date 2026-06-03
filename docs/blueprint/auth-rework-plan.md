@@ -48,9 +48,9 @@ Web API calls (reads and writes). No user dev app.
 - Activate the already-built-but-unused `WebApiTokenSource`/`TokenBridge`
   scaffold in `crates/spotuify-player/src/backends/token_bridge.rs` (5s timeout,
   60s headroom refresh, graceful cache fallback) as the bearer source.
-- Keychain stores the librespot-oauth refresh token (one secret) instead of the
-  dev-app token pair; reusable native creds live in librespot's own cache; the
-  Web API bearer is never persisted (always minted live).
+- The private auth file stores the librespot-oauth refresh token (one secret)
+  instead of the dev-app token pair; reusable native creds live in librespot's
+  own cache; the Web API bearer is never persisted (always minted live).
 
 ## Onboarding / config
 
@@ -80,7 +80,7 @@ token until a successful first-party login overwrites it.
    reset (429, not 403, already proves authorization).
 2. **Activate `TokenBridge`** with a real `WebApiTokenSource` over the session
    (still not the default). Test with scripted-login5 fakes.
-3. **New keychain schema + legacy detection** (additive).
+3. **New auth-file schema + legacy detection** (additive).
 4. **RISKY CUTOVER**: daemon + `client.rs` take the bearer from the bridge;
    embedded backend bootstraps from first-party creds; retire scope-drift.
 5. **Onboarding/config UX + migration prompt** (user-facing).

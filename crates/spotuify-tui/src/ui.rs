@@ -2918,7 +2918,7 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ]));
         left.push(Line::from(vec![
             Span::styled("Auth     ", Style::default().fg(MUTED)),
-            Span::styled(&report.keychain_token.message, Style::default().fg(TEXT)),
+            Span::styled(&report.auth_token.message, Style::default().fg(TEXT)),
         ]));
         left.push(Line::from(vec![
             Span::styled("Logs     ", Style::default().fg(MUTED)),

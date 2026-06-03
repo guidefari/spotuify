@@ -123,7 +123,7 @@ async fn dispatch(
             // SQLite read on the hot path: the clock is in-memory and
             // extrapolates current progress against a monotonic baseline.
             // The Spotify Web API call NEVER runs inline; it always runs
-            // in `spawn_playback_refresh` so a slow keychain unlock +
+            // in `spawn_playback_refresh` so auth file IO +
             // token refresh + HTTP round-trip can't make the first
             // PlaybackGet take a full minute the way it used to.
             let playback = state.snapshot_playback();

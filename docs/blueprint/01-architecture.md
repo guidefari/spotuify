@@ -31,7 +31,7 @@ We considered keeping the current monolithic shape where the TUI directly calls 
 2. CLI commands should be fast one-shot controllers.
 3. Search and playlists should be locally cached and indexed.
 4. Agents need a stable command/protocol surface.
-5. Network and keychain failures should be centralized and observable.
+5. Network and auth file failures should be centralized and observable.
 6. Multiple clients should not duplicate Spotify logic.
 
 ## Daemon responsibilities

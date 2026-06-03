@@ -16,7 +16,7 @@ Goal: current TUI and Spotify API behavior are reliable enough to build on.
 Deliverables:
 
 - [ ] Search limit fixed and covered by CLI smoke test.
-- [ ] Keychain calls bounded everywhere.
+- [ ] Auth file operations bounded and surfaced clearly.
 - [ ] Preferred embedded device visible and verified by doctor.
 - [ ] Playback actions do not block TUI input.
 - [ ] Doctor completes under bounded time.

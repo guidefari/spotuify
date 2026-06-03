@@ -70,7 +70,7 @@ habit_metrics
 - `spotuify analytics habits --window day|week|month [--since] [--format]`
 - `spotuify analytics search [--raw|--normalized] [--limit] [--format]`
 - `spotuify analytics rediscovery --gap 30d|90d|365d [--format]`
-- `spotuify analytics export --target listenbrainz|lastfm --since DATE` (opt-in; reads creds from keyring).
+- `spotuify analytics export --target listenbrainz|lastfm --since DATE` (opt-in; reads creds from the private auth file).
 - `spotuify analytics import --target listenbrainz|lastfm` (bring historical scrobbles in).
 
 ### Shell-hook bridge to external scrobblers
