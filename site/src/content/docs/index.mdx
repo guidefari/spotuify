@@ -1,13 +1,13 @@
 ---
 title: "Spotify from your terminal"
-description: "Control Spotify from a shell, a TUI, scripts, and coding agents."
+description: "Control Spotify from the terminal, scripts, and coding agents."
 template: splash
 hero:
   title: |
     spotuify
-  tagline: "Spotify from inside the shell: a keyboard-native TUI and a CLI that pipes JSON to anything."
+  tagline: "Spotify control for the terminal: a TUI when you want a screen, a CLI when you want a command."
   actions:
-    - text: Install docs
+    - text: Install
       link: /getting-started/install/
       variant: primary
     - text: Quick start
@@ -19,26 +19,6 @@ hero:
 ---
 
 <section class="home-start" aria-label="Install and preview spotuify">
-  <div class="home-install">
-    <p class="console-kicker">install on macOS or linux</p>
-    <h2>Paste this first.</h2>
-    <p>Homebrew installs from the `planetaryescape/spotuify` tap. The older `planetaryescape/tap` repo does not publish this formula.</p>
-
-```bash
-brew tap planetaryescape/spotuify
-brew install spotuify
-spotuify
-```
-
-    <p>Linux x86_64 release archives use the checksum-verifying installer:</p>
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/planetaryescape/spotuify/main/install.sh
-bash install.sh
-spotuify
-```
-  </div>
-
   <figure class="home-demo home-demo-inline">
     <video
       src="/spotuify-demo.mp4"
@@ -53,73 +33,61 @@ spotuify
       <a href="/spotuify-demo.mp4">Watch the spotuify terminal demo</a>
     </video>
   </figure>
-</section>
 
-<div class="home-console" aria-label="spotuify terminal session">
-  <div class="console-topline">
-    <span>spotuify-hume</span>
-    <span>daemon online</span>
-    <span>local cache hot</span>
-  </div>
-  <div class="console-body">
-    <div class="console-copy">
-      <p class="console-kicker">terminal music runtime</p>
-      <p class="console-line"><span>$</span>{' spotuify play "imagine dragons"'}</p>
-      <p class="console-result">playing: Imagine Dragons - Radioactive</p>
-      <p class="console-line"><span>$</span>{' spotuify search "never too much" --type track --format ids'}</p>
-      <p class="console-result">spotify:track:4uLU6hMCjMI75M1A2tKUQC</p>
-      <p class="console-line"><span>$</span>{' spotuify next --format json'}</p>
-      <p class="console-result">{'{"ok":true,"action":"next","message":"Skipped"}'}</p>
-    </div>
-    <div class="console-meter" aria-hidden="true">
-      <span style="--h: 42%"></span>
-      <span style="--h: 78%"></span>
-      <span style="--h: 55%"></span>
-      <span style="--h: 92%"></span>
-      <span style="--h: 63%"></span>
-      <span style="--h: 35%"></span>
-      <span style="--h: 84%"></span>
-      <span style="--h: 48%"></span>
-      <span style="--h: 70%"></span>
-      <span style="--h: 58%"></span>
-      <span style="--h: 88%"></span>
-      <span style="--h: 39%"></span>
-    </div>
-  </div>
-</div>
-
-`spotuify` exists for the tiny moment that keeps happening: you are in Neovim, your hands are already in a terminal, and you want music without opening another app. Run `spotuify`, search, play, close the terminal. Or skip the TUI:
+  <div class="home-install" aria-label="Install spotuify">
+    <div class="home-install-option">
+      <p class="home-install-title">Homebrew</p>
 
 ```bash
-spotuify play "inspirational coding music" --type playlist
+brew tap planetaryescape/spotuify
+brew install spotuify
+```
+    </div>
+
+    <div class="home-install-option">
+      <p class="home-install-title">Linux x86_64</p>
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/planetaryescape/spotuify/main/install.sh
+bash install.sh
+```
+    </div>
+
+    <p class="home-install-note"><a href="/getting-started/install/">Other install methods</a></p>
+  </div>
+</section>
+
+`spotuify` is for the part of your day where Spotify should behave like the rest of your tools. Open the TUI when you want to browse. Use commands when you already know the action.
+
+```bash
+spotuify play "burial archangel"
 ```
 
-## Why it exists
+The daemon keeps playback state. The TUI, CLI, scripts, and MCP server all talk to it.
+
+## How it works
 
 <div class="surface-grid">
   <div>
-    <h3>CLI first</h3>
-    <p>Every serious action has a command. The TUI is one client, not the system.</p>
+    <h3>Open the TUI</h3>
+    <p>Browse your library, queue, devices, and lyrics. Quit the screen when you are done; playback keeps going.</p>
+
+```bash
+spotuify
+```
+  </div>
+  <div>
+    <h3>Ask for data</h3>
+    <p>Read commands can print `json`, `jsonl`, `csv`, or `ids`, so your shell gets real values instead of screen text.</p>
 
 ```bash
 spotuify status --format json
-spotuify next
-spotuify queue add --search "burial archangel"
+spotuify search "never too much" --type track --format ids
 ```
   </div>
   <div>
-    <h3>Daemon backed</h3>
-    <p>The daemon owns Spotify, cache, search, playback state, and events. Music keeps playing after the TUI exits.</p>
-
-```bash
-spotuify daemon status
-spotuify daemon start
-spotuify reconnect
-```
-  </div>
-  <div>
-    <h3>Agent safe</h3>
-    <p>Agents use normal commands. Broad playlist changes preview first, then commit only when you approve.</p>
+    <h3>Preview writes</h3>
+    <p>Playlist writes can show the exact change before touching Spotify. Useful when a script or agent made the list.</p>
 
 ```bash
 spotuify playlist create "Exile" --from candidates.jsonl --dry-run
@@ -138,7 +106,7 @@ spotuify playlist create "Exile" --from candidates.jsonl --yes
   <span>Spotify</span>
 </div>
 
-## Fast paths
+## First commands
 
 Start the TUI:
 
@@ -168,9 +136,11 @@ spotuify resolve-tracks --from plan.json --format jsonl > candidates.jsonl
 spotuify playlist create "Exile and Return" --from candidates.jsonl --dry-run
 ```
 
-## Why not just another TUI
+## The bet
 
-`spotify-player`, `ncspot`, and the original `spotify-tui` proved a terminal Spotify client is worth living in, and spotuify builds on what they shipped: embedded `librespot`, a keyboard TUI, local search. The difference is the bet on the CLI as the product. Every read, list, status, and search surface speaks `--format json`, `jsonl`, `csv`, or `ids`, not just one command, so scripts and agents drive Spotify the same way you do. The TUI is a client on the same daemon, not the system.
+Plenty of Spotify terminal apps are built around the screen. `spotuify` is built around the command surface. If an action matters in the TUI, it should be reachable from `spotuify <command>` too.
+
+That costs more command plumbing, but it gives us something concrete to test, script, and hand to agents. The screen is optional. The daemon and CLI are the contract.
 
 ```bash
 spotuify search "ambient" --source local --format jsonl
@@ -178,7 +148,7 @@ spotuify cache status --format json
 spotuify analytics top --kind artists --since 30d
 ```
 
-## See Also
+## See also
 
 - [Quick Start](/getting-started/quick-start/)
 - [Terminal Control](/guides/terminal-control/)

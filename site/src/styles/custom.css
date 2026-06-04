@@ -175,34 +175,38 @@ body {
   display: grid;
   gap: clamp(1rem, 3vw, 2rem);
   grid-template-columns: minmax(0, 1fr);
+  align-items: start;
   max-width: 84rem;
   margin: clamp(1rem, 3vw, 2rem) auto clamp(2rem, 6vw, 4rem);
 }
 
 .home-install {
+  display: grid;
+  gap: clamp(1rem, 2vw, 1.25rem);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   min-width: 0;
-  max-width: 52rem;
-  padding: clamp(1rem, 3vw, 1.4rem);
+  padding: clamp(0.9rem, 2vw, 1.1rem);
   border: 1px solid var(--sl-color-hairline);
   background:
     linear-gradient(135deg, color-mix(in oklch, var(--oxide-2) 82%, transparent), color-mix(in oklch, var(--oxide-0) 94%, transparent)),
     repeating-linear-gradient(0deg, transparent 0 10px, color-mix(in oklch, var(--signal) 7%, transparent) 11px);
 }
 
-.home-install h2 {
-  margin: 0 0 0.75rem;
-  color: var(--paper-0);
-  font-size: clamp(1.65rem, 3.4vw, 2.55rem);
-  line-height: 0.95;
-  text-transform: uppercase;
+.home-install-option {
+  min-width: 0;
 }
 
-.home-install p {
-  color: var(--paper-1);
+.home-install-title {
+  margin: 0 0 0.7rem;
+  color: var(--paper-0);
+  font-family: var(--sl-font-mono);
+  font-size: 0.95rem;
+  font-weight: 800;
+  line-height: 1.2;
 }
 
 .home-install pre:not(:where(.not-content *)) {
-  margin: 0.9rem 0 1.2rem;
+  margin: 0;
   box-shadow: none;
 }
 
@@ -211,14 +215,10 @@ body {
   overflow-wrap: anywhere;
 }
 
-.home-console {
-  max-width: 84rem;
-  margin: clamp(1rem, 3vw, 2rem) auto clamp(2rem, 6vw, 5rem);
-  border: 1px solid var(--sl-color-hairline);
-  background:
-    linear-gradient(135deg, color-mix(in oklch, var(--oxide-2) 82%, transparent), color-mix(in oklch, var(--oxide-0) 94%, transparent)),
-    repeating-linear-gradient(0deg, transparent 0 9px, color-mix(in oklch, var(--phosphor) 9%, transparent) 10px);
-  box-shadow: 0 1.5rem 6rem color-mix(in oklch, black 38%, transparent);
+.home-install-note {
+  margin: 1rem 0 0;
+  font-size: 0.88rem;
+  grid-column: 1 / -1;
 }
 
 .home-demo {
@@ -240,87 +240,6 @@ body {
   margin: 0;
   max-width: none;
   width: 100%;
-}
-
-.console-topline {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 0.7rem 1rem;
-  border-bottom: 1px solid var(--sl-color-hairline);
-  color: var(--muted);
-  font-family: var(--sl-font-mono);
-  font-size: 0.78rem;
-}
-
-.console-body {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(12rem, 0.45fr);
-  min-height: 21rem;
-}
-
-.console-copy {
-  padding: clamp(1rem, 4vw, 2rem);
-}
-
-.console-kicker {
-  color: var(--cyan);
-  font-family: var(--sl-font-mono);
-  font-size: 0.78rem;
-  font-weight: 700;
-  margin: 0 0 1.5rem;
-  text-transform: lowercase;
-}
-
-.console-line,
-.console-result {
-  font-family: var(--sl-font-mono);
-  overflow-wrap: anywhere;
-}
-
-.console-line {
-  color: var(--paper-0);
-  font-size: clamp(0.92rem, 1.4vw, 1.1rem);
-  margin: 0.8rem 0 0.25rem;
-}
-
-.console-line span {
-  color: var(--signal);
-}
-
-.console-result {
-  color: var(--muted);
-  font-size: 0.9rem;
-  margin: 0;
-}
-
-.console-meter {
-  display: grid;
-  grid-template-columns: repeat(12, 1fr);
-  align-items: end;
-  gap: 0.45rem;
-  padding: 2rem;
-  border-left: 1px solid var(--sl-color-hairline);
-  min-height: 100%;
-}
-
-.console-meter span {
-  height: var(--h);
-  min-height: 1.25rem;
-  background: linear-gradient(180deg, var(--cyan), var(--phosphor) 55%, var(--signal));
-  box-shadow: 0 0 1.4rem color-mix(in oklch, var(--phosphor) 42%, transparent);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .console-meter span {
-    animation: level 3.6s ease-in-out infinite;
-    animation-delay: calc(var(--h) * -0.03);
-  }
-}
-
-@keyframes level {
-  0%, 100% { transform: scaleY(0.82); transform-origin: bottom; }
-  50% { transform: scaleY(1.08); transform-origin: bottom; }
 }
 
 .surface-grid {
@@ -381,19 +300,8 @@ body {
     grid-template-columns: 1fr;
   }
 
-  .console-body {
+  .home-install {
     grid-template-columns: 1fr;
-  }
-
-  .console-meter {
-    min-height: 9rem;
-    border-left: 0;
-    border-top: 1px solid var(--sl-color-hairline);
-  }
-
-  .console-topline {
-    align-items: flex-start;
-    flex-direction: column;
   }
 
   .surface-grid > div {
