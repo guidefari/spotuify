@@ -35,8 +35,8 @@ use crate::config::{
 use crate::output::OutputFormat;
 use crate::spotify::SpotifyClient;
 use spotuify_cli::cli_args::{
-    AlbumCommand, ArtistCommand, LibraryCommand, LyricsCommand, MprisCommand, PlaylistCommand,
-    QueueCommand, ShowCommand, VizCommand,
+    AlbumCommand, ArtistCommand, LibraryCommand, LyricsCommand, MprisCommand, NotificationCommand,
+    PlaylistCommand, QueueCommand, ReminderCommand, ShowCommand, VizCommand,
 };
 
 #[derive(Parser)]
@@ -306,6 +306,16 @@ enum Command {
     Lyrics {
         #[command(subcommand)]
         command: LyricsCommand,
+    },
+    /// Schedule and manage listening reminders.
+    Reminder {
+        #[command(subcommand)]
+        command: ReminderCommand,
+    },
+    /// View and act on reminder notifications (the inbox).
+    Notifications {
+        #[command(subcommand)]
+        command: NotificationCommand,
     },
     /// Refresh current track cover art and lyrics.
     RefreshMedia {
@@ -1136,6 +1146,8 @@ async fn run() -> Result<()> {
         Some(Command::Album { command }) => commands::ipc_album(command).await,
         Some(Command::Artist { command }) => commands::ipc_artist(command).await,
         Some(Command::Lyrics { command }) => commands::ipc_lyrics(command).await,
+        Some(Command::Reminder { command }) => commands::ipc_reminder(command).await,
+        Some(Command::Notifications { command }) => commands::ipc_notifications(command).await,
         Some(Command::RefreshMedia { format }) => commands::ipc_refresh_media(format).await,
         Some(Command::Viz { command }) => commands::ipc_viz(command).await,
         Some(Command::Like { target, format }) => {

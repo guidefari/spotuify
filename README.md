@@ -31,6 +31,7 @@ Want the most polished desktop experience? Use the official app. Want Spotify as
 - Search across tracks, episodes, shows/podcasts, albums, artists, and playlists.
 - Queue viewing and add-to-queue support, with background warming for queued track metadata, cover art, lyrics, and next-track audio.
 - Playlist browsing and quick add-current-to-playlist flow.
+- Artist discography browser: list followed artists and browse an artist's full catalog grouped into albums, singles & EPs, compilations, and appears-on, with an in-library-only filter (`spotuify artist albums <uri> --library-only`, `spotuify artist followed`, or the TUI `L` toggle).
 - Device list and Spotify Connect transfer.
 - Cover art rendering through Kitty, iTerm2, Sixel, or half-block fallback.
 - Manual current-track media refresh via `spotuify refresh-media` or `U` in the TUI.

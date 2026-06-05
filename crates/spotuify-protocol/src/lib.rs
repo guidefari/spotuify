@@ -38,9 +38,18 @@ use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
-use spotuify_core::{Device, MediaItem, MediaKind, Playback, Playlist, Queue, SyncedLyrics};
+use spotuify_core::{
+    Device, MediaItem, MediaKind, Notification, Playback, Playlist, Queue, Recurrence, Reminder,
+    SyncedLyrics,
+};
 
-pub const IPC_PROTOCOL_VERSION: u32 = 1;
+/// IPC protocol version. Bumped to 4 for the artist-discography browser:
+/// the `followed-artists` request plus `album_group`/`in_library` fields on
+/// `MediaItem` (so clients can section + filter without a refetch). v3 added
+/// listening reminders + notifications; v2 added `saved-tracks`/`show-episodes`/
+/// `queue-add-many` + enriched `MediaItem`. Clients gate their UI on
+/// `protocol_version >= IPC_PROTOCOL_VERSION`.
+pub const IPC_PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcMessage {
@@ -171,9 +180,16 @@ pub enum Request {
         #[serde(default)]
         wait: bool,
     },
-    /// Fetch an artist's own releases (albums + singles).
+    /// Fetch an artist's full discography. The daemon returns every album
+    /// group (album/single/compilation/appears-on), each tagged with
+    /// `album_group` and `in_library`, so clients section + filter locally.
     ArtistAlbums {
         artist: String,
+    },
+    /// List the artists the user follows (cache-backed; the discography
+    /// browser's entry point).
+    FollowedArtists {
+        limit: u32,
     },
     /// Fetch the track listing of a given album.
     AlbumTracks {
@@ -339,6 +355,57 @@ pub enum Request {
     SetVizFocus {
         focused: bool,
     },
+
+    // --- Listening reminders + notifications ---
+    /// Schedule a reminder for a media item/grouping. The daemon captures a
+    /// display snapshot, computes `next_due_at` from `anchor_at_ms` + recurrence
+    /// in `tz`, and fires it at the due time.
+    ReminderCreate {
+        media_uri: String,
+        anchor_at_ms: i64,
+        #[serde(default)]
+        recurrence: Recurrence,
+        tz: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+    /// List reminder schedules (active by default).
+    RemindersList {
+        #[serde(default)]
+        include_inactive: bool,
+    },
+    /// Cancel a reminder schedule (stops future occurrences).
+    ReminderCancel {
+        id: String,
+    },
+    /// List inbox notifications (fired occurrences). Excludes archived by default.
+    NotificationsList {
+        #[serde(default)]
+        include_archived: bool,
+    },
+    /// Act on an inbox notification.
+    NotificationAct {
+        id: String,
+        action: NotificationAction,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snooze_until_ms: Option<i64>,
+    },
+}
+
+/// What to do with a fired notification.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NotificationAction {
+    /// Mark seen (no playback).
+    Seen,
+    /// Play the media now (marks the notification done).
+    Play,
+    /// Add the media to the queue (marks done).
+    Queue,
+    /// Reschedule this occurrence to `snooze_until_ms`.
+    Snooze,
+    /// Dismiss without playing.
+    Dismiss,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -414,6 +481,7 @@ impl Request {
             | Self::PlaylistsList
             | Self::PlaylistTracks { .. }
             | Self::ArtistAlbums { .. }
+            | Self::FollowedArtists { .. }
             | Self::AlbumTracks { .. }
             | Self::PlaylistAddItems { .. }
             | Self::PlaylistRemoveItems { .. }
@@ -424,6 +492,11 @@ impl Request {
             | Self::LibraryUnsave { .. }
             | Self::LyricsGet { .. }
             | Self::LyricsOffsetSet { .. }
+            | Self::ReminderCreate { .. }
+            | Self::RemindersList { .. }
+            | Self::ReminderCancel { .. }
+            | Self::NotificationsList { .. }
+            | Self::NotificationAct { .. }
             | Self::Reload => IpcCategory::CoreMusic,
         }
     }
@@ -463,6 +536,7 @@ impl Request {
             Self::PlaylistsList => "playlists-list",
             Self::PlaylistTracks { .. } => "playlist-tracks",
             Self::ArtistAlbums { .. } => "artist-albums",
+            Self::FollowedArtists { .. } => "followed-artists",
             Self::AlbumTracks { .. } => "album-tracks",
             Self::PlaylistAddItems { .. } => "playlist-add-items",
             Self::PlaylistRemoveItems { .. } => "playlist-remove-items",
@@ -494,6 +568,11 @@ impl Request {
             Self::SetVizSource { .. } => "set-viz-source",
             Self::GetVizStatus => "get-viz-status",
             Self::SetVizFocus { .. } => "set-viz-focus",
+            Self::ReminderCreate { .. } => "reminder-create",
+            Self::RemindersList { .. } => "reminders-list",
+            Self::ReminderCancel { .. } => "reminder-cancel",
+            Self::NotificationsList { .. } => "notifications-list",
+            Self::NotificationAct { .. } => "notification-act",
         }
     }
 }
@@ -854,6 +933,17 @@ pub enum ResponseData {
     VizStatus {
         diagnostics: VizDiagnostics,
     },
+
+    // --- Listening reminders + notifications ---
+    Reminders {
+        reminders: Vec<Reminder>,
+    },
+    Notifications {
+        notifications: Vec<Notification>,
+    },
+    ReminderCreated {
+        reminder: Reminder,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1211,6 +1301,18 @@ pub enum DaemonEvent {
         /// uses it to phrase the hint correctly.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         backend_kind: Option<spotuify_core::BackendKind>,
+    },
+
+    // --- Listening reminders ---
+    /// A reminder fired: a new inbox notification exists. Carries the full
+    /// notification so subscribers can show it without a follow-up fetch.
+    ReminderDue {
+        notification: Notification,
+    },
+    /// Reminder schedules changed (created / cancelled / acted). Clients
+    /// re-sync their reminder list (and macOS re-schedules OS notifications).
+    RemindersChanged {
+        action: String,
     },
 }
 
@@ -1907,6 +2009,64 @@ mod tests {
                     uris: vec!["spotify:track:1".to_string(), "spotify:track:2".to_string()],
                 },
                 "queue-add-many",
+            ),
+            (Request::FollowedArtists { limit: 200 }, "followed-artists"),
+        ] {
+            assert_eq!(request.kind_label(), tag);
+            assert_eq!(request.category(), IpcCategory::CoreMusic);
+            let raw = serde_json::to_string(&IpcMessage {
+                id: 1,
+                source: None,
+                payload: IpcPayload::Request(request.clone()),
+            })
+            .unwrap();
+            assert!(raw.contains(&format!("\"cmd\":\"{tag}\"")), "wire: {raw}");
+            let decoded: IpcMessage = serde_json::from_str(&raw).unwrap();
+            match decoded.payload {
+                IpcPayload::Request(decoded) => assert_eq!(decoded, request),
+                other => panic!("expected request, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn reminder_requests_round_trip_and_are_core_music() {
+        for (request, tag) in [
+            (
+                Request::ReminderCreate {
+                    media_uri: "spotify:album:abc".to_string(),
+                    anchor_at_ms: 1_700_000_000_000,
+                    recurrence: spotuify_core::Recurrence::Weekly,
+                    tz: "America/New_York".to_string(),
+                    message: Some("revisit".to_string()),
+                },
+                "reminder-create",
+            ),
+            (
+                Request::RemindersList {
+                    include_inactive: true,
+                },
+                "reminders-list",
+            ),
+            (
+                Request::ReminderCancel {
+                    id: "r1".to_string(),
+                },
+                "reminder-cancel",
+            ),
+            (
+                Request::NotificationsList {
+                    include_archived: false,
+                },
+                "notifications-list",
+            ),
+            (
+                Request::NotificationAct {
+                    id: "n1".to_string(),
+                    action: crate::NotificationAction::Snooze,
+                    snooze_until_ms: Some(1_700_000_900_000),
+                },
+                "notification-act",
             ),
         ] {
             assert_eq!(request.kind_label(), tag);

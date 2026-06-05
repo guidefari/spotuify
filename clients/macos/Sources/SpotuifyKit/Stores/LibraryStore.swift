@@ -11,11 +11,13 @@ public final class LibraryStore {
     public private(set) var likedSongs: [MediaItem] = []
     public private(set) var savedAlbums: [MediaItem] = []
     public private(set) var savedShows: [MediaItem] = []
+    public private(set) var followedArtists: [MediaItem] = []
     public private(set) var playlistTracks: [String: [MediaItem]] = [:]
     public private(set) var loadingPlaylists = false
     public private(set) var loadingLiked = false
     public private(set) var loadingAlbums = false
     public private(set) var loadingShows = false
+    public private(set) var loadingArtists = false
     public private(set) var loadingTracksFor: String?
 
     private weak var model: AppModel?
@@ -32,6 +34,7 @@ public final class LibraryStore {
                 Task {
                     await self.loadLiked(force: true)
                     await self.loadAlbums(force: true)
+                    await self.loadFollowedArtists(force: true)
                 }
             default: break
             }
@@ -79,6 +82,18 @@ public final class LibraryStore {
         defer { loadingShows = false }
         if case .mediaItems(let items) = try? await model.request(.savedShows(limit: 200), timeout: .seconds(20)) {
             savedShows = items.filter { $0.kind == .show }
+        }
+    }
+
+    /// Followed artists — the discography browser's entry point.
+    public func loadFollowedArtists(force: Bool = false) async {
+        guard let model else { return }
+        if !force && !followedArtists.isEmpty { return }
+        loadingArtists = true
+        defer { loadingArtists = false }
+        if case .mediaItems(let items) = try? await model.request(
+            .followedArtists(limit: 500), timeout: .seconds(20)) {
+            followedArtists = items.filter { $0.kind == .artist }
         }
     }
 

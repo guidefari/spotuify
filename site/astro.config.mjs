@@ -47,6 +47,7 @@ export default defineConfig({
             { label: 'Terminal Control', slug: 'guides/terminal-control' },
             { label: 'Search and Play', slug: 'guides/search-and-play' },
             { label: 'Queue and Playlists', slug: 'guides/queue-and-playlists' },
+            { label: 'Browse Artists', slug: 'guides/browse-artists' },
             { label: 'Cache, Search, Sync', slug: 'guides/cache-search-sync' },
             { label: 'Analytics and Hooks', slug: 'guides/analytics-hooks' },
             { label: 'Recipes', slug: 'guides/recipes' },

@@ -25,6 +25,8 @@ public enum DaemonEvent: Decodable, Sendable {
     case spectrumFrame(bands: [Float], peak: Float, timestampMs: UInt64)
     case configReloaded
     case shutdownRequested
+    case reminderDue(ReminderNotification)
+    case remindersChanged(action: String)
     case unknown(event: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -34,6 +36,7 @@ public enum DaemonEvent: Decodable, Sendable {
         case scope, reason, restarts, name, bands, peak, message
         case deviceID = "device_id"
         case timestampMs = "timestamp_ms"
+        case notification
     }
 
     public init(from decoder: Decoder) throws {
@@ -114,6 +117,10 @@ public enum DaemonEvent: Decodable, Sendable {
             self = .configReloaded
         case "shutdown-requested":
             self = .shutdownRequested
+        case "reminder-due":
+            self = .reminderDue(try c.decode(ReminderNotification.self, forKey: .notification))
+        case "reminders-changed":
+            self = .remindersChanged(action: try c.decodeIfPresent(String.self, forKey: .action) ?? "")
         default:
             self = .unknown(event: event)
         }

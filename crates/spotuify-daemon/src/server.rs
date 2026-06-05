@@ -138,6 +138,8 @@ pub async fn run_daemon() -> Result<()> {
     // Pass 2 (P11.x) reads windows from config; the foundation default
     // matches blueprint.
     let retention_task = spawn_retention_loop(state.clone());
+    // Listening reminders: fire due/overdue reminders, emit ReminderDue.
+    let reminder_task = crate::reminders::spawn_reminder_loop(state.clone());
     let listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("failed to bind {}", socket_path.display()))?;
     spotuify_protocol::paths::secure_private_socket(&socket_path)
@@ -212,6 +214,7 @@ pub async fn run_daemon() -> Result<()> {
             .chain(media_control_task)
             .chain(queue_warm_task)
             .chain(std::iter::once(retention_task))
+            .chain(std::iter::once(reminder_task))
             .collect(),
         CONNECTION_DRAIN_TIMEOUT,
     )

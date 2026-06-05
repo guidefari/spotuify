@@ -754,6 +754,35 @@ impl SpotifyClient {
         Ok(items)
     }
 
+    /// Artists the user follows (Spotify's `/me/following?type=artist`).
+    /// Cursor-paginated: each page yields the next `after` artist id until
+    /// `next` is null. The payload nests the page under an `artists` key.
+    pub async fn followed_artists(&mut self) -> SpotifyResult<Vec<MediaItem>> {
+        if self.fake {
+            return Ok(vec![fake_artist()]);
+        }
+        let mut after: Option<String> = None;
+        let mut items = Vec::new();
+        loop {
+            let mut path = format!("{}?type=artist&limit=50", endpoints::FOLLOWING);
+            if let Some(cursor) = after.as_deref() {
+                path.push_str("&after=");
+                path.push_str(cursor);
+            }
+            let response = self
+                .request_json::<FollowingPage>(Method::GET, &path, None::<()>)
+                .await?
+                .ok_or_else(|| anyhow!("Spotify returned no followed artists response"))?;
+            let page = response.artists;
+            items.extend(page.items.into_iter().map(RawArtist::into_media_item));
+            match page.cursors.and_then(|cursors| cursors.after) {
+                Some(next) if page.next.is_some() => after = Some(next),
+                _ => break,
+            }
+        }
+        Ok(items)
+    }
+
     pub async fn playlist_tracks(&mut self, playlist_id: &str) -> SpotifyResult<Vec<MediaItem>> {
         if self.fake {
             if fake_playlists()
@@ -827,8 +856,10 @@ impl SpotifyClient {
     }
 
     /// Albums for a given artist (Spotify's `/v1/artists/{id}/albums`).
-    /// Includes singles + albums; excludes appears-on so the user
-    /// sees the artist's own releases.
+    /// Fetches the full discography across all four groups (albums, singles,
+    /// compilations, appears-on); the per-item `album_group` lets clients
+    /// split into sections. `market=from_token` collapses the otherwise
+    /// per-market duplicate rows; we then de-dupe by album id as a safety net.
     pub async fn artist_albums(&mut self, artist_id: &str) -> SpotifyResult<Vec<MediaItem>> {
         if self.fake {
             return Ok(vec![fake_album()]);
@@ -836,12 +867,13 @@ impl SpotifyClient {
         let artist_id = artist_id.trim_start_matches("spotify:artist:");
         let mut offset = 0u32;
         let mut albums = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         // Empirical cap for this account/app: limit>10 → 400 "Invalid limit".
         // Same quirk as /v1/search (see commit c99e576). Docs claim 50 max.
         const PAGE: u32 = 10;
         loop {
             let path = format!(
-                "{}?include_groups=album%2Csingle&limit={PAGE}&offset={offset}",
+                "{}?include_groups=album%2Csingle%2Ccompilation%2Cappears_on&market=from_token&limit={PAGE}&offset={offset}",
                 endpoints::artist_albums(artist_id)
             );
             let response = self
@@ -849,7 +881,15 @@ impl SpotifyClient {
                 .await?
                 .ok_or_else(|| anyhow!("Spotify returned no artist albums response"))?;
             let total = response.total;
-            albums.extend(response.items.into_iter().map(RawAlbum::into_media_item));
+            for album in response.items {
+                let item = album.into_media_item();
+                // De-dupe by id (or uri when id is absent): re-releases across
+                // markets/groups can still surface the same record twice.
+                let key = item.id.clone().unwrap_or_else(|| item.uri.clone());
+                if seen.insert(key) {
+                    albums.push(item);
+                }
+            }
             offset += PAGE;
             if u64::from(offset) >= total {
                 break;
@@ -2076,6 +2116,28 @@ struct Paging<T> {
     total: u64,
 }
 
+/// `/me/following?type=artist` nests its cursor page under `artists`.
+#[derive(Debug, Deserialize)]
+struct FollowingPage {
+    artists: CursorPage<RawArtist>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CursorPage<T> {
+    #[serde(default = "Vec::new")]
+    items: Vec<T>,
+    #[serde(default)]
+    next: Option<String>,
+    #[serde(default)]
+    cursors: Option<Cursors>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Cursors {
+    #[serde(default)]
+    after: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct PlaylistTrackItem {
     #[serde(alias = "item")]
@@ -2271,11 +2333,19 @@ struct RawAlbum {
     total_tracks: Option<u64>,
     #[serde(default)]
     release_date: Option<String>,
+    /// The artist-relative grouping (`/v1/artists/{id}/albums` only).
+    #[serde(default)]
+    album_group: Option<String>,
+    /// The intrinsic album type; fallback when `album_group` is absent
+    /// (e.g. on plain album objects).
+    #[serde(default)]
+    album_type: Option<String>,
 }
 
 impl RawAlbum {
     fn into_media_item(self) -> MediaItem {
         let artists = join_names(&self.artists);
+        let album_group = self.album_group.or(self.album_type);
         MediaItem {
             id: self.id,
             uri: self.uri,
@@ -2293,6 +2363,7 @@ impl RawAlbum {
             explicit: None,
             is_playable: None,
             release_date: self.release_date.clone(),
+            album_group,
             ..Default::default()
         }
     }

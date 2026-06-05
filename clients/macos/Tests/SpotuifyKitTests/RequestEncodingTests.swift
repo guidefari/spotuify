@@ -110,4 +110,34 @@ struct RequestEncodingTests {
         #expect(queueMany["cmd"] as? String == "queue-add-many")
         #expect((queueMany["uris"] as? [Any])?.count == 2)
     }
+
+    @Test("reminder + notification requests encode to the right cmd + fields")
+    func reminderRequests() throws {
+        let create = try payload(.reminderCreate(
+            uri: "spotify:album:a", anchorAtMs: 1_700_000_000_000, recurrence: .weekly,
+            tz: "America/New_York", message: "revisit"))
+        #expect(create["cmd"] as? String == "reminder-create")
+        #expect(create["media_uri"] as? String == "spotify:album:a")
+        #expect((create["anchor_at_ms"] as? NSNumber)?.int64Value == 1_700_000_000_000)
+        #expect(create["recurrence"] as? String == "weekly")
+        #expect(create["tz"] as? String == "America/New_York")
+        #expect(create["message"] as? String == "revisit")
+
+        let list = try payload(.remindersList(includeInactive: true))
+        #expect(list["cmd"] as? String == "reminders-list")
+        #expect((list["include_inactive"] as? NSNumber)?.boolValue == true)
+
+        let cancel = try payload(.reminderCancel(id: "r1"))
+        #expect(cancel["cmd"] as? String == "reminder-cancel")
+        #expect(cancel["id"] as? String == "r1")
+
+        let notifications = try payload(.notificationsList(includeArchived: false))
+        #expect(notifications["cmd"] as? String == "notifications-list")
+
+        let act = try payload(.notificationAct(id: "n1", action: "snooze", snoozeUntilMs: 1_700_000_900_000))
+        #expect(act["cmd"] as? String == "notification-act")
+        #expect(act["id"] as? String == "n1")
+        #expect(act["action"] as? String == "snooze")
+        #expect((act["snooze_until_ms"] as? NSNumber)?.int64Value == 1_700_000_900_000)
+    }
 }

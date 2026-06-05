@@ -9,12 +9,13 @@ struct SpotuifyApp: App {
 
     var body: some Scene {
         WindowGroup("Spotuify", id: "player") {
-            AppShell()
+            RootView()
                 .environment(model)
                 .environment(theme)
                 .task {
                     model.start()
                     SystemMediaController.shared.configure(model: model)
+                    ReminderNotificationScheduler.shared.configure(model: model)
                 }
                 .onChange(of: model.player.playback) { _, _ in
                     Task { await SystemMediaController.shared.updateNowPlaying(player: model.player) }
@@ -47,6 +48,20 @@ struct SpotuifyApp: App {
         Settings {
             SettingsView()
                 .environment(model)
+        }
+    }
+}
+
+/// Gates the player UI behind a daemon presence + version check.
+struct RootView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        switch model.readiness {
+        case .ready:
+            AppShell()
+        default:
+            DaemonGateView(readiness: model.readiness)
         }
     }
 }

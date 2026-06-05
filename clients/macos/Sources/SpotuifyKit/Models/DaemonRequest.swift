@@ -66,6 +66,7 @@ public enum PlaybackCommand: Encodable, Sendable {
 /// directly (serde `#[serde(tag="cmd", rename_all="kebab-case")]` shape).
 public enum DaemonRequest: Encodable, Sendable {
     case ping
+    case getDaemonStatus
     case subscribeEvents
     case clientSeed
     case playbackGet
@@ -86,6 +87,7 @@ public enum DaemonRequest: Encodable, Sendable {
     case showEpisodes(show: String, limit: UInt32, offset: UInt32)
     case albumTracks(album: String)
     case artistAlbums(artist: String)
+    case followedArtists(limit: UInt32)
     case playlistTracks(playlist: String, wait: Bool)
     case playlistAddItems(playlist: String, uris: [String])
     case librarySave(uri: String?, current: Bool)
@@ -93,6 +95,11 @@ public enum DaemonRequest: Encodable, Sendable {
     case lyricsGet(trackURI: String?, forceRefresh: Bool)
     case lyricsOffsetSet(trackURI: String, offsetMs: Int64)
     case setVizEnabled(Bool)
+    case reminderCreate(uri: String, anchorAtMs: Int64, recurrence: Recurrence, tz: String, message: String?)
+    case remindersList(includeInactive: Bool)
+    case reminderCancel(id: String)
+    case notificationsList(includeArchived: Bool)
+    case notificationAct(id: String, action: String, snoozeUntilMs: Int64?)
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: AnyKey.self)
@@ -100,6 +107,8 @@ public enum DaemonRequest: Encodable, Sendable {
         switch self {
         case .ping:
             try c.encode("ping", forKey: AnyKey("cmd"))
+        case .getDaemonStatus:
+            try c.encode("get-daemon-status", forKey: AnyKey("cmd"))
         case .subscribeEvents:
             try c.encode("subscribe-events", forKey: AnyKey("cmd"))
         case .clientSeed:
@@ -165,6 +174,9 @@ public enum DaemonRequest: Encodable, Sendable {
         case .artistAlbums(let artist):
             try c.encode("artist-albums", forKey: AnyKey("cmd"))
             try c.encode(artist, forKey: AnyKey("artist"))
+        case .followedArtists(let limit):
+            try c.encode("followed-artists", forKey: AnyKey("cmd"))
+            try c.encode(limit, forKey: AnyKey("limit"))
         case .playlistTracks(let playlist, let wait):
             try c.encode("playlist-tracks", forKey: AnyKey("cmd"))
             try c.encode(playlist, forKey: AnyKey("playlist"))
@@ -191,6 +203,27 @@ public enum DaemonRequest: Encodable, Sendable {
         case .setVizEnabled(let enabled):
             try c.encode("set-viz-enabled", forKey: AnyKey("cmd"))
             try c.encode(enabled, forKey: AnyKey("enabled"))
+        case .reminderCreate(let uri, let anchorAtMs, let recurrence, let tz, let message):
+            try c.encode("reminder-create", forKey: AnyKey("cmd"))
+            try c.encode(uri, forKey: AnyKey("media_uri"))
+            try c.encode(anchorAtMs, forKey: AnyKey("anchor_at_ms"))
+            try c.encode(recurrence.rawValue, forKey: AnyKey("recurrence"))
+            try c.encode(tz, forKey: AnyKey("tz"))
+            try c.encodeIfPresent(message, forKey: AnyKey("message"))
+        case .remindersList(let includeInactive):
+            try c.encode("reminders-list", forKey: AnyKey("cmd"))
+            try c.encode(includeInactive, forKey: AnyKey("include_inactive"))
+        case .reminderCancel(let id):
+            try c.encode("reminder-cancel", forKey: AnyKey("cmd"))
+            try c.encode(id, forKey: AnyKey("id"))
+        case .notificationsList(let includeArchived):
+            try c.encode("notifications-list", forKey: AnyKey("cmd"))
+            try c.encode(includeArchived, forKey: AnyKey("include_archived"))
+        case .notificationAct(let id, let action, let snoozeUntilMs):
+            try c.encode("notification-act", forKey: AnyKey("cmd"))
+            try c.encode(id, forKey: AnyKey("id"))
+            try c.encode(action, forKey: AnyKey("action"))
+            try c.encodeIfPresent(snoozeUntilMs, forKey: AnyKey("snooze_until_ms"))
         }
     }
 }

@@ -5,7 +5,8 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use spotuify_core::{
-    Device, MediaItem, Playback, Playlist, Queue, StoredAnalyticsEvent, SyncedLyrics,
+    Device, MediaItem, Notification, Playback, Playlist, Queue, Reminder, StoredAnalyticsEvent,
+    SyncedLyrics,
 };
 use spotuify_protocol::{
     CacheStatus, CacheSyncSummary, PlaylistCreateReceipt, ReindexStats, ResponseData,
@@ -229,6 +230,72 @@ pub fn print_media_items(items: &[MediaItem], format: OutputFormat) -> Result<()
     write_media_items(&mut io::stdout(), items, format)
 }
 
+/// Section order for an artist's discography, keyed by Spotify's `album_group`.
+const DISCOGRAPHY_GROUPS: &[(&str, &str)] = &[
+    ("album", "Albums"),
+    ("single", "Singles & EPs"),
+    ("compilation", "Compilations"),
+    ("appears_on", "Appears On"),
+];
+
+/// Print an artist's discography. Machine formats (json/jsonl/ids/csv) stay
+/// identical to `print_media_items` so the pipeable contract holds; the table
+/// view groups by `album_group`, marks library items with `✓`, and prints a
+/// count summary ("23 albums • 5 in library").
+pub fn print_discography(items: &[MediaItem], format: OutputFormat) -> Result<()> {
+    if !matches!(format, OutputFormat::Table) {
+        return print_media_items(items, format);
+    }
+    let mut writer = io::stdout();
+    fn render_row(writer: &mut dyn Write, item: &MediaItem) -> Result<()> {
+        let mark = if item.in_library == Some(true) {
+            "✓"
+        } else {
+            " "
+        };
+        let year = item
+            .release_date
+            .as_deref()
+            .map(|date| date.get(..4).unwrap_or(date))
+            .unwrap_or("");
+        writeln!(writer, "  {mark} {year}\t{}\t{}", item.name, item.uri)?;
+        Ok(())
+    }
+    for (key, label) in DISCOGRAPHY_GROUPS {
+        let group: Vec<&MediaItem> = items
+            .iter()
+            .filter(|item| item.album_group.as_deref() == Some(*key))
+            .collect();
+        if group.is_empty() {
+            continue;
+        }
+        writeln!(writer, "\n{label} ({})", group.len())?;
+        for item in group {
+            render_row(&mut writer, item)?;
+        }
+    }
+    let ungrouped: Vec<&MediaItem> = items
+        .iter()
+        .filter(|item| {
+            !DISCOGRAPHY_GROUPS
+                .iter()
+                .any(|(key, _)| item.album_group.as_deref() == Some(*key))
+        })
+        .collect();
+    if !ungrouped.is_empty() {
+        writeln!(writer, "\nOther ({})", ungrouped.len())?;
+        for item in ungrouped {
+            render_row(&mut writer, item)?;
+        }
+    }
+    let in_library = items
+        .iter()
+        .filter(|item| item.in_library == Some(true))
+        .count();
+    writeln!(writer, "\n{} albums • {in_library} in library", items.len())?;
+    Ok(())
+}
+
 pub fn write_media_items<W: Write>(
     writer: &mut W,
     items: &[MediaItem],
@@ -285,6 +352,153 @@ pub fn write_media_items<W: Write>(
             }
             Ok(())
         }
+    }
+}
+
+/// Format a Unix epoch (ms) as a local human timestamp, or `—` for invalid.
+fn fmt_epoch_ms(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| "—".to_string())
+}
+
+pub fn print_reminders(reminders: &[Reminder], format: OutputFormat) -> Result<()> {
+    let writer = &mut io::stdout();
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(&mut *writer, reminders)?;
+            writeln!(writer)?;
+            Ok(())
+        }
+        OutputFormat::Jsonl => {
+            for r in reminders {
+                writeln!(writer, "{}", serde_json::to_string(r)?)?;
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for r in reminders {
+                writeln!(writer, "{}", r.id)?;
+            }
+            Ok(())
+        }
+        OutputFormat::Csv => {
+            writeln!(writer, "id,next_due,recurrence,state,kind,name,uri")?;
+            for r in reminders {
+                writeln!(
+                    writer,
+                    "{}",
+                    csv_row(&[
+                        &r.id,
+                        &fmt_epoch_ms(r.next_due_at_ms),
+                        r.recurrence.label(),
+                        reminder_state_text(r),
+                        r.media_kind.label(),
+                        &r.name,
+                        &r.media_uri,
+                    ])
+                )?;
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            writeln!(writer, "ID\tNEXT DUE\tREPEAT\tSTATE\tNAME")?;
+            for r in reminders {
+                writeln!(
+                    writer,
+                    "{}\t{}\t{}\t{}\t{}",
+                    short_id(&r.id),
+                    fmt_epoch_ms(r.next_due_at_ms),
+                    r.recurrence.label(),
+                    reminder_state_text(r),
+                    r.name,
+                )?;
+            }
+            Ok(())
+        }
+    }
+}
+
+pub fn print_notifications(notifications: &[Notification], format: OutputFormat) -> Result<()> {
+    let writer = &mut io::stdout();
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(&mut *writer, notifications)?;
+            writeln!(writer)?;
+            Ok(())
+        }
+        OutputFormat::Jsonl => {
+            for n in notifications {
+                writeln!(writer, "{}", serde_json::to_string(n)?)?;
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for n in notifications {
+                writeln!(writer, "{}", n.id)?;
+            }
+            Ok(())
+        }
+        OutputFormat::Csv => {
+            writeln!(writer, "id,due,state,kind,name,uri")?;
+            for n in notifications {
+                writeln!(
+                    writer,
+                    "{}",
+                    csv_row(&[
+                        &n.id,
+                        &fmt_epoch_ms(n.due_at_ms),
+                        notification_state_text(n),
+                        n.media_kind.label(),
+                        &n.name,
+                        &n.media_uri,
+                    ])
+                )?;
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            writeln!(writer, "ID\tDUE\tSTATE\tNAME")?;
+            for n in notifications {
+                writeln!(
+                    writer,
+                    "{}\t{}\t{}\t{}",
+                    short_id(&n.id),
+                    fmt_epoch_ms(n.due_at_ms),
+                    notification_state_text(n),
+                    n.name,
+                )?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn short_id(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
+}
+
+fn reminder_state_text(r: &Reminder) -> &'static str {
+    use spotuify_core::ReminderState as S;
+    match r.state {
+        S::Active => "active",
+        S::Completed => "completed",
+        S::Cancelled => "cancelled",
+    }
+}
+
+fn notification_state_text(n: &Notification) -> &'static str {
+    use spotuify_core::NotificationState as S;
+    match n.state {
+        S::Unseen => "unseen",
+        S::Seen => "seen",
+        S::Snoozed => "snoozed",
+        S::Dismissed => "dismissed",
+        S::Done => "done",
     }
 }
 
@@ -1498,6 +1712,11 @@ pub fn print_response_data(
                 }
             }
         },
+        D::Reminders { reminders } => return print_reminders(reminders, format),
+        D::Notifications { notifications } => return print_notifications(notifications, format),
+        D::ReminderCreated { reminder } => {
+            return print_reminders(std::slice::from_ref(reminder), format)
+        }
     }
     Ok(())
 }

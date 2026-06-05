@@ -114,12 +114,24 @@ struct WireDecodingTests {
 
     @Test("unknown response kinds fall back to .unknown")
     func unknownResponseKind() throws {
-        let json = #"{"id":4,"payload":{"type":"Response","Ok":{"data":{"kind":"daemon-status","status":{"running":true}}}}}"#
+        let json = #"{"id":4,"payload":{"type":"Response","Ok":{"data":{"kind":"cache-status","status":{"rows":1}}}}}"#
         let message = try decode(json)
         guard case .response(.ok(.unknown(let kind))) = message.payload else {
             Issue.record("expected unknown kind, got \(message.payload)"); return
         }
-        #expect(kind == "daemon-status")
+        #expect(kind == "cache-status")
+    }
+
+    @Test("decodes a daemon-status response with protocol version")
+    func daemonStatusResponse() throws {
+        let json = #"{"id":5,"payload":{"type":"Response","Ok":{"data":{"kind":"daemon-status","status":{"running":true,"socket_path":"/x","socket_exists":true,"socket_reachable":true,"stale_socket":false,"protocol_version":2,"daemon_version":"0.1.41"}}}}}"#
+        let message = try decode(json)
+        guard case .response(.ok(.daemonStatus(let status))) = message.payload else {
+            Issue.record("expected daemon-status, got \(message.payload)"); return
+        }
+        #expect(status.protocolVersion == 2)
+        #expect(status.daemonVersion == "0.1.41")
+        #expect(status.running)
     }
 
     @Test("decodes a track's new metadata fields (album, added_at, episode resume)")
@@ -142,6 +154,43 @@ struct WireDecodingTests {
         #expect(items[1].isFullyPlayed)
         #expect(items[1].resumePositionMs == 120_000)
         #expect(items[1].releaseDate == "2024-03-01")
+    }
+
+    @Test("decodes a reminders list response")
+    func remindersResponse() throws {
+        let json = """
+        {"id":1,"payload":{"type":"Response","Ok":{"data":{"kind":"reminders","reminders":[
+        {"id":"r1","media_uri":"spotify:album:a","media_kind":"album","name":"Album","subtitle":"Artist",
+         "anchor_at_ms":1700000000000,"recurrence":"weekly","tz":"UTC","next_due_at_ms":1700600000000,
+         "state":"active","created_at_ms":1699999999000}]}}}}
+        """
+        let message = try decode(json)
+        guard case .response(.ok(.reminders(let reminders))) = message.payload else {
+            Issue.record("expected reminders, got \(message.payload)"); return
+        }
+        #expect(reminders.count == 1)
+        #expect(reminders[0].recurrence == .weekly)
+        #expect(reminders[0].mediaKind == .album)
+        #expect(reminders[0].state == .active)
+    }
+
+    @Test("decodes a reminder-due event with an embedded notification")
+    func reminderDueEvent() throws {
+        let json = """
+        {"id":0,"payload":{"type":"Event","event":"reminder-due","notification":
+        {"id":"n1","reminder_id":"r1","media_uri":"spotify:track:t","media_kind":"track","name":"Song",
+         "subtitle":"Artist","due_at_ms":1700000000000,"fired_at_ms":1700000000500,"state":"unseen",
+         "message":"listen!"}}}
+        """
+        let message = try decode(json)
+        guard case .event(.reminderDue(let notification)) = message.payload else {
+            Issue.record("expected reminder-due, got \(message.payload)"); return
+        }
+        #expect(notification.id == "n1")
+        #expect(notification.reminderID == "r1")
+        #expect(notification.state == .unseen)
+        #expect(notification.isOpen)
+        #expect(notification.message == "listen!")
     }
 
     @Test("decodes a spectrum-frame event")

@@ -1043,11 +1043,184 @@ pub async fn ipc_album(command: crate::AlbumCommand) -> Result<()> {
 }
 
 pub async fn ipc_artist(command: crate::ArtistCommand) -> Result<()> {
-    let crate::ArtistCommand::Albums { artist, format } = command;
-    match daemon_request(Request::ArtistAlbums { artist }).await? {
-        ResponseData::MediaItems { items } => output::print_media_items(&items, format),
-        _ => unexpected_response(),
+    match command {
+        crate::ArtistCommand::Albums {
+            artist,
+            library_only,
+            groups,
+            format,
+        } => match daemon_request(Request::ArtistAlbums { artist }).await? {
+            ResponseData::MediaItems { mut items } => {
+                // The daemon returns the full tagged discography; the toggle
+                // and group filters are applied client-side (no refetch).
+                if library_only {
+                    items.retain(|item| item.in_library == Some(true));
+                }
+                if !groups.is_empty() {
+                    let allowed: Vec<&str> = groups.iter().map(|g| g.as_api_str()).collect();
+                    items.retain(|item| {
+                        item.album_group
+                            .as_deref()
+                            .is_some_and(|group| allowed.contains(&group))
+                    });
+                }
+                output::print_discography(&items, format)
+            }
+            _ => unexpected_response(),
+        },
+        crate::ArtistCommand::Followed { format } => {
+            match daemon_request(Request::FollowedArtists { limit: 500 }).await? {
+                ResponseData::MediaItems { items } => output::print_media_items(&items, format),
+                _ => unexpected_response(),
+            }
+        }
     }
+}
+
+pub async fn ipc_reminder(command: crate::ReminderCommand) -> Result<()> {
+    match command {
+        crate::ReminderCommand::Create {
+            uri,
+            at,
+            repeat,
+            message,
+            format,
+        } => {
+            let anchor_at_ms = parse_when(&at)?;
+            let recurrence = spotuify_core::Recurrence::parse(&repeat).ok_or_else(|| {
+                anyhow::anyhow!("invalid --repeat '{repeat}' (none|daily|weekly|monthly)")
+            })?;
+            match daemon_request(Request::ReminderCreate {
+                media_uri: uri,
+                anchor_at_ms,
+                recurrence,
+                tz: "UTC".to_string(),
+                message,
+            })
+            .await?
+            {
+                ResponseData::ReminderCreated { reminder } => {
+                    output::print_reminders(std::slice::from_ref(&reminder), format)
+                }
+                _ => unexpected_response(),
+            }
+        }
+        crate::ReminderCommand::List { all, format } => {
+            match daemon_request(Request::RemindersList {
+                include_inactive: all,
+            })
+            .await?
+            {
+                ResponseData::Reminders { reminders } => {
+                    output::print_reminders(&reminders, format)
+                }
+                _ => unexpected_response(),
+            }
+        }
+        crate::ReminderCommand::Cancel { id, format: _ } => {
+            print_ack(Request::ReminderCancel { id }).await
+        }
+    }
+}
+
+pub async fn ipc_notifications(command: crate::NotificationCommand) -> Result<()> {
+    use spotuify_protocol::NotificationAction as NA;
+    match command {
+        crate::NotificationCommand::List { all, format } => {
+            match daemon_request(Request::NotificationsList {
+                include_archived: all,
+            })
+            .await?
+            {
+                ResponseData::Notifications { notifications } => {
+                    output::print_notifications(&notifications, format)
+                }
+                _ => unexpected_response(),
+            }
+        }
+        crate::NotificationCommand::Play { id, format: _ } => {
+            print_ack(Request::NotificationAct {
+                id,
+                action: NA::Play,
+                snooze_until_ms: None,
+            })
+            .await
+        }
+        crate::NotificationCommand::Queue { id, format: _ } => {
+            print_ack(Request::NotificationAct {
+                id,
+                action: NA::Queue,
+                snooze_until_ms: None,
+            })
+            .await
+        }
+        crate::NotificationCommand::Dismiss { id, format: _ } => {
+            print_ack(Request::NotificationAct {
+                id,
+                action: NA::Dismiss,
+                snooze_until_ms: None,
+            })
+            .await
+        }
+        crate::NotificationCommand::Snooze {
+            id,
+            snooze_for,
+            format: _,
+        } => {
+            let dur = snooze_for
+                .as_deref()
+                .map(parse_duration_ms)
+                .transpose()?
+                .unwrap_or(3_600_000);
+            print_ack(Request::NotificationAct {
+                id,
+                action: NA::Snooze,
+                snooze_until_ms: Some(spotuify_core::now_ms() + dur),
+            })
+            .await
+        }
+    }
+}
+
+/// Parse a `--at` value: `+2h`/`+30m`/`+3d`/`+1w`/`+45s`, `now`, `tomorrow`, or
+/// an ISO-8601 datetime. Offsets/keywords are relative to local now; the result
+/// is an absolute Unix epoch (ms).
+fn parse_when(input: &str) -> Result<i64> {
+    let s = input.trim();
+    let now = chrono::Local::now();
+    if let Some(rest) = s.strip_prefix('+') {
+        return Ok(now.timestamp_millis() + parse_duration_ms(rest)?);
+    }
+    match s.to_ascii_lowercase().as_str() {
+        "now" => return Ok(now.timestamp_millis()),
+        "tomorrow" => return Ok((now + chrono::Duration::days(1)).timestamp_millis()),
+        _ => {}
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.timestamp_millis());
+    }
+    anyhow::bail!("could not parse --at '{input}'; use +2h / +3d / +1w / tomorrow / ISO-8601")
+}
+
+/// Parse a bare duration like `15m`, `1h`, `4h`, `1d`, `1w`, `45s` into ms.
+fn parse_duration_ms(input: &str) -> Result<i64> {
+    let s = input.trim().trim_start_matches('+');
+    if s.len() < 2 {
+        anyhow::bail!("bad duration '{input}'");
+    }
+    let (num, unit) = s.split_at(s.len() - 1);
+    let n: i64 = num
+        .parse()
+        .with_context(|| format!("bad duration number in '{input}'"))?;
+    let ms = match unit {
+        "s" => n * 1_000,
+        "m" => n * 60_000,
+        "h" => n * 3_600_000,
+        "d" => n * 86_400_000,
+        "w" => n * 604_800_000,
+        other => anyhow::bail!("unknown duration unit '{other}' (use s/m/h/d/w)"),
+    };
+    Ok(ms)
 }
 
 pub async fn ipc_save_target(action: &str, target: &str, format: OutputFormat) -> Result<()> {

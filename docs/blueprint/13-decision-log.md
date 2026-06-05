@@ -322,3 +322,44 @@ Current behavior:
   `SPOTUIFY_USE_FIRST_PARTY=1`.
 - Default credentials are `StoredToken` values in `<config_dir>/auth/token.json` with mode 0600 on Unix.
 - First-party credentials are separate `FirstPartyCredentials` values in `<config_dir>/auth/first-party.json`.
+
+## D017: Artist discography browsing with a daemon-tagged library filter (2026-06-05)
+
+Chosen: surface an artist's full discography behind one request, grouped by
+Spotify's `album_group`, with an "in library vs all" filter computed as a local
+view over daemon-owned data rather than a separate query.
+
+Why:
+
+- Spotify buries an artist's catalog several screens deep and offers no
+  "only what I have saved" filter. A flat command plus one toggle is the gap.
+- There is no per-artist library endpoint. "In my library" can only be computed
+  by intersecting an artist's album ids against the user's saved albums. The
+  daemon already caches saved albums, so it tags each discography album with
+  `in_library` once and clients filter that single payload with no refetch. This
+  keeps the daemon as the state owner and the toggle as a pure client view.
+- Fetching with `market=from_token` collapses the per-market duplicate rows the
+  endpoint otherwise returns; remaining re-releases are de-duplicated by id.
+
+Current behavior:
+
+- New core requests: `ArtistAlbums { artist }` returns the full discography
+  tagged with `album_group` and `in_library`; `FollowedArtists { limit }` is
+  cache-backed and falls back to a live `/me/following` fetch when cold.
+- New optional `MediaItem` fields `album_group` and `in_library` (skip-if-none,
+  wire-compatible). They flow live from provider to client and are not persisted
+  to the cache.
+- Followed artists sync into `library_items` with `followed = 1` (a dedicated
+  persist path, so they are not mismarked as saved albums).
+- CLI: `spotuify artist albums <uri> [--library-only] [--group <g>]` and
+  `spotuify artist followed`. TUI: the artist overlay groups releases into
+  sections with `L` toggling the library filter. macOS: an Artists sidebar entry
+  plus a grouped artist page with an All / In Library segmented control.
+- IPC protocol version moved to 4 (this bundles the listening-reminders surface
+  added in the same line of work). Older daemons fail the client version gate
+  until rebuilt.
+
+Out of scope for v1: fuzzy re-release matching (a deluxe or remastered edition
+with a different album id can read as "not in library"); strict id matching is
+used instead. A `/me/albums/contains` fallback for a cold saved-album cache is
+deferred.

@@ -20,6 +20,10 @@ Implemented CLI commands:
   seek, volume, shuffle, repeat, queue, transfer
 - browsing/search: search, devices, playlists, playlist tracks,
   recently played, library save/unsave
+- artist discography: artist albums (grouped, with `--library-only` and
+  repeatable `--group` filters) and artist followed
+- listening reminders: reminder create/list/cancel and notifications
+  list/play/queue/snooze/dismiss
 - daemon lifecycle and IPC-backed one-shot commands
 - cache status/reset/repair/reindex
 - operations log: ops list/show/undo/redo
@@ -42,6 +46,9 @@ Implemented TUI areas:
 - optional right rail for queue, lyrics, and contextual key hints
 - fullscreen queue and lyrics overlays
 - playlist picker modal for add-to-playlist
+- artist discography overlay: releases grouped into Albums / Singles & EPs /
+  Compilations / Appears On, with `L` toggling an in-library-only filter
+- notifications screen for due listening reminders, plus a reminder picker modal
 - Space starts the selected Home, Search, Library, or Playlist item when there
   is no resumable current item, including ended-track state
 - manual cover-art and lyrics refresh for the current track
@@ -55,6 +62,10 @@ Implemented Spotify API capabilities:
 - playlists
 - recently played
 - playlist tracks
+- artist discography (`/artists/{id}/albums` across all groups with
+  `market=from_token` and id de-duplication, tagged with `album_group` and
+  `in_library`)
+- followed artists (`/me/following?type=artist`, cursor-paginated)
 - play/pause
 - play URI/context
 - album/playlist context playback emits and caches a queue snapshot, with the

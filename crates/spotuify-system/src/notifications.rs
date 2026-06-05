@@ -106,6 +106,18 @@ impl NotificationsHandle {
                     format!("auth issue: {:?} — re-login required", kind),
                 ))
             }
+            // Listening reminder fired (Linux/Windows desktop path; on macOS the
+            // GUI app posts the native alert). Gated by `enabled` in `handle`.
+            DaemonEvent::ReminderDue { notification } => {
+                let body = notification.message.clone().unwrap_or_else(|| {
+                    if notification.subtitle.is_empty() {
+                        "Time to listen".to_string()
+                    } else {
+                        notification.subtitle.clone()
+                    }
+                });
+                Some((format!("Reminder: {}", notification.name), body))
+            }
             _ => None,
         }
     }

@@ -100,6 +100,27 @@ spotuify queue add spotify:track:...
 spotuify playlist add "Coding" spotify:track:... --dry-run
 ```
 
+## Artist discography overlay
+
+Press `Enter` on an artist to open the discography overlay. These keys apply
+while it is open:
+
+| Key | Action |
+| --- | --- |
+| `L` | toggle all releases vs only albums in your library |
+| `Tab` | swap focus between the album list and the track list |
+| `j` / `k` | move within the focused list |
+| `Enter` | play the focused album or track |
+| `e` | queue the focused track |
+| `Esc` / `b` / `q` | close the overlay |
+
+```bash
+spotuify artist albums spotify:artist:36QJpDe2go2KgaRleHCDTp --library-only
+```
+
+Inside the overlay, `L` filters the discography. The global `L` lyrics-rail
+toggle applies only when the overlay is closed.
+
 ## Help and palette
 
 | Key | Action |

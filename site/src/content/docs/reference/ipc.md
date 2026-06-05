@@ -41,6 +41,8 @@ Representative request variants:
 | `PlaylistsList` | `spotuify playlists` |
 | `PlaylistTracks` | `spotuify playlist tracks` |
 | `PlaylistAddItems` | `spotuify playlist add` |
+| `ArtistAlbums` | `spotuify artist albums` |
+| `FollowedArtists` | `spotuify artist followed` |
 | `LibrarySave` | `spotuify like`, `spotuify save` |
 | `CoverArt` | TUI art fetch, `spotuify refresh-media` |
 | `LyricsGet` | `spotuify lyrics show`, `spotuify lyrics follow`, `spotuify refresh-media` |
@@ -56,6 +58,14 @@ client media while the new fetch is in flight.
 `lyrics follow` is a watch client over existing protocol calls. It subscribes
 to `PlaybackChanged`, fetches lyrics with `LyricsGet` on track change, and
 advances the active lyric line locally from playback time.
+
+`ArtistAlbums` returns the full discography in one response. The daemon tags
+each album with `album_group` (album, single, compilation, or appears-on) and
+`in_library` by intersecting against the cached saved-album set. Clients
+section and filter from that single payload, so the "in library" toggle never
+needs a refetch. `FollowedArtists` is cache-backed and falls back to a live
+fetch when the cache is cold. See [JSON Output](/reference/json-output/) for the
+tagged row shape.
 
 ## Admin requests
 

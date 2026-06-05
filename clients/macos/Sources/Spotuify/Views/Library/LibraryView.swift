@@ -65,6 +65,43 @@ struct AlbumsView: View {
     }
 }
 
+/// Followed artists grid → artist discography (with the All / In-Library toggle).
+struct ArtistsView: View {
+    @Environment(AppModel.self) private var model
+
+    private let columns = [GridItem(.adaptive(minimum: 140, maximum: 180), spacing: 16)]
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Artists").font(.title2.bold()).padding(16)
+                Divider()
+                if model.library.loadingArtists && model.library.followedArtists.isEmpty {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if model.library.followedArtists.isEmpty {
+                    ContentUnavailableView("No followed artists", systemImage: "music.mic",
+                        description: Text("Artists you follow on Spotify show up here."))
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: 16) {
+                            ForEach(model.library.followedArtists) { artist in
+                                NavigationLink(value: artist) {
+                                    ArtworkTile(item: artist)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(16)
+                    }
+                }
+            }
+            .mediaDetailDestinations()
+        }
+        .background(.background)
+        .task { await model.library.loadFollowedArtists() }
+    }
+}
+
 /// A header bar with Play / Shuffle / Queue-all for a collection of tracks.
 struct CollectionHeader: View {
     @Environment(AppModel.self) private var model

@@ -124,10 +124,116 @@ pub enum AlbumCommand {
 
 #[derive(Subcommand)]
 pub enum ArtistCommand {
-    /// Print an artist's albums and singles.
+    /// Print an artist's discography (albums, singles, compilations, appears-on).
     Albums {
         /// Artist ID or URI.
         artist: String,
+        /// Only albums already in your library (saved albums).
+        #[arg(long)]
+        library_only: bool,
+        /// Restrict to one or more album groups (repeatable). Default: all.
+        #[arg(long = "group", value_enum)]
+        groups: Vec<AlbumGroup>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// List the artists you follow.
+    Followed {
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+/// Spotify's per-artist album grouping (`album_group`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum AlbumGroup {
+    Album,
+    Single,
+    Compilation,
+    #[value(name = "appears-on")]
+    AppearsOn,
+}
+
+impl AlbumGroup {
+    /// The string Spotify reports in `album_group`.
+    pub fn as_api_str(self) -> &'static str {
+        match self {
+            Self::Album => "album",
+            Self::Single => "single",
+            Self::Compilation => "compilation",
+            Self::AppearsOn => "appears_on",
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum ReminderCommand {
+    /// Schedule a listening reminder for any media URI (track/album/playlist/
+    /// artist/show/episode).
+    Create {
+        /// Spotify URI to be reminded about.
+        uri: String,
+        /// When to fire: an offset (`+2h`, `+30m`, `+3d`, `+1w`), `tomorrow`,
+        /// or an ISO-8601 datetime (`2026-07-01T09:00:00Z`).
+        #[arg(long)]
+        at: String,
+        /// Repeat cadence.
+        #[arg(long, default_value = "none")]
+        repeat: String,
+        /// Optional note shown with the reminder.
+        #[arg(long)]
+        message: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// List reminder schedules (active only unless `--all`).
+    List {
+        #[arg(long)]
+        all: bool,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Cancel a reminder schedule by id.
+    Cancel {
+        id: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum NotificationCommand {
+    /// List inbox notifications (fired reminders). `--all` includes archived.
+    List {
+        #[arg(long)]
+        all: bool,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Play the media for a notification (marks it done).
+    Play {
+        id: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Queue the media for a notification (marks it done).
+    Queue {
+        id: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Snooze a notification; re-fires after `--for` (default 1h).
+    Snooze {
+        id: String,
+        /// Snooze duration: `15m`, `1h`, `4h`, `1d`.
+        #[arg(long = "for")]
+        snooze_for: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Dismiss a notification without playing.
+    Dismiss {
+        id: String,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },

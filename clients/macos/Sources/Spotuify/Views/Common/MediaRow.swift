@@ -28,6 +28,7 @@ struct MediaRow: View {
     var detailed = false
 
     @State private var hovering = false
+    @State private var showReminderPicker = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -96,6 +97,11 @@ struct MediaRow: View {
             if item.kind.isQueueable {
                 Button("Add to Queue") { model.queueAdd(uri: item.uri) }
             }
+            Divider()
+            Button("Remind me…") { showReminderPicker = true }
+        }
+        .sheet(isPresented: $showReminderPicker) {
+            ReminderPickerView(item: item)
         }
     }
 

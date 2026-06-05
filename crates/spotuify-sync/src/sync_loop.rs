@@ -886,6 +886,19 @@ async fn sync_library<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -
         Ok(shows) => items.extend(shows),
         Err(err) => tracing::warn!(error = %err, "saved shows sync failed"),
     }
+    // Followed artists are persisted separately: they are `followed`, not
+    // `saved`, so they must not ride the saved=1 bulk path above. They power
+    // the discography browser's entry point (Library → Artists → Enter).
+    match client.followed_artists().await {
+        Ok(artists) => {
+            summary.library_items += ctx.store().persist_followed_artists(&artists).await?;
+            summary.media_items += artists.len() as u32;
+            if let Err(err) = ctx.index_media_items(&artists, true).await {
+                tracing::debug!(error = %err, "followed artists index update failed");
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "followed artists sync failed"),
+    }
     summary.library_items += ctx.store().persist_library_items_bulk(&items).await?;
     summary.media_items += items.len() as u32;
     if let Err(err) = ctx.index_media_items(&items, true).await {

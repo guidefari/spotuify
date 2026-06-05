@@ -13,8 +13,14 @@ public final class AppModel {
     public let search = SearchStore()
     public let library = LibraryStore()
     public let lyrics = LyricsStore()
+    public let reminders = RemindersStore()
     public let viz = VizStore()
+    /// Set true once per launch when due notifications exist on connect, so the
+    /// shell can present the due-inbox modal exactly once.
+    public var presentDueInbox = false
+    private var dueInboxShown = false
     public private(set) var connectionState: ConnectionState = .idle
+    public private(set) var readiness: DaemonReadiness = .checking
     public private(set) var recent: [MediaItem] = []
     /// Transient status line (rate-limit countdown, premium/auth notice, …).
     public private(set) var banner: String?
@@ -33,6 +39,7 @@ public final class AppModel {
         search.connect(self)
         library.connect(self)
         lyrics.connect(self)
+        reminders.connect(self)
     }
 
     public var isReady: Bool { connectionState == .ready }
@@ -130,6 +137,63 @@ public final class AppModel {
         playAll(uris: uris.shuffled())
     }
 
+    // MARK: Reminders
+
+    /// Schedule a reminder. `anchorAtMs` is an absolute epoch (ms); the tz is the
+    /// device's current IANA zone for display + recurrence math.
+    public func createReminder(
+        uri: String,
+        anchorAtMs: Int64,
+        recurrence: Recurrence,
+        message: String? = nil
+    ) {
+        let tz = TimeZone.current.identifier
+        Task { [weak self] in
+            try? await self?.connection.request(
+                .reminderCreate(
+                    uri: uri, anchorAtMs: anchorAtMs, recurrence: recurrence, tz: tz,
+                    message: message))
+        }
+    }
+
+    public func cancelReminder(id: String) {
+        Task { [weak self] in try? await self?.connection.request(.reminderCancel(id: id)) }
+    }
+
+    /// Act on an inbox notification (play/queue/snooze/dismiss/seen).
+    public func actNotification(id: String, action: String, snoozeUntilMs: Int64? = nil) {
+        Task { [weak self] in
+            try? await self?.connection.request(
+                .notificationAct(id: id, action: action, snoozeUntilMs: snoozeUntilMs))
+        }
+    }
+
+    public func snoozeNotification(id: String, for interval: TimeInterval) {
+        let until = Int64((Date().timeIntervalSince1970 + interval) * 1000)
+        actNotification(id: id, action: "snooze", snoozeUntilMs: until)
+    }
+
+    /// Bridge an OS-notification action (which only knows the reminder) to the
+    /// inbox notification the daemon created when the reminder fired: find the
+    /// newest open notification for that reminder and act on it.
+    public func actLatestNotification(
+        reminderID: String, action: String, snoozeUntilMs: Int64? = nil
+    ) {
+        Task { [weak self] in
+            guard let self else { return }
+            guard case .notifications(let list) = try? await self.connection.request(
+                .notificationsList(includeArchived: false)) else { return }
+            if let match = list.first(where: { $0.reminderID == reminderID && $0.isOpen }) {
+                try? await self.connection.request(
+                    .notificationAct(id: match.id, action: action, snoozeUntilMs: snoozeUntilMs))
+            }
+        }
+    }
+
+    /// Invoked on the main actor once reminders have loaded after each (re)connect
+    /// — the macOS notification scheduler uses this to (re)sync OS notifications.
+    public var onRemindersReady: (() -> Void)?
+
     public func clearBanner() { banner = nil }
 
     /// The daemon socket this client targets (for display/diagnostics).
@@ -167,6 +231,8 @@ public final class AppModel {
             banner = "Player failed: \(reason). Run `spotuify reconnect`."
         case .playerReady:
             banner = nil
+        case .reminderDue(let notification):
+            banner = "⏰ Reminder: \(notification.name)"
         default:
             break
         }
@@ -181,20 +247,45 @@ public final class AppModel {
         var attempt = 0
         while !Task.isCancelled {
             connectionState = attempt == 0 ? .connecting : .reconnecting(attempt: attempt)
+            if attempt == 0 { readiness = .checking }
             debugLog("connecting attempt=\(attempt) path=\(path)")
-            _ = await DaemonLauncher.ensureRunning(socketPath: path)
+            let launched = await DaemonLauncher.ensureRunning(socketPath: path)
             do {
                 try await connection.connect(to: path)
-                try await connection.subscribeEvents()
-                try await reseed()
-                connectionState = .ready
-                banner = nil
-                attempt = 0
-                debugLog("ready")
-                await connection.waitUntilClosed()
+                // Gate on daemon version BEFORE using v2 features.
+                let status = try await fetchDaemonStatus()
+                let required = SpotuifyKit.ipcProtocolVersion
+                if status.protocolVersion < required {
+                    readiness = .incompatible(
+                        found: status.protocolVersion,
+                        required: required,
+                        version: status.daemonVersion ?? "unknown")
+                    connectionState = .ready
+                    debugLog("incompatible daemon: protocol \(status.protocolVersion) < \(required)")
+                    await connection.waitUntilClosed() // recheck if the daemon is replaced
+                } else {
+                    try await connection.subscribeEvents()
+                    try await reseed()
+                    readiness = .ready
+                    connectionState = .ready
+                    banner = nil
+                    attempt = 0
+                    debugLog("ready (daemon \(status.daemonVersion ?? "?") protocol \(status.protocolVersion))")
+                    await reminders.loadAll()
+                    onRemindersReady?()
+                    if !dueInboxShown && !reminders.openNotifications.isEmpty {
+                        dueInboxShown = true
+                        presentDueInbox = true
+                    }
+                    await connection.waitUntilClosed()
+                }
                 debugLog("disconnected")
             } catch {
                 connectionState = .failed("\(error)")
+                if !launched {
+                    readiness = .missing(
+                        installed: DaemonLauncher.resolveBinary() != nil)
+                }
                 debugLog("connect failed: \(error)")
             }
             guard !Task.isCancelled else { break }
@@ -202,6 +293,14 @@ public final class AppModel {
             let delayMs = min(10_000, 250 * (1 << min(attempt, 6)))
             try? await Task.sleep(for: .milliseconds(delayMs))
         }
+    }
+
+    private func fetchDaemonStatus() async throws -> DaemonStatus {
+        let data = try await connection.request(.getDaemonStatus, timeout: .seconds(8))
+        guard case .daemonStatus(let status) = data else {
+            throw DaemonConnectionError.unexpectedResponse("expected daemon-status")
+        }
+        return status
     }
 
     private func reseed() async throws {

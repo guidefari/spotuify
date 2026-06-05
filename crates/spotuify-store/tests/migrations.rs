@@ -137,7 +137,32 @@ async fn test_cache_version_constant_is_current() {
     // v9 playlist duplicate-track preservation, v10 queue cache,
     // v11 playlist track accessibility, v12 lyrics negative cache,
     // v13 media enrichment (album/added_at/resume_point columns).
-    assert_eq!(CACHE_VERSION, 13);
+    assert_eq!(CACHE_VERSION, 14);
+}
+
+#[tokio::test]
+async fn test_v14_creates_reminder_tables() {
+    let store = fresh_store().await;
+    assert!(table_exists(&store, "reminder_schedules").await);
+    assert!(table_exists(&store, "reminder_notifications").await);
+    for col in ["media_uri", "recurrence", "tz", "next_due_at_ms", "state"] {
+        assert!(
+            column_exists(&store, "reminder_schedules", col).await,
+            "reminder_schedules.{col} must exist"
+        );
+    }
+    for col in [
+        "reminder_id",
+        "due_at_ms",
+        "fired_at_ms",
+        "state",
+        "snoozed_until_ms",
+    ] {
+        assert!(
+            column_exists(&store, "reminder_notifications", col).await,
+            "reminder_notifications.{col} must exist"
+        );
+    }
 }
 
 #[tokio::test]

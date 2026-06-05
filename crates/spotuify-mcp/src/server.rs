@@ -301,6 +301,9 @@ fn kind_label(data: &spotuify_protocol::ResponseData) -> &'static str {
         D::WebApiToken { .. } => "web_api_token",
         D::SearchCachePruned { .. } => "search_cache_pruned",
         D::VizStatus { .. } => "viz_status",
+        D::Reminders { .. } => "reminders",
+        D::Notifications { .. } => "notifications",
+        D::ReminderCreated { .. } => "reminder_created",
     }
 }
 

@@ -23,11 +23,11 @@ use tokio::time;
 use crate::tui_actions::{ActionContext, CommandPalette, TuiAction};
 use crate::ui;
 use spotuify_cli::actions::{CommandKind, CommandResult};
-use spotuify_core::SyncedLyrics;
+use spotuify_core::{Notification, Recurrence, Reminder, SyncedLyrics};
 use spotuify_protocol::ipc_client::IpcClient;
 use spotuify_protocol::{
-    CacheStatus, DaemonEvent, DoctorReport, PlaybackCommand, Request, Response, ResponseData,
-    SearchScopeData,
+    CacheStatus, DaemonEvent, DoctorReport, NotificationAction, PlaybackCommand, Request, Response,
+    ResponseData, SearchScopeData,
 };
 use spotuify_spotify::client::{Device, MediaItem, MediaKind, Playback, Playlist, Queue};
 use spotuify_spotify::config::Config;
@@ -53,6 +53,7 @@ pub enum Screen {
     Devices,
     Diagnostics,
     Lyrics,
+    Notifications,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -71,7 +72,7 @@ pub enum FullscreenPanel {
 }
 
 impl Screen {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Player,
         Self::Search,
         Self::Library,
@@ -80,6 +81,7 @@ impl Screen {
         Self::Devices,
         Self::Diagnostics,
         Self::Lyrics,
+        Self::Notifications,
     ];
 
     pub fn label(self) -> &'static str {
@@ -92,6 +94,7 @@ impl Screen {
             Self::Devices => "Devices",
             Self::Diagnostics => "Diagnostics",
             Self::Lyrics => "Lyrics",
+            Self::Notifications => "Notifications",
         }
     }
 
@@ -107,6 +110,7 @@ impl Screen {
             Self::Devices => ActionContext::Devices,
             Self::Diagnostics => ActionContext::Diagnostics,
             Self::Lyrics => ActionContext::Lyrics,
+            Self::Notifications => ActionContext::Notifications,
         }
     }
 }
@@ -166,6 +170,29 @@ pub struct AudioOutputPickerModal {
     pub outputs: Vec<String>,
     pub selected: usize,
 }
+
+/// Quick-pick reminder scheduling modal opened by `R` on a selected item(s).
+/// A preset (or a typed custom offset) chooses the time; `Tab` cycles the
+/// recurrence; Enter schedules a `ReminderCreate` for every target URI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReminderPickerModal {
+    pub uris: Vec<String>,
+    pub label: String,
+    pub preset: usize,
+    pub recurrence: Recurrence,
+    /// Offset text (e.g. `+3d`, `+2w`) used when the Custom preset is selected.
+    pub custom: String,
+}
+
+/// Preset labels in display order. The last entry is the custom-offset entry.
+pub const REMINDER_PRESETS: [&str; 6] = [
+    "In 1 hour",
+    "This evening (7pm)",
+    "Tomorrow 9am",
+    "This weekend (Sat 10am)",
+    "Next week (Mon 9am)",
+    "Custom offset…",
+];
 
 /// Modal that fires when the daemon emits
 /// `DaemonEvent::AuthError { kind: InvalidGrant }` — the user's
@@ -259,6 +286,11 @@ pub struct App {
     pub selected_playlist_id: Option<String>,
     pub selected_playlist_name: Option<String>,
     pub toast: Option<String>,
+    /// Inbox of fired reminder notifications (newest first). Populated from
+    /// `ReminderDue` events + a `notifications-list` fetch on connect.
+    pub notifications: Vec<Notification>,
+    /// Scheduled reminders, shown on the Notifications screen below the inbox.
+    pub reminders: Vec<Reminder>,
     pub error: Option<String>,
     pub last_progress_tick: Instant,
     /// Set when the user just issued a track-changing command
@@ -352,6 +384,7 @@ pub struct App {
     pub playlist_picker: Option<PlaylistPickerModal>,
     pub device_picker: Option<DevicePickerModal>,
     pub audio_output_picker: Option<AudioOutputPickerModal>,
+    pub reminder_picker: Option<ReminderPickerModal>,
     /// Interactive re-authentication modal. Opens automatically when
     /// the daemon emits `DaemonEvent::AuthError { kind: InvalidGrant }`.
     /// Key routing slots it right after the error modal so it blocks
@@ -392,12 +425,54 @@ pub struct ArtistViewState {
     pub loading_albums: bool,
     pub loading_tracks: bool,
     pub error: Option<String>,
+    /// When set, only show albums already in the library (saved). Toggled
+    /// with `L`; a pure client-side filter over the daemon-tagged list.
+    pub library_only: bool,
+}
+
+impl ArtistViewState {
+    /// Albums to display: filtered by the library toggle and ordered into
+    /// Spotify's discography sections (albums → singles → compilations →
+    /// appears-on). `album_selected` indexes into this list.
+    pub fn visible_albums(&self) -> Vec<&MediaItem> {
+        let mut out: Vec<&MediaItem> = self
+            .albums
+            .iter()
+            .filter(|album| !self.library_only || album.in_library == Some(true))
+            .collect();
+        // Stable sort preserves Spotify's within-group newest-first ordering.
+        out.sort_by_key(|album| album_group_rank(album.album_group.as_deref()));
+        out
+    }
+
+    /// Count of visible albums that are in the library (for the mode badge).
+    pub fn in_library_count(&self) -> usize {
+        self.albums
+            .iter()
+            .filter(|album| album.in_library == Some(true))
+            .count()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArtistViewSide {
     Albums,
     Tracks,
+}
+
+/// Discography section order, keyed by Spotify's `album_group`.
+pub const ARTIST_ALBUM_GROUPS: &[(&str, &str)] = &[
+    ("album", "Albums"),
+    ("single", "Singles & EPs"),
+    ("compilation", "Compilations"),
+    ("appears_on", "Appears On"),
+];
+
+/// Sort rank for an `album_group`; unknown/None groups sink to the bottom.
+pub fn album_group_rank(group: Option<&str>) -> usize {
+    group
+        .and_then(|g| ARTIST_ALBUM_GROUPS.iter().position(|(key, _)| *key == g))
+        .unwrap_or(ARTIST_ALBUM_GROUPS.len())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -600,6 +675,12 @@ enum AsyncResult {
     /// auth-revoked condition still holds — if the daemon
     /// self-healed in the grace window, the modal stays closed.
     OpenLoginModalIfStillNeeded,
+    /// Result of fetching reminder schedules + inbox notifications for the
+    /// Notifications screen (on screen-open, connect, and `RemindersChanged`).
+    RemindersLoaded {
+        reminders: Vec<Reminder>,
+        notifications: Vec<Notification>,
+    },
 }
 
 impl App {
@@ -643,6 +724,8 @@ impl App {
             selected_playlist_id: None,
             selected_playlist_name: None,
             toast: None,
+            notifications: Vec::new(),
+            reminders: Vec::new(),
             error: None,
             last_progress_tick: Instant::now(),
             awaiting_track_change_until: None,
@@ -692,6 +775,7 @@ impl App {
             playlist_picker: None,
             device_picker: None,
             audio_output_picker: None,
+            reminder_picker: None,
             login_modal: None,
             operations: Vec::new(),
             operations_cursor: 0,
@@ -855,6 +939,23 @@ impl App {
                     vec![Request::PlaylistAddItems { playlist, uris }]
                 }
             }
+            TuiAction::RemindMe => {
+                // TUI quick-schedule: remind about the selection in 1 day. Rich
+                // scheduling (presets/recurrence/custom date) lives in the macOS
+                // picker and the CLI `spotuify reminder create … --at`.
+                let anchor_at_ms = chrono::Local::now().timestamp_millis() + 86_400_000;
+                let tz = "UTC".to_string();
+                self.selected_target_uris()
+                    .into_iter()
+                    .map(|uri| Request::ReminderCreate {
+                        media_uri: uri,
+                        anchor_at_ms,
+                        recurrence: spotuify_core::Recurrence::None,
+                        tz: tz.clone(),
+                        message: None,
+                    })
+                    .collect()
+            }
             _ => Vec::new(),
         }
     }
@@ -956,6 +1057,7 @@ impl App {
             Screen::Playlists if self.selected_playlist_id.is_some() => self.visible_items().len(),
             Screen::Playlists => self.filtered_playlists().len(),
             Screen::Devices => self.filtered_devices().len(),
+            Screen::Notifications => self.notifications.len() + self.reminders.len(),
         }
     }
 
@@ -1406,7 +1508,7 @@ impl App {
                             view.albums = items;
                             view.album_selected = 0;
                             view.error = None;
-                            auto_load = view.albums.first().map(|a| a.uri.clone());
+                            auto_load = view.visible_albums().first().map(|a| a.uri.clone());
                         }
                         Err(err) => view.error = Some(err),
                     }
@@ -1417,7 +1519,10 @@ impl App {
             }
             AsyncResult::AlbumTracks { album_uri, result } => {
                 if let Some(view) = self.artist_view.as_mut() {
-                    let expected_uri = view.albums.get(view.album_selected).map(|a| a.uri.clone());
+                    let expected_uri = view
+                        .visible_albums()
+                        .get(view.album_selected)
+                        .map(|a| a.uri.clone());
                     if expected_uri.as_deref() != Some(&album_uri) {
                         // Result is for a different album than the
                         // user has focused now; drop it.
@@ -1464,7 +1569,12 @@ impl App {
                 viz,
                 recent,
                 fetched_at,
-            } => self.apply_seed(playback, queue, devices, viz, recent, fetched_at, async_tx),
+            } => {
+                self.apply_seed(playback, queue, devices, viz, recent, fetched_at, async_tx);
+                // Bootstrap the reminders inbox so the Notifications badge/screen
+                // is populated as soon as the client connects.
+                spawn_load_reminders(async_tx);
+            }
             AsyncResult::LoginCompleted { result } => match result {
                 Ok(()) => {
                     self.login_modal = None;
@@ -1504,6 +1614,16 @@ impl App {
                     });
                 }
                 self.pending_auth_modal_until = None;
+            }
+            AsyncResult::RemindersLoaded {
+                reminders,
+                notifications,
+            } => {
+                self.reminders = reminders;
+                self.notifications = notifications;
+                if self.screen == Screen::Notifications {
+                    self.clamp_selection();
+                }
             }
         }
         if should_sync_selected_art {
@@ -1981,6 +2101,16 @@ impl App {
                 self.viz_configured_source = configured;
                 self.viz_hint = hint;
                 self.viz_backend_kind = backend_kind;
+            }
+            DaemonEvent::ReminderDue { notification } => {
+                self.toast = Some(format!("⏰ Reminder: {}", notification.name));
+                self.notifications.insert(0, notification);
+                // Pull the authoritative inbox + schedules (a recurring reminder
+                // just advanced its next-due).
+                spawn_load_reminders(async_tx);
+            }
+            DaemonEvent::RemindersChanged { .. } => {
+                spawn_load_reminders(async_tx);
             }
         }
     }
@@ -2723,6 +2853,18 @@ fn handle_key(
         return Ok(false);
     }
 
+    if app.reminder_picker.is_some() {
+        handle_reminder_picker_key(app, key, async_tx);
+        return Ok(false);
+    }
+
+    // Notifications screen: contextual action keys (Enter play, s snooze,
+    // d dismiss, x cancel) act on the selected inbox notification or scheduled
+    // reminder. Nav keys (j/k, digits, Esc) fall through to the generic map.
+    if app.screen == Screen::Notifications && handle_notifications_key(app, key, async_tx) {
+        return Ok(false);
+    }
+
     // Update banner: Shift+R restarts the stale daemon onto the new
     // binary. Contextual — only bound while the banner is showing, so it
     // never shadows the per-page `r` actions.
@@ -2976,6 +3118,9 @@ fn mouse_row_selection(app: &App, area: Rect, column: u16, row: u16) -> Option<u
         Screen::Diagnostics => diagnostics_log_index(app, area, column, row),
         Screen::Player => mouse_home_selection(app, area, column, row),
         Screen::Lyrics => None,
+        // Two stacked lists with headers; row→index mapping is ambiguous, so
+        // mouse selection is keyboard-only on this screen.
+        Screen::Notifications => None,
     }
 }
 
@@ -3342,14 +3487,31 @@ fn handle_artist_view_key(
                 ArtistViewSide::Tracks => ArtistViewSide::Albums,
             };
         }
+        (KeyCode::Char('L'), _) => {
+            // Toggle the in-library filter. Selection resets to the first
+            // visible album; no refetch — the daemon already tagged each one.
+            view.library_only = !view.library_only;
+            view.album_selected = 0;
+            let mode = if view.library_only { "library" } else { "all" };
+            let next_uri = view.visible_albums().first().map(|a| a.uri.clone());
+            if let Some(album_uri) = next_uri {
+                load_album_tracks(app, async_tx, album_uri);
+            } else if let Some(view) = app.artist_view.as_mut() {
+                view.album_tracks.clear();
+                view.track_selected = 0;
+            }
+            app.toast = Some(format!("Showing {mode} releases"));
+        }
         (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => match view.focus {
             ArtistViewSide::Albums => {
-                if !view.albums.is_empty() {
-                    let last = view.albums.len() - 1;
+                let visible = view.visible_albums();
+                if !visible.is_empty() {
+                    let last = visible.len() - 1;
                     let next = view.album_selected.saturating_add(1).min(last);
-                    if next != view.album_selected {
+                    let next_uri = (next != view.album_selected).then(|| visible[next].uri.clone());
+                    drop(visible);
+                    if let Some(album_uri) = next_uri {
                         view.album_selected = next;
-                        let album_uri = view.albums[next].uri.clone();
                         load_album_tracks(app, async_tx, album_uri);
                     }
                 }
@@ -3364,9 +3526,12 @@ fn handle_artist_view_key(
         (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => match view.focus {
             ArtistViewSide::Albums => {
                 if view.album_selected > 0 {
-                    view.album_selected -= 1;
-                    let album_uri = view.albums[view.album_selected].uri.clone();
-                    load_album_tracks(app, async_tx, album_uri);
+                    let prev = view.album_selected - 1;
+                    let prev_uri = view.visible_albums().get(prev).map(|a| a.uri.clone());
+                    if let Some(album_uri) = prev_uri {
+                        view.album_selected = prev;
+                        load_album_tracks(app, async_tx, album_uri);
+                    }
                 }
             }
             ArtistViewSide::Tracks => {
@@ -3375,7 +3540,11 @@ fn handle_artist_view_key(
         },
         (KeyCode::Enter, _) => match view.focus {
             ArtistViewSide::Albums => {
-                if let Some(album) = view.albums.get(view.album_selected).cloned() {
+                let album = view
+                    .visible_albums()
+                    .get(view.album_selected)
+                    .map(|album| (*album).clone());
+                if let Some(album) = album {
                     let name = album.name.clone();
                     command_then_refresh(app, async_tx, CommandKind::PlayItem { item: album });
                     app.toast = Some(format!("Playing album {name}"));
@@ -3728,6 +3897,7 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         (KeyCode::Char('D'), _) => Some(TuiAction::OpenDevicePicker),
         (KeyCode::Char('7'), KeyModifiers::NONE) => Some(TuiAction::OpenDiagnostics),
         (KeyCode::Char('8'), KeyModifiers::NONE) => Some(TuiAction::OpenLyrics),
+        (KeyCode::Char('9'), KeyModifiers::NONE) => Some(TuiAction::OpenNotifications),
         (KeyCode::Char('Q'), _) => Some(TuiAction::ToggleQueueRail),
         (KeyCode::Char('L'), _) => Some(TuiAction::ToggleLyricsRail),
         (KeyCode::Char('H'), _) => Some(TuiAction::ToggleHintsRail),
@@ -3792,6 +3962,7 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
             Some(TuiAction::AddSelectionToPlaylist)
         }
         (KeyCode::Char('l'), KeyModifiers::NONE) => Some(TuiAction::LikeSelection),
+        (KeyCode::Char('R'), _) => Some(TuiAction::RemindMe),
         (KeyCode::Char('U'), _) => Some(TuiAction::RefreshMedia),
         (KeyCode::Char('u'), KeyModifiers::NONE) => {
             // Contextual: on Diagnostics, `u` undoes the last reversible
@@ -3840,6 +4011,10 @@ fn apply_tui_action(
         TuiAction::OpenLyrics => {
             switch_screen(app, Screen::Lyrics);
             app.request_lyrics_if_visible();
+        }
+        TuiAction::OpenNotifications => {
+            switch_screen(app, Screen::Notifications);
+            spawn_load_reminders(async_tx);
         }
         TuiAction::MoveDown => {
             app.move_down();
@@ -3944,6 +4119,7 @@ fn apply_tui_action(
         TuiAction::PlaySelected => activate_selected(app, async_tx),
         TuiAction::QueueSelection => queue_selection(app, async_tx),
         TuiAction::LikeSelection => like_selection(app, async_tx),
+        TuiAction::RemindMe => remind_selection(app, async_tx),
         TuiAction::AddSelectionToPlaylist => add_selection_to_playlist(app, async_tx),
         TuiAction::TransferDevice => transfer_selected(app, async_tx),
         TuiAction::ToggleMark => toggle_mark_selected(app),
@@ -4325,6 +4501,7 @@ fn open_artist_view(
         loading_albums: true,
         loading_tracks: false,
         error: None,
+        library_only: false,
     });
     let async_tx = async_tx.clone();
     let artist_uri = artist.uri;
@@ -4488,6 +4665,233 @@ fn transfer_device_picker_selection(app: &mut App, async_tx: &mpsc::UnboundedSen
             play: app.playback.is_playing,
         },
     );
+}
+
+/// Contextual key handling for the Notifications screen. Returns true if the
+/// key was consumed as an action; false lets nav/global keys through. The
+/// combined list is `[inbox notifications…, scheduled reminders…]`.
+fn handle_notifications_key(
+    app: &mut App,
+    key: KeyEvent,
+    async_tx: &mpsc::UnboundedSender<AsyncResult>,
+) -> bool {
+    let n_count = app.notifications.len();
+    if app.selected < n_count {
+        let notification = app.notifications[app.selected].clone();
+        let act = |action, snooze_until_ms| Request::NotificationAct {
+            id: notification.id.clone(),
+            action,
+            snooze_until_ms,
+        };
+        match (key.code, key.modifiers) {
+            (KeyCode::Enter, _) => {
+                requests_then_refresh(
+                    app,
+                    async_tx,
+                    vec![act(NotificationAction::Play, None)],
+                    format!("Playing {}", notification.name),
+                );
+                true
+            }
+            (KeyCode::Char('s'), KeyModifiers::NONE) => {
+                let until = chrono::Local::now().timestamp_millis() + 3_600_000;
+                requests_then_refresh(
+                    app,
+                    async_tx,
+                    vec![act(NotificationAction::Snooze, Some(until))],
+                    "Snoozed 1h".to_string(),
+                );
+                true
+            }
+            (KeyCode::Char('d'), KeyModifiers::NONE) => {
+                requests_then_refresh(
+                    app,
+                    async_tx,
+                    vec![act(NotificationAction::Dismiss, None)],
+                    "Dismissed reminder".to_string(),
+                );
+                true
+            }
+            _ => false,
+        }
+    } else if let Some(reminder) = app.reminders.get(app.selected - n_count).cloned() {
+        match (key.code, key.modifiers) {
+            (KeyCode::Enter, _) => {
+                requests_then_refresh(
+                    app,
+                    async_tx,
+                    vec![Request::PlaybackCommand {
+                        command: PlaybackCommand::PlayUri {
+                            uri: reminder.media_uri.clone(),
+                        },
+                    }],
+                    format!("Playing {}", reminder.name),
+                );
+                true
+            }
+            (KeyCode::Char('x'), KeyModifiers::NONE) | (KeyCode::Char('c'), KeyModifiers::NONE) => {
+                requests_then_refresh(
+                    app,
+                    async_tx,
+                    vec![Request::ReminderCancel { id: reminder.id }],
+                    "Reminder cancelled".to_string(),
+                );
+                true
+            }
+            _ => false,
+        }
+    } else {
+        false
+    }
+}
+
+fn remind_selection(app: &mut App, _async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    let uris = app.selected_target_uris();
+    if uris.is_empty() {
+        app.toast = Some("Select a track to set a reminder".to_string());
+        return;
+    }
+    let label = app
+        .selected_item()
+        .map(|item| item.name)
+        .unwrap_or_else(|| format!("{} item(s)", uris.len()));
+    app.reminder_picker = Some(ReminderPickerModal {
+        uris,
+        label,
+        preset: 2, // default: Tomorrow 9am
+        recurrence: Recurrence::None,
+        custom: "+3d".to_string(),
+    });
+}
+
+fn cycle_recurrence(recurrence: Recurrence) -> Recurrence {
+    match recurrence {
+        Recurrence::None => Recurrence::Daily,
+        Recurrence::Daily => Recurrence::Weekly,
+        Recurrence::Weekly => Recurrence::Monthly,
+        Recurrence::Monthly => Recurrence::None,
+    }
+}
+
+/// Parse a bare offset like `+3d` / `2w` / `6h` into milliseconds.
+fn parse_offset_ms(input: &str) -> Option<i64> {
+    let s = input.trim().trim_start_matches('+');
+    if s.len() < 2 {
+        return None;
+    }
+    let (num, unit) = s.split_at(s.len() - 1);
+    let n: i64 = num.trim().parse().ok()?;
+    let mult = match unit {
+        "s" => 1_000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        "w" => 604_800_000,
+        _ => return None,
+    };
+    Some(n * mult)
+}
+
+/// Resolve a preset index (+ custom offset text) to an absolute epoch (ms) in
+/// the local timezone. Returns None for an unparseable custom offset.
+fn resolve_reminder_preset(index: usize, custom: &str) -> Option<i64> {
+    use chrono::{Datelike, Duration as ChronoDuration, Local, TimeZone};
+    let now = Local::now();
+    let at_hour = |hour: u32, day: chrono::DateTime<Local>| -> Option<chrono::DateTime<Local>> {
+        let naive = day.date_naive().and_hms_opt(hour, 0, 0)?;
+        Local.from_local_datetime(&naive).single()
+    };
+    let ms = match index {
+        0 => (now + ChronoDuration::hours(1)).timestamp_millis(),
+        1 => {
+            let today = at_hour(19, now)?;
+            let chosen = if today > now {
+                today
+            } else {
+                at_hour(19, now + ChronoDuration::days(1))?
+            };
+            chosen.timestamp_millis()
+        }
+        2 => at_hour(9, now + ChronoDuration::days(1))?.timestamp_millis(),
+        3 => {
+            // Next Saturday 10am (Mon=0…Sat=5…Sun=6).
+            let weekday = now.weekday().num_days_from_monday() as i64;
+            let days = (5 - weekday).rem_euclid(7);
+            let mut sat = at_hour(10, now + ChronoDuration::days(days))?;
+            if sat <= now {
+                sat = at_hour(10, now + ChronoDuration::days(days + 7))?;
+            }
+            sat.timestamp_millis()
+        }
+        4 => {
+            // Next Monday 9am (always at least next week).
+            let weekday = now.weekday().num_days_from_monday() as i64;
+            let days = if weekday == 0 { 7 } else { 7 - weekday };
+            at_hour(9, now + ChronoDuration::days(days))?.timestamp_millis()
+        }
+        _ => now.timestamp_millis() + parse_offset_ms(custom)?,
+    };
+    Some(ms)
+}
+
+fn handle_reminder_picker_key(
+    app: &mut App,
+    key: KeyEvent,
+    async_tx: &mpsc::UnboundedSender<AsyncResult>,
+) {
+    let custom_idx = REMINDER_PRESETS.len() - 1;
+    let Some(picker) = app.reminder_picker.as_mut() else {
+        return;
+    };
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, _) => {
+            app.reminder_picker = None;
+            app.toast = Some("Canceled reminder".to_string());
+        }
+        (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+            picker.preset = (picker.preset + 1) % REMINDER_PRESETS.len();
+        }
+        (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+            picker.preset = (picker.preset + REMINDER_PRESETS.len() - 1) % REMINDER_PRESETS.len();
+        }
+        (KeyCode::Tab, _) => picker.recurrence = cycle_recurrence(picker.recurrence),
+        (KeyCode::Backspace, _) if picker.preset == custom_idx => {
+            picker.custom.pop();
+        }
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT)
+            if picker.preset == custom_idx && !c.is_control() =>
+        {
+            picker.custom.push(c);
+        }
+        (KeyCode::Enter, _) => match resolve_reminder_preset(picker.preset, &picker.custom) {
+            Some(anchor_at_ms) => {
+                let recurrence = picker.recurrence;
+                let uris = picker.uris.clone();
+                let count = uris.len();
+                app.reminder_picker = None;
+                let requests = uris
+                    .into_iter()
+                    .map(|uri| Request::ReminderCreate {
+                        media_uri: uri,
+                        anchor_at_ms,
+                        recurrence,
+                        tz: "UTC".to_string(),
+                        message: None,
+                    })
+                    .collect();
+                requests_then_refresh(
+                    app,
+                    async_tx,
+                    requests,
+                    format!("Reminder set for {count} item(s)"),
+                );
+            }
+            None => {
+                app.toast = Some("Bad custom offset — try +3d, +2w, +6h".to_string());
+            }
+        },
+        _ => {}
+    }
 }
 
 fn like_selection(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
@@ -4664,6 +5068,39 @@ fn command_then_refresh_transport(
     });
 }
 
+/// Fetch reminder schedules + inbox notifications and deliver them via
+/// `AsyncResult::RemindersLoaded`. Fire-and-forget; failures yield empty lists.
+fn spawn_load_reminders(async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    // Tests drive apply paths synchronously without a Tokio runtime; skip the
+    // background fetch there rather than panic on `tokio::spawn`.
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        let reminders = match request_data(Request::RemindersList {
+            include_inactive: false,
+        })
+        .await
+        {
+            Ok(ResponseData::Reminders { reminders }) => reminders,
+            _ => Vec::new(),
+        };
+        let notifications = match request_data(Request::NotificationsList {
+            include_archived: false,
+        })
+        .await
+        {
+            Ok(ResponseData::Notifications { notifications }) => notifications,
+            _ => Vec::new(),
+        };
+        let _ = async_tx.send(AsyncResult::RemindersLoaded {
+            reminders,
+            notifications,
+        });
+    });
+}
+
 fn requests_then_refresh(
     app: &mut App,
     async_tx: &mpsc::UnboundedSender<AsyncResult>,
@@ -4690,7 +5127,11 @@ fn requests_then_refresh(
 async fn execute_requests(requests: Vec<Request>, message: String) -> Result<CommandResult> {
     for request in requests {
         match request_data(request).await? {
-            ResponseData::Mutation { .. } => {}
+            // Mutations and reminder/notification acks are all "fire + refresh"
+            // commands — we only care that they succeeded, not the payload.
+            ResponseData::Mutation { .. }
+            | ResponseData::Ack { .. }
+            | ResponseData::ReminderCreated { .. } => {}
             _ => anyhow::bail!("unexpected command response"),
         }
     }
@@ -4910,6 +5351,7 @@ fn screen_action(screen: Screen) -> TuiAction {
         Screen::Devices => TuiAction::OpenDevices,
         Screen::Diagnostics => TuiAction::OpenDiagnostics,
         Screen::Lyrics => TuiAction::OpenLyrics,
+        Screen::Notifications => TuiAction::OpenNotifications,
     }
 }
 
@@ -5116,6 +5558,8 @@ mod tests {
             selected_playlist_id: None,
             selected_playlist_name: None,
             toast: None,
+            notifications: Vec::new(),
+            reminders: Vec::new(),
             error: None,
             last_progress_tick: Instant::now(),
             awaiting_track_change_until: None,
@@ -5165,6 +5609,7 @@ mod tests {
             playlist_picker: None,
             device_picker: None,
             audio_output_picker: None,
+            reminder_picker: None,
             login_modal: None,
             operations: Vec::new(),
             operations_cursor: 0,
@@ -7746,5 +8191,35 @@ mod tests {
             Some(80),
             "daemon PlaybackChanged should update playback.device"
         );
+    }
+
+    #[test]
+    fn parse_offset_ms_handles_units_and_rejects_garbage() {
+        assert_eq!(parse_offset_ms("+2h"), Some(7_200_000));
+        assert_eq!(parse_offset_ms("3d"), Some(259_200_000));
+        assert_eq!(parse_offset_ms("1w"), Some(604_800_000));
+        assert_eq!(parse_offset_ms("+90m"), Some(5_400_000));
+        assert_eq!(parse_offset_ms("nonsense"), None);
+        assert_eq!(parse_offset_ms("+5y"), None);
+        assert_eq!(parse_offset_ms("+"), None);
+    }
+
+    #[test]
+    fn cycle_recurrence_wraps_through_all_modes() {
+        assert_eq!(cycle_recurrence(Recurrence::None), Recurrence::Daily);
+        assert_eq!(cycle_recurrence(Recurrence::Daily), Recurrence::Weekly);
+        assert_eq!(cycle_recurrence(Recurrence::Weekly), Recurrence::Monthly);
+        assert_eq!(cycle_recurrence(Recurrence::Monthly), Recurrence::None);
+    }
+
+    #[test]
+    fn resolve_custom_preset_applies_offset_and_rejects_bad_input() {
+        let custom = REMINDER_PRESETS.len() - 1;
+        let now = chrono::Local::now().timestamp_millis();
+        let at = resolve_reminder_preset(custom, "+1h").expect("custom offset resolves");
+        assert!((at - now - 3_600_000).abs() < 5_000, "≈ now + 1h");
+        assert!(resolve_reminder_preset(custom, "garbage").is_none());
+        // A non-custom preset always yields a concrete future time.
+        assert!(resolve_reminder_preset(2, "").is_some());
     }
 }

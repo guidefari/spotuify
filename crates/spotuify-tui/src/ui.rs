@@ -69,6 +69,9 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     if app.audio_output_picker.is_some() {
         render_audio_output_picker(frame, area, app);
     }
+    if app.reminder_picker.is_some() {
+        render_reminder_picker(frame, area, app);
+    }
     if app.artist_view.is_some() {
         render_artist_view(frame, area, app);
     }
@@ -96,7 +99,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    use crate::app::ArtistViewSide;
+    use crate::app::{ArtistViewSide, ARTIST_ALBUM_GROUPS};
     use crate::widgets::style::{card_block, focused_card_block};
     let Some(view) = app.artist_view.as_ref() else {
         return;
@@ -104,7 +107,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let modal_area = centered_rect(88, 80, area);
     frame.render_widget(Clear, modal_area);
     let outer = focused_card_block(&format!(
-        "Artist · {}  ·  Tab swap pane  ·  Enter play  ·  Esc close",
+        "Artist · {}  ·  Tab swap pane  ·  Enter play  ·  L library/all  ·  Esc close",
         view.artist_name
     ));
     let inner = outer.inner(modal_area);
@@ -132,7 +135,15 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     // ===== Albums (left) =====
     let albums_focused = view.focus == ArtistViewSide::Albums;
-    let albums_title = format!("Albums  {}", view.albums.len());
+    let albums_title = if view.library_only {
+        format!("Albums  Library · {}", view.in_library_count())
+    } else {
+        format!(
+            "Albums  All · {}  ({} in library)",
+            view.albums.len(),
+            view.in_library_count()
+        )
+    };
     let albums_block = if albums_focused {
         focused_card_block(&albums_title)
     } else {
@@ -154,35 +165,65 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .style(Style::default().bg(PANEL)),
             albums_inner,
         );
-    } else if view.albums.is_empty() {
+    } else if view.visible_albums().is_empty() {
+        let message = if view.library_only {
+            "No saved albums for this artist. Press L to see all releases."
+        } else {
+            "No albums released by this artist."
+        };
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                "No albums released by this artist.",
-                Style::default().fg(MUTED),
-            ))
-            .style(Style::default().bg(PANEL)),
+            Paragraph::new(Span::styled(message, Style::default().fg(MUTED)))
+                .style(Style::default().bg(PANEL)),
             albums_inner,
         );
     } else {
-        let rows: Vec<ListItem<'_>> = view
-            .albums
-            .iter()
-            .map(|a| {
-                ListItem::new(vec![
-                    Line::from(vec![
-                        Span::styled("💿  ", Style::default().fg(GREEN)),
-                        Span::styled(
-                            a.name.clone(),
-                            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::raw("    "),
-                        Span::styled(context_suffix(a), Style::default().fg(MUTED)),
-                    ]),
-                ])
-            })
-            .collect();
+        let visible = view.visible_albums();
+        let selected = view.album_selected.min(visible.len() - 1);
+        // Flatten into section header + album rows; remember which flat row
+        // the selected album maps to so the highlight lands on it (headers
+        // are rendered but never highlighted).
+        let mut rows: Vec<ListItem<'_>> =
+            Vec::with_capacity(visible.len() + ARTIST_ALBUM_GROUPS.len());
+        let mut selected_row = 0usize;
+        let mut current_group: Option<&str> = None;
+        let mut started = false;
+        for (idx, album) in visible.iter().enumerate() {
+            let group = album.album_group.as_deref();
+            if !started || group != current_group {
+                let label = ARTIST_ALBUM_GROUPS
+                    .iter()
+                    .find(|(key, _)| Some(*key) == group)
+                    .map_or("Other", |(_, label)| *label);
+                rows.push(ListItem::new(Line::from(Span::styled(
+                    label.to_string(),
+                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                ))));
+                current_group = group;
+                started = true;
+            }
+            if idx == selected {
+                selected_row = rows.len();
+            }
+            let heart = if album.in_library == Some(true) {
+                Span::styled("♥ ", Style::default().fg(GREEN))
+            } else {
+                Span::raw("")
+            };
+            rows.push(ListItem::new(vec![
+                Line::from(vec![
+                    Span::styled("💿  ", Style::default().fg(GREEN)),
+                    heart,
+                    Span::styled(
+                        album.name.clone(),
+                        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(context_suffix(album), Style::default().fg(MUTED)),
+                ]),
+            ]));
+        }
         let list = List::new(rows)
             .highlight_style(
                 Style::default()
@@ -193,22 +234,20 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .highlight_symbol("▌")
             .style(Style::default().bg(PANEL));
         let mut state = ListState::default();
-        state.select(if view.albums.is_empty() {
-            None
-        } else {
-            Some(view.album_selected.min(view.albums.len() - 1))
-        });
+        state.select(Some(selected_row));
         frame.render_stateful_widget(list, albums_inner, &mut state);
     }
 
     // ===== Tracks (right) =====
     let tracks_focused = view.focus == ArtistViewSide::Tracks;
+    let visible_albums = view.visible_albums();
+    let focused_album_name = visible_albums
+        .get(view.album_selected)
+        .map_or("—", |a| a.name.as_str());
     let tracks_title = format!(
         "Tracks  {}  ·  {}",
         view.album_tracks.len(),
-        view.albums
-            .get(view.album_selected)
-            .map_or("—", |a| a.name.as_str())
+        focused_album_name
     );
     let tracks_block = if tracks_focused {
         focused_card_block(&tracks_title)
@@ -446,6 +485,248 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .wrap(Wrap { trim: false })
             .style(Style::default().bg(PANEL)),
         area,
+    );
+}
+
+/// Relative time label like "in 2h" / "3d ago" for a reminder/notification.
+fn fmt_reminder_when(ms: i64) -> String {
+    let now = chrono::Local::now().timestamp_millis();
+    let delta = ms - now;
+    let mins = delta.abs() / 60_000;
+    let label = if mins < 1 {
+        "now".to_string()
+    } else if mins < 60 {
+        format!("{mins}m")
+    } else if mins < 1440 {
+        format!("{}h", mins / 60)
+    } else {
+        format!("{}d", mins / 1440)
+    };
+    if label == "now" {
+        label
+    } else if delta >= 0 {
+        format!("in {label}")
+    } else {
+        format!("{label} ago")
+    }
+}
+
+fn notification_state_span(state: spotuify_core::NotificationState) -> Span<'static> {
+    use spotuify_core::NotificationState as S;
+    let (text, color) = match state {
+        S::Unseen => ("● new", GREEN),
+        S::Seen => ("seen", MUTED),
+        S::Snoozed => ("snoozed", RED),
+        S::Dismissed => ("dismissed", MUTED),
+        S::Done => ("done", MUTED),
+    };
+    Span::styled(text, Style::default().fg(color))
+}
+
+/// Notifications screen: Inbox (fired reminders) above, Scheduled reminders
+/// below. The combined selection (`app.selected`) indexes inbox first, then
+/// scheduled, matching `App::active_len(Notifications)`.
+fn render_notifications(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    use crate::widgets::style::card_block;
+    let highlight = Style::default()
+        .fg(BG)
+        .bg(GREEN)
+        .add_modifier(Modifier::BOLD);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(area);
+
+    let n_count = app.notifications.len();
+    let unseen = app
+        .notifications
+        .iter()
+        .filter(|n| matches!(n.state, spotuify_core::NotificationState::Unseen))
+        .count();
+    let inbox_block = card_block(&format!(
+        "Inbox · {unseen} new  ·  Enter play · s snooze · d dismiss"
+    ));
+    let inbox_inner = inbox_block.inner(rows[0]);
+    frame.render_widget(inbox_block, rows[0]);
+    if app.notifications.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  No reminders have fired yet.",
+                Style::default().fg(MUTED),
+            )))
+            .style(Style::default().bg(PANEL)),
+            inbox_inner,
+        );
+    } else {
+        let items: Vec<ListItem<'_>> = app
+            .notifications
+            .iter()
+            .map(|n| {
+                ListItem::new(vec![
+                    Line::from(vec![
+                        Span::styled(
+                            n.name.clone(),
+                            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw("  "),
+                        notification_state_span(n.state),
+                    ]),
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            n.message.clone().unwrap_or_else(|| n.subtitle.clone()),
+                            Style::default().fg(MUTED),
+                        ),
+                        Span::styled("  ·  ", Style::default().fg(MUTED)),
+                        Span::styled(fmt_reminder_when(n.due_at_ms), Style::default().fg(MUTED)),
+                    ]),
+                ])
+            })
+            .collect();
+        let mut state = ListState::default();
+        if app.selected < n_count {
+            state.select(Some(app.selected));
+        }
+        frame.render_stateful_widget(
+            List::new(items)
+                .highlight_style(highlight)
+                .highlight_symbol("▌")
+                .style(Style::default().bg(PANEL)),
+            inbox_inner,
+            &mut state,
+        );
+    }
+
+    let sched_block = card_block(&format!(
+        "Scheduled · {}  ·  Enter play · x cancel",
+        app.reminders.len()
+    ));
+    let sched_inner = sched_block.inner(rows[1]);
+    frame.render_widget(sched_block, rows[1]);
+    if app.reminders.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  Nothing scheduled. Press R on a track/album/playlist to add one.",
+                Style::default().fg(MUTED),
+            )))
+            .style(Style::default().bg(PANEL)),
+            sched_inner,
+        );
+    } else {
+        let items: Vec<ListItem<'_>> = app
+            .reminders
+            .iter()
+            .map(|r| {
+                let mut meta = vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        format!("next {}", fmt_reminder_when(r.next_due_at_ms)),
+                        Style::default().fg(MUTED),
+                    ),
+                ];
+                if r.recurrence.is_recurring() {
+                    meta.push(Span::styled(
+                        format!("  ·  {}", r.recurrence.label()),
+                        Style::default().fg(GREEN),
+                    ));
+                }
+                ListItem::new(vec![
+                    Line::from(Span::styled(
+                        r.name.clone(),
+                        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(meta),
+                ])
+            })
+            .collect();
+        let mut state = ListState::default();
+        if app.selected >= n_count {
+            state.select(Some(app.selected - n_count));
+        }
+        frame.render_stateful_widget(
+            List::new(items)
+                .highlight_style(highlight)
+                .highlight_symbol("▌")
+                .style(Style::default().bg(PANEL)),
+            sched_inner,
+            &mut state,
+        );
+    }
+}
+
+fn render_reminder_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    use crate::app::REMINDER_PRESETS;
+    use crate::widgets::style::{button_chip, focused_card_block, ButtonRole};
+    let Some(picker) = app.reminder_picker.as_ref() else {
+        return;
+    };
+    let area = centered_rect(64, 62, area);
+    let block = focused_card_block(&format!("Remind me  ·  {}", picker.label));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+
+    let body = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let custom_idx = REMINDER_PRESETS.len() - 1;
+    let items: Vec<ListItem<'_>> = REMINDER_PRESETS
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let text = if i == custom_idx {
+                format!("{label}  [{}]", picker.custom)
+            } else {
+                (*label).to_string()
+            };
+            ListItem::new(Line::from(Span::styled(text, Style::default().fg(TEXT))))
+        })
+        .collect();
+    let mut state = ListState::default();
+    state.select(Some(picker.preset.min(REMINDER_PRESETS.len() - 1)));
+    frame.render_stateful_widget(
+        List::new(items)
+            .highlight_style(
+                Style::default()
+                    .fg(BG)
+                    .bg(GREEN)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("▌"),
+        body[0],
+        &mut state,
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Repeat: ", Style::default().fg(MUTED)),
+            Span::styled(
+                picker.recurrence.label(),
+                Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("   (Tab to cycle)", Style::default().fg(MUTED)),
+        ]))
+        .style(Style::default().bg(PANEL)),
+        body[1],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            button_chip("Enter set", ButtonRole::Affirm),
+            Span::raw("  "),
+            button_chip("Tab repeat", ButtonRole::Cancel),
+            Span::raw("  "),
+            Span::styled("Esc cancel", Style::default().fg(MUTED)),
+        ]))
+        .style(Style::default().bg(PANEL)),
+        body[2],
     );
 }
 
@@ -1467,6 +1748,7 @@ fn render_screen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         Screen::Devices => render_devices(frame, app, area),
         Screen::Diagnostics => render_diagnostics(frame, app, area),
         Screen::Lyrics => render_lyrics(frame, app, area),
+        Screen::Notifications => render_notifications(frame, app, area),
     }
 }
 
@@ -4463,6 +4745,8 @@ mod tests {
             selected_playlist_id: None,
             selected_playlist_name: None,
             toast: None,
+            notifications: Vec::new(),
+            reminders: Vec::new(),
             error: None,
             last_progress_tick: Instant::now(),
             awaiting_track_change_until: None,
@@ -4512,6 +4796,7 @@ mod tests {
             playlist_picker: None,
             device_picker: None,
             audio_output_picker: None,
+            reminder_picker: None,
             login_modal: None,
             operations: Vec::new(),
             operations_cursor: 0,

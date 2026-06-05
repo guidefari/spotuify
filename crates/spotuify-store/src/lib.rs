@@ -11,8 +11,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use sqlx::{Row, SqlitePool};
 
 use spotuify_core::{
-    Device, LyricLine, LyricsProvider, MediaItem, MediaKind, Playback, Playlist, Queue,
-    SyncedLyrics,
+    Device, LyricLine, LyricsProvider, MediaItem, MediaKind, Notification, NotificationState,
+    Playback, Playlist, Queue, Recurrence, Reminder, ReminderState, SyncedLyrics,
 };
 use spotuify_protocol::{
     CacheFreshnessStatus, CacheStatus, FreshnessCounts, SearchScopeData, SearchSourceData,
@@ -49,7 +49,7 @@ const BULK_CHUNK_ROWS: usize = 64;
 /// - v10: queue cache snapshots and ordered upcoming items
 /// - v11: playlist track accessibility flag for Spotify 403 playlists
 /// - v12: lyrics lookup negative cache
-pub const CACHE_VERSION: u32 = 13;
+pub const CACHE_VERSION: u32 = 14;
 
 const FRESHNESS_FRESH: &str = "fresh";
 
@@ -388,6 +388,40 @@ impl Store {
         .fetch_all(&self.reader)
         .await?;
         rows.into_iter().map(row_to_media_item).collect()
+    }
+
+    /// Followed artists (cache-backed `Request::FollowedArtists`). Artists are
+    /// `followed=1` in `library_items`; ordered alphabetically.
+    pub async fn list_followed_artists(&self, limit: u32) -> Result<Vec<MediaItem>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT media_items.uri, spotify_id, media_items.kind, name, subtitle, context,
+                    duration_ms, image_url, source
+             FROM library_items
+             JOIN media_items ON media_items.uri = library_items.item_uri
+             WHERE library_items.followed = 1 AND media_items.kind = 'artist'
+             ORDER BY name COLLATE NOCASE ASC
+             LIMIT ?",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.reader)
+        .await?;
+        rows.into_iter().map(row_to_media_item).collect()
+    }
+
+    /// URIs of saved albums (`library_items.saved=1`, `kind='album'`). The
+    /// daemon intersects an artist's discography against this set to tag each
+    /// album's `in_library` flag without a per-album Spotify call.
+    pub async fn saved_album_uris(&self) -> Result<std::collections::HashSet<String>> {
+        let rows =
+            sqlx::query("SELECT item_uri FROM library_items WHERE saved = 1 AND kind = 'album'")
+                .fetch_all(&self.reader)
+                .await?;
+        rows.into_iter()
+            .map(|row| row.try_get::<String, _>("item_uri").map_err(Into::into))
+            .collect()
     }
 
     /// Return the most recent `playback_snapshots` row if any, else
@@ -1179,6 +1213,40 @@ impl Store {
         Ok(items.len() as u32)
     }
 
+    /// Persist followed artists: upsert their media rows, then mark them
+    /// `followed=1` in `library_items`. Unlike saved albums/tracks, artists
+    /// are *followed* (not "saved"), so this writes `saved=0, followed=1` and
+    /// does not flip `media_items.saved/liked` — keeping the saved-album set
+    /// (used for `in_library` tagging) clean.
+    pub async fn persist_followed_artists(&self, artists: &[MediaItem]) -> Result<u32> {
+        if artists.is_empty() {
+            return Ok(0);
+        }
+        self.upsert_media_items_with(artists, "spotify", &self.bulk_writer)
+            .await?;
+        let fetched_at_ms = now_ms();
+        for chunk in artists.chunks(BULK_CHUNK_ROWS) {
+            let mut tx = self.bulk_writer.begin().await?;
+            for item in chunk {
+                sqlx::query(
+                    "INSERT INTO library_items (item_uri, kind, saved, followed, fetched_at_ms)
+                     VALUES (?, ?, 0, 1, ?)
+                     ON CONFLICT(item_uri) DO UPDATE SET
+                        kind = excluded.kind,
+                        followed = 1,
+                        fetched_at_ms = excluded.fetched_at_ms",
+                )
+                .bind(&item.uri)
+                .bind(item.kind.label())
+                .bind(fetched_at_ms)
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
+        }
+        Ok(artists.len() as u32)
+    }
+
     pub async fn record_sync_event(
         &self,
         domain: &str,
@@ -1306,6 +1374,184 @@ impl Store {
         .fetch_optional(&self.reader)
         .await?;
         row.map(|row| row_to_lyrics(track_uri, row)).transpose()
+    }
+
+    // --- Listening reminders + notifications ---
+
+    pub async fn create_reminder(&self, r: &Reminder) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO reminder_schedules (
+                id, media_uri, media_kind, name, subtitle, image_url, anchor_at_ms,
+                recurrence, tz, next_due_at_ms, state, message, created_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&r.id)
+        .bind(&r.media_uri)
+        .bind(r.media_kind.label())
+        .bind(&r.name)
+        .bind(&r.subtitle)
+        .bind(&r.image_url)
+        .bind(r.anchor_at_ms)
+        .bind(r.recurrence.label())
+        .bind(&r.tz)
+        .bind(r.next_due_at_ms)
+        .bind(reminder_state_label(r.state))
+        .bind(&r.message)
+        .bind(r.created_at_ms)
+        .execute(&self.writer)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_reminders(&self, include_inactive: bool) -> Result<Vec<Reminder>> {
+        let sql = if include_inactive {
+            "SELECT * FROM reminder_schedules ORDER BY next_due_at_ms ASC"
+        } else {
+            "SELECT * FROM reminder_schedules WHERE state = 'active' ORDER BY next_due_at_ms ASC"
+        };
+        let rows = sqlx::query(sql).fetch_all(&self.reader).await?;
+        rows.into_iter().map(row_to_reminder).collect()
+    }
+
+    pub async fn get_reminder(&self, id: &str) -> Result<Option<Reminder>> {
+        let row = sqlx::query("SELECT * FROM reminder_schedules WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.reader)
+            .await?;
+        row.map(row_to_reminder).transpose()
+    }
+
+    pub async fn cancel_reminder(&self, id: &str) -> Result<()> {
+        sqlx::query("UPDATE reminder_schedules SET state = 'cancelled' WHERE id = ?")
+            .bind(id)
+            .execute(&self.writer)
+            .await?;
+        Ok(())
+    }
+
+    /// Active schedules whose next occurrence is at/<= `now_ms`.
+    pub async fn due_reminders(&self, now_ms: i64) -> Result<Vec<Reminder>> {
+        let rows = sqlx::query(
+            "SELECT * FROM reminder_schedules
+             WHERE state = 'active' AND next_due_at_ms <= ?
+             ORDER BY next_due_at_ms ASC",
+        )
+        .bind(now_ms)
+        .fetch_all(&self.reader)
+        .await?;
+        rows.into_iter().map(row_to_reminder).collect()
+    }
+
+    pub async fn advance_reminder(&self, id: &str, next_due_at_ms: i64) -> Result<()> {
+        sqlx::query("UPDATE reminder_schedules SET next_due_at_ms = ? WHERE id = ?")
+            .bind(next_due_at_ms)
+            .bind(id)
+            .execute(&self.writer)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn complete_reminder(&self, id: &str) -> Result<()> {
+        sqlx::query("UPDATE reminder_schedules SET state = 'completed' WHERE id = ?")
+            .bind(id)
+            .execute(&self.writer)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn insert_notification(&self, n: &Notification) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO reminder_notifications (
+                id, reminder_id, media_uri, media_kind, name, subtitle, image_url,
+                due_at_ms, fired_at_ms, state, snoozed_until_ms, acted, message, created_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&n.id)
+        .bind(&n.reminder_id)
+        .bind(&n.media_uri)
+        .bind(n.media_kind.label())
+        .bind(&n.name)
+        .bind(&n.subtitle)
+        .bind(&n.image_url)
+        .bind(n.due_at_ms)
+        .bind(n.fired_at_ms)
+        .bind(notification_state_label(n.state))
+        .bind(n.snoozed_until_ms)
+        .bind(&n.acted)
+        .bind(&n.message)
+        .bind(now_ms())
+        .execute(&self.writer)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_notifications(&self, include_archived: bool) -> Result<Vec<Notification>> {
+        let sql = if include_archived {
+            "SELECT * FROM reminder_notifications ORDER BY due_at_ms DESC"
+        } else {
+            "SELECT * FROM reminder_notifications
+             WHERE state NOT IN ('dismissed', 'done') ORDER BY due_at_ms DESC"
+        };
+        let rows = sqlx::query(sql).fetch_all(&self.reader).await?;
+        rows.into_iter().map(row_to_notification).collect()
+    }
+
+    pub async fn get_notification(&self, id: &str) -> Result<Option<Notification>> {
+        let row = sqlx::query("SELECT * FROM reminder_notifications WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.reader)
+            .await?;
+        row.map(row_to_notification).transpose()
+    }
+
+    pub async fn set_notification_state(
+        &self,
+        id: &str,
+        state: NotificationState,
+        snoozed_until_ms: Option<i64>,
+        acted: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE reminder_notifications
+             SET state = ?, snoozed_until_ms = ?, acted = COALESCE(?, acted)
+             WHERE id = ?",
+        )
+        .bind(notification_state_label(state))
+        .bind(snoozed_until_ms)
+        .bind(acted)
+        .bind(id)
+        .execute(&self.writer)
+        .await?;
+        Ok(())
+    }
+
+    /// Snoozed notifications whose `snoozed_until_ms` is at/<= `now_ms`.
+    pub async fn due_snoozed_notifications(&self, now_ms: i64) -> Result<Vec<Notification>> {
+        let rows = sqlx::query(
+            "SELECT * FROM reminder_notifications
+             WHERE state = 'snoozed' AND snoozed_until_ms IS NOT NULL AND snoozed_until_ms <= ?
+             ORDER BY snoozed_until_ms ASC",
+        )
+        .bind(now_ms)
+        .fetch_all(&self.reader)
+        .await?;
+        rows.into_iter().map(row_to_notification).collect()
+    }
+
+    /// Earliest time the scheduler must wake: min of active schedules'
+    /// `next_due_at_ms` and snoozed notifications' `snoozed_until_ms`.
+    pub async fn next_reminder_wake_ms(&self) -> Result<Option<i64>> {
+        let row: Option<(Option<i64>,)> = sqlx::query_as(
+            "SELECT MIN(t) FROM (
+                SELECT next_due_at_ms AS t FROM reminder_schedules WHERE state = 'active'
+                UNION ALL
+                SELECT snoozed_until_ms AS t FROM reminder_notifications
+                    WHERE state = 'snoozed' AND snoozed_until_ms IS NOT NULL
+             )",
+        )
+        .fetch_optional(&self.reader)
+        .await?;
+        Ok(row.and_then(|r| r.0))
     }
 
     pub async fn upsert_lyrics(&self, lyrics: &SyncedLyrics) -> Result<()> {
@@ -1872,6 +2118,10 @@ fn row_to_media_item(row: sqlx::sqlite::SqliteRow) -> Result<MediaItem> {
             .try_get::<Option<String>, _>("release_date")
             .ok()
             .flatten(),
+        // Not persisted: `album_group` flows live from the provider for the
+        // discography view, and `in_library` is tagged by the daemon per query.
+        album_group: None,
+        in_library: None,
     })
 }
 
@@ -1915,6 +2165,78 @@ fn row_to_lyrics(track_uri: &str, row: sqlx::sqlite::SqliteRow) -> Result<Synced
         synced: synced != 0,
         language: row.get("language"),
         source_url: row.get("source_url"),
+    })
+}
+
+fn reminder_state_label(state: ReminderState) -> &'static str {
+    match state {
+        ReminderState::Active => "active",
+        ReminderState::Completed => "completed",
+        ReminderState::Cancelled => "cancelled",
+    }
+}
+
+fn reminder_state_from_label(label: &str) -> ReminderState {
+    match label {
+        "completed" => ReminderState::Completed,
+        "cancelled" => ReminderState::Cancelled,
+        _ => ReminderState::Active,
+    }
+}
+
+fn notification_state_label(state: NotificationState) -> &'static str {
+    match state {
+        NotificationState::Unseen => "unseen",
+        NotificationState::Seen => "seen",
+        NotificationState::Snoozed => "snoozed",
+        NotificationState::Dismissed => "dismissed",
+        NotificationState::Done => "done",
+    }
+}
+
+fn notification_state_from_label(label: &str) -> NotificationState {
+    match label {
+        "seen" => NotificationState::Seen,
+        "snoozed" => NotificationState::Snoozed,
+        "dismissed" => NotificationState::Dismissed,
+        "done" => NotificationState::Done,
+        _ => NotificationState::Unseen,
+    }
+}
+
+fn row_to_reminder(row: sqlx::sqlite::SqliteRow) -> Result<Reminder> {
+    Ok(Reminder {
+        id: row.get("id"),
+        media_uri: row.get("media_uri"),
+        media_kind: media_kind_from_label(&row.get::<String, _>("media_kind"))?,
+        name: row.get("name"),
+        subtitle: row.get("subtitle"),
+        image_url: row.get("image_url"),
+        anchor_at_ms: row.get("anchor_at_ms"),
+        recurrence: Recurrence::parse(&row.get::<String, _>("recurrence")).unwrap_or_default(),
+        tz: row.get("tz"),
+        next_due_at_ms: row.get("next_due_at_ms"),
+        state: reminder_state_from_label(&row.get::<String, _>("state")),
+        message: row.get("message"),
+        created_at_ms: row.get("created_at_ms"),
+    })
+}
+
+fn row_to_notification(row: sqlx::sqlite::SqliteRow) -> Result<Notification> {
+    Ok(Notification {
+        id: row.get("id"),
+        reminder_id: row.get("reminder_id"),
+        media_uri: row.get("media_uri"),
+        media_kind: media_kind_from_label(&row.get::<String, _>("media_kind"))?,
+        name: row.get("name"),
+        subtitle: row.get("subtitle"),
+        image_url: row.get("image_url"),
+        due_at_ms: row.get("due_at_ms"),
+        fired_at_ms: row.get("fired_at_ms"),
+        state: notification_state_from_label(&row.get::<String, _>("state")),
+        snoozed_until_ms: row.get("snoozed_until_ms"),
+        acted: row.get("acted"),
+        message: row.get("message"),
     })
 }
 
@@ -2568,7 +2890,52 @@ const MIGRATIONS: &[Migration] = &[
         name: "media_enrichment",
         kind: MigrationKind::AddColumns(MIGRATION_013_COLUMNS),
     },
+    Migration {
+        version: 14,
+        name: "reminders",
+        kind: MigrationKind::Sql(MIGRATION_014_REMINDERS),
+    },
 ];
+
+/// Listening reminders: schedules + fired-occurrence notifications (inbox).
+const MIGRATION_014_REMINDERS: &str = r#"
+CREATE TABLE IF NOT EXISTS reminder_schedules (
+    id              TEXT PRIMARY KEY,
+    media_uri       TEXT NOT NULL,
+    media_kind      TEXT NOT NULL,
+    name            TEXT NOT NULL DEFAULT '',
+    subtitle        TEXT NOT NULL DEFAULT '',
+    image_url       TEXT,
+    anchor_at_ms    INTEGER NOT NULL,
+    recurrence      TEXT NOT NULL DEFAULT 'none',
+    tz              TEXT NOT NULL DEFAULT 'UTC',
+    next_due_at_ms  INTEGER NOT NULL,
+    state           TEXT NOT NULL DEFAULT 'active',
+    message         TEXT,
+    created_at_ms   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reminder_schedules_due
+    ON reminder_schedules(state, next_due_at_ms);
+
+CREATE TABLE IF NOT EXISTS reminder_notifications (
+    id               TEXT PRIMARY KEY,
+    reminder_id      TEXT NOT NULL,
+    media_uri        TEXT NOT NULL,
+    media_kind       TEXT NOT NULL,
+    name             TEXT NOT NULL DEFAULT '',
+    subtitle         TEXT NOT NULL DEFAULT '',
+    image_url        TEXT,
+    due_at_ms        INTEGER NOT NULL,
+    fired_at_ms      INTEGER NOT NULL,
+    state            TEXT NOT NULL DEFAULT 'unseen',
+    snoozed_until_ms INTEGER,
+    acted            TEXT,
+    message          TEXT,
+    created_at_ms    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reminder_notifications_state_due
+    ON reminder_notifications(state, due_at_ms DESC);
+"#;
 
 /// Translate a `receipts` row into the protocol's [`Receipt`] type.
 fn row_to_receipt(row: &sqlx::sqlite::SqliteRow) -> Result<spotuify_protocol::Receipt> {

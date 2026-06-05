@@ -12,6 +12,7 @@ pub enum TuiAction {
     OpenDevicePicker,
     OpenDiagnostics,
     OpenLyrics,
+    OpenNotifications,
     MoveDown,
     MoveUp,
     PageDown,
@@ -38,6 +39,7 @@ pub enum TuiAction {
     PlaySelected,
     QueueSelection,
     LikeSelection,
+    RemindMe,
     AddSelectionToPlaylist,
     TransferDevice,
     ToggleMark,
@@ -71,6 +73,7 @@ pub enum ActionContext {
     Devices,
     Diagnostics,
     Lyrics,
+    Notifications,
     MultiSelect,
 }
 
@@ -87,6 +90,7 @@ impl ActionContext {
             Self::Devices => "Devices",
             Self::Diagnostics => "Diagnostics",
             Self::Lyrics => "Lyrics",
+            Self::Notifications => "Notifications",
             Self::MultiSelect => "Multi-select",
         }
     }
@@ -103,6 +107,7 @@ const ALL_CONTEXTS: &[ActionContext] = &[
     ActionContext::Devices,
     ActionContext::Diagnostics,
     ActionContext::Lyrics,
+    ActionContext::Notifications,
     ActionContext::MultiSelect,
 ];
 
@@ -208,6 +213,14 @@ pub fn default_actions() -> Vec<ActionSpec> {
             contexts: ALL_CONTEXTS,
             category: "Navigation",
             cli: Some("spotuify lyrics show"),
+        },
+        ActionSpec {
+            id: A::OpenNotifications,
+            label: "Notifications",
+            shortcut: "9",
+            contexts: ALL_CONTEXTS,
+            category: "Reminders",
+            cli: Some("spotuify notifications list"),
         },
         ActionSpec {
             id: A::ToggleQueueRail,
@@ -496,6 +509,21 @@ pub fn default_actions() -> Vec<ActionSpec> {
             cli: Some("spotuify like URI"),
         },
         ActionSpec {
+            id: A::RemindMe,
+            label: "Remind Me",
+            shortcut: "R",
+            contexts: &[
+                C::Player,
+                C::SearchResults,
+                C::Library,
+                C::PlaylistTracks,
+                C::Queue,
+                C::MultiSelect,
+            ],
+            category: "Reminders",
+            cli: Some("spotuify reminder create URI --at +1d"),
+        },
+        ActionSpec {
             id: A::AddSelectionToPlaylist,
             label: "Add To Playlist",
             shortcut: "a",
@@ -637,6 +665,7 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         | TuiAction::OpenDevices
         | TuiAction::OpenDiagnostics
         | TuiAction::OpenLyrics
+        | TuiAction::OpenNotifications
         | TuiAction::Refresh
         | TuiAction::RefreshMedia
         | TuiAction::StartSearchInput
@@ -654,6 +683,7 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         | TuiAction::PlaySelected
         | TuiAction::QueueSelection
         | TuiAction::LikeSelection
+        | TuiAction::RemindMe
         | TuiAction::AddSelectionToPlaylist
         | TuiAction::TransferDevice
         | TuiAction::UndoLastOperation
@@ -737,6 +767,13 @@ pub fn top_hints(context: ActionContext, selected_count: usize) -> Vec<ActionSpe
             A::OpenPlayer,
             A::Help,
             A::OpenDevicePicker,
+        ][..],
+        C::Notifications => &[
+            A::Refresh,
+            A::OpenCommandPalette,
+            A::Help,
+            A::OpenDevicePicker,
+            A::Quit,
         ][..],
         C::MultiSelect => &[
             A::QueueSelection,

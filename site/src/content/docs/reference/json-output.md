@@ -57,6 +57,34 @@ Expected row shape:
 }
 ```
 
+## Artist albums
+
+```bash
+spotuify artist albums spotify:artist:36QJpDe2go2KgaRleHCDTp --format json
+```
+
+Discography rows add `album_group` (album, single, compilation, or appears-on)
+and `in_library` (whether the album is saved). Both are absent on rows where
+they do not apply.
+
+```json
+{
+  "uri": "spotify:album:...",
+  "id": "album-id",
+  "kind": "album",
+  "name": "Never Too Much",
+  "subtitle": "Luther Vandross",
+  "context": "7 tracks",
+  "album_group": "album",
+  "in_library": true,
+  "release_date": "1981-08-11",
+  "source": "spotify"
+}
+```
+
+`spotuify artist followed --format json` returns `artist` rows in the same
+MediaItem shape, without the album-only fields.
+
 ## Mutation receipts
 
 ```bash

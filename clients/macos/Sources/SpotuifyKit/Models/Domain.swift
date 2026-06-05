@@ -33,6 +33,12 @@ public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
     public let resumePositionMs: UInt64?
     public let fullyPlayed: Bool?
     public let releaseDate: String?
+    /// Spotify's per-artist `album_group` (album/single/compilation/appears_on);
+    /// drives the discography sections. `nil` for non-album items.
+    public let albumGroup: String?
+    /// Whether this album is already in the user's library (tagged by the
+    /// daemon for an artist's discography). `nil` when not applicable.
+    public let inLibrary: Bool?
 
     public init(
         spotifyID: String? = nil,
@@ -51,7 +57,9 @@ public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
         addedAtMs: Int64? = nil,
         resumePositionMs: UInt64? = nil,
         fullyPlayed: Bool? = nil,
-        releaseDate: String? = nil
+        releaseDate: String? = nil,
+        albumGroup: String? = nil,
+        inLibrary: Bool? = nil
     ) {
         self.spotifyID = spotifyID
         self.uri = uri
@@ -70,6 +78,8 @@ public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
         self.resumePositionMs = resumePositionMs
         self.fullyPlayed = fullyPlayed
         self.releaseDate = releaseDate
+        self.albumGroup = albumGroup
+        self.inLibrary = inLibrary
     }
 
     /// Stable identity for SwiftUI. The Spotify `id` is optional and not
@@ -99,6 +109,8 @@ public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
         case resumePositionMs = "resume_position_ms"
         case fullyPlayed = "fully_played"
         case releaseDate = "release_date"
+        case albumGroup = "album_group"
+        case inLibrary = "in_library"
     }
 }
 

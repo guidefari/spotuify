@@ -39,10 +39,25 @@ public struct CommandReceipt: Decodable, Sendable {
     public let message: String
 }
 
+public struct DaemonStatus: Decodable, Sendable {
+    public let running: Bool
+    public let protocolVersion: Int
+    public let daemonVersion: String?
+    public let daemonPid: UInt32?
+
+    enum CodingKeys: String, CodingKey {
+        case running
+        case protocolVersion = "protocol_version"
+        case daemonVersion = "daemon_version"
+        case daemonPid = "daemon_pid"
+    }
+}
+
 /// The `data` object inside an `Ok` response, internally tagged by `kind`.
 /// Unknown kinds decode to `.unknown` so new daemon responses never crash us.
 public enum ResponseData: Decodable, Sendable {
     case pong
+    case daemonStatus(DaemonStatus)
     case playback(Playback)
     case devices([Device])
     case queue(Queue)
@@ -55,13 +70,17 @@ public enum ResponseData: Decodable, Sendable {
     case mutation(CommandReceipt)
     case ack(message: String)
     case webApiToken(String?)
+    case reminders([Reminder])
+    case notifications([ReminderNotification])
+    case reminderCreated(Reminder)
     case unknown(kind: String)
 
     private enum CodingKeys: String, CodingKey {
         case kind, playback, devices, queue, items, query, version
-        case playlists, lyrics
+        case playlists, lyrics, status
         case offsetMs = "offset_ms"
         case receipt, message, token
+        case reminders, notifications, reminder
     }
 
     public init(from decoder: Decoder) throws {
@@ -70,6 +89,8 @@ public enum ResponseData: Decodable, Sendable {
         switch kind {
         case "pong":
             self = .pong
+        case "daemon-status":
+            self = .daemonStatus(try c.decode(DaemonStatus.self, forKey: .status))
         case "playback":
             self = .playback(try c.decode(Playback.self, forKey: .playback))
         case "devices":
@@ -98,6 +119,12 @@ public enum ResponseData: Decodable, Sendable {
             self = .ack(message: try c.decodeIfPresent(String.self, forKey: .message) ?? "")
         case "web-api-token":
             self = .webApiToken(try c.decodeIfPresent(String.self, forKey: .token))
+        case "reminders":
+            self = .reminders(try c.decode([Reminder].self, forKey: .reminders))
+        case "notifications":
+            self = .notifications(try c.decode([ReminderNotification].self, forKey: .notifications))
+        case "reminder-created":
+            self = .reminderCreated(try c.decode(Reminder.self, forKey: .reminder))
         default:
             self = .unknown(kind: kind)
         }

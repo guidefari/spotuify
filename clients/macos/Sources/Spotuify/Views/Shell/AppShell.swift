@@ -26,6 +26,13 @@ struct AppShell: View {
         .task(id: model.player.currentItem?.imageURL) {
             await theme.update(for: model.player.currentItem?.imageURL)
         }
+        .sheet(
+            isPresented: Binding(
+                get: { model.presentDueInbox },
+                set: { model.presentDueInbox = $0 })
+        ) {
+            DueRemindersSheet { selection = .notifications }
+        }
     }
 
     @ViewBuilder
@@ -35,9 +42,11 @@ struct AppShell: View {
         case .search: SearchView()
         case .likedSongs: LikedSongsView()
         case .albums: AlbumsView()
+        case .artists: ArtistsView()
         case .podcasts: PodcastsView()
         case .playlists: PlaylistsView()
         case .queue: QueueView()
+        case .notifications: RemindersView()
         case .devices: DevicesView()
         }
     }

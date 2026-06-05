@@ -46,6 +46,13 @@ The existing media stays visible until the replacement fetch returns.
 Search and Library selection previews show artwork for albums, playlists,
 shows, and episodes when Spotify returns an image URL.
 
+Press `Enter` on an artist (from Search or the Library Artists view) to open the
+discography overlay. Releases group into Albums, Singles & EPs, Compilations,
+and Appears On on the left; the focused album's tracks show on the right. Press
+`L` to toggle between all releases and only those in your library, `Tab` to swap
+panes, `Enter` to play, and `Esc` to close. See
+[Keybindings](/reference/keybindings/).
+
 Press `O` to choose which local audio output the embedded player renders to
 (see [Keybindings](/reference/keybindings/)).
 

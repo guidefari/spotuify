@@ -257,6 +257,16 @@ pub struct MediaItem {
     /// Release date (episodes/albums), as Spotify's `YYYY-MM-DD` string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_date: Option<String>,
+    /// Album grouping relative to an artist, from Spotify's `album_group`
+    /// (falls back to `album_type`): `album` | `single` | `compilation` |
+    /// `appears_on`. `None` for non-album items. Drives discography sections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_group: Option<String>,
+    /// Whether this item is in the user's library (e.g. a saved album).
+    /// Tagged by the daemon when listing an artist's discography so clients
+    /// can offer an "in library only" filter without a refetch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_library: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -346,6 +356,116 @@ pub struct SyncedLyrics {
     pub language: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
+}
+
+/// How often a reminder repeats. One-shot is `None`; the rest map to a
+/// repeating calendar trigger and a next-occurrence computation in the
+/// reminder's timezone.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Recurrence {
+    #[default]
+    None,
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+impl Recurrence {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Daily => "daily",
+            Self::Weekly => "weekly",
+            Self::Monthly => "monthly",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "none" | "once" | "one-shot" => Some(Self::None),
+            "daily" | "day" => Some(Self::Daily),
+            "weekly" | "week" => Some(Self::Weekly),
+            "monthly" | "month" => Some(Self::Monthly),
+            _ => None,
+        }
+    }
+
+    pub fn is_recurring(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+/// Lifecycle of a reminder *schedule*.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReminderState {
+    #[default]
+    Active,
+    Completed,
+    Cancelled,
+}
+
+/// A scheduled reminder for a media item or grouping (track/album/playlist/
+/// artist/show/episode). The daemon owns it; clients render/act. A media
+/// snapshot is captured at creation so it still displays if the item changes.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Reminder {
+    pub id: String,
+    pub media_uri: String,
+    pub media_kind: MediaKind,
+    pub name: String,
+    pub subtitle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
+    /// First/base due time (Unix epoch ms).
+    pub anchor_at_ms: i64,
+    pub recurrence: Recurrence,
+    /// IANA timezone the anchor/recurrence is computed in.
+    pub tz: String,
+    /// Next time this reminder will fire (epoch ms). Advances on each fire.
+    pub next_due_at_ms: i64,
+    pub state: ReminderState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub created_at_ms: i64,
+}
+
+/// Lifecycle of a fired reminder *occurrence* (an inbox notification).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotificationState {
+    #[default]
+    Unseen,
+    Seen,
+    Snoozed,
+    Dismissed,
+    Done,
+}
+
+/// A fired reminder occurrence shown in the notifications inbox. Media fields
+/// are denormalized so the row survives the reminder being cancelled.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Notification {
+    pub id: String,
+    pub reminder_id: String,
+    pub media_uri: String,
+    pub media_kind: MediaKind,
+    pub name: String,
+    pub subtitle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
+    /// The occurrence's scheduled time (epoch ms).
+    pub due_at_ms: i64,
+    pub fired_at_ms: i64,
+    pub state: NotificationState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snoozed_until_ms: Option<i64>,
+    /// "played" / "queued" once the user acts on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acted: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[cfg(test)]

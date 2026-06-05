@@ -15,6 +15,7 @@ pub mod hook_executor;
 pub mod logging;
 pub mod player_factory;
 pub(crate) mod queue_warm;
+pub mod reminders;
 pub mod retention;
 pub mod server;
 pub mod session_tracker;

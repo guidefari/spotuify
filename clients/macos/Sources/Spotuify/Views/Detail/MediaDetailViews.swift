@@ -94,8 +94,42 @@ struct ArtistDetailView: View {
     let artist: MediaItem
     @State private var albums: [MediaItem] = []
     @State private var loading = true
+    @State private var libraryOnly = false
 
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 16)]
+
+    /// Discography section order, keyed by Spotify's `album_group`.
+    private static let groupOrder: [(key: String, label: String)] = [
+        ("album", "Albums"),
+        ("single", "Singles & EPs"),
+        ("compilation", "Compilations"),
+        ("appears_on", "Appears On"),
+    ]
+
+    /// Albums shown for the current toggle (the daemon already tagged each
+    /// one's `inLibrary`, so flipping is instant — no refetch).
+    private var visible: [MediaItem] {
+        libraryOnly ? albums.filter { $0.inLibrary == true } : albums
+    }
+
+    private var inLibraryCount: Int {
+        albums.filter { $0.inLibrary == true }.count
+    }
+
+    /// Visible albums split into ordered, non-empty sections.
+    private var sections: [(label: String, items: [MediaItem])] {
+        let shown = visible
+        let known = Set(Self.groupOrder.map(\.key))
+        var result = Self.groupOrder.map { group in
+            (label: group.label, items: shown.filter { $0.albumGroup == group.key })
+        }
+        let other = shown.filter { item in
+            guard let group = item.albumGroup else { return true }
+            return !known.contains(group)
+        }
+        if !other.isEmpty { result.append((label: "Other", items: other)) }
+        return result.filter { !$0.items.isEmpty }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -106,14 +140,44 @@ struct ArtistDetailView: View {
                 trackURIs: [],
                 artworkIsCircle: true)
             Divider()
+            HStack {
+                Picker("Scope", selection: $libraryOnly) {
+                    Text("All").tag(false)
+                    Text("In Library").tag(true)
+                }
+                .pickerStyle(.segmented).fixedSize()
+                Spacer()
+                Text("\(visible.count) albums • \(inLibraryCount) in library")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            Divider()
             if loading && albums.isEmpty {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if visible.isEmpty {
+                ContentUnavailableView(
+                    "No albums", systemImage: "square.stack",
+                    description: Text(libraryOnly
+                        ? "None of this artist's albums are in your library."
+                        : "No releases found."))
             } else {
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(albums) { album in
-                            NavigationLink(value: album) { ArtworkTile(item: album) }
-                                .buttonStyle(.plain)
+                    LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
+                        ForEach(sections, id: \.label) { section in
+                            Section {
+                                LazyVGrid(columns: columns, spacing: 16) {
+                                    ForEach(section.items) { album in
+                                        NavigationLink(value: album) { ArtworkTile(item: album) }
+                                            .buttonStyle(.plain)
+                                    }
+                                }
+                            } header: {
+                                Text(section.label)
+                                    .font(.headline)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 4)
+                                    .background(.background)
+                            }
                         }
                     }
                     .padding(16)
