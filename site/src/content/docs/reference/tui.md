@@ -28,7 +28,9 @@ Quit with `q`. Playback continues through the daemon.
 
 The Home screen is actionable on startup: it fills from cached saved tracks,
 albums, podcasts, recent plays, and the live queue when a session exists. If
-nothing is currently playing, Space starts the selected Home item.
+nothing is currently playing or the current item has ended, Space starts the
+selected Home item. The same idle/ended rule applies to selected Search,
+Library, and Playlist rows.
 
 The player bar stays visible at the bottom. Use `z` to switch player size,
 `L` to show or hide lyrics on the right, `Q` to show or hide the queue on the
@@ -37,6 +39,12 @@ right, and `F` to expand the active rail to fullscreen.
 The Lyrics screen and rail auto-scroll like a teleprompter: the active line
 stays centered and the rest scrolls past it, so you read from the middle of
 the pane, not the bottom.
+
+Press `U` while a track is playing to refetch current cover art and lyrics.
+The existing media stays visible until the replacement fetch returns.
+
+Search and Library selection previews show artwork for albums, playlists,
+shows, and episodes when Spotify returns an image URL.
 
 Press `O` to choose which local audio output the embedded player renders to
 (see [Keybindings](/reference/keybindings/)).

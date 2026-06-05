@@ -61,8 +61,9 @@ spotuify
 ```
 
 The first screen is Home: saved music, podcasts, recent plays, and a queue
-panel when a Spotify session is active. If nothing is playing, Space starts the
-selected Home item. Quit the TUI with `q`; the daemon and playback continue.
+panel when a Spotify session is active. If nothing is playing or the current
+item has ended, Space starts the selected item on Home, Search, Library, or
+Playlists. Quit the TUI with `q`; the daemon and playback continue.
 
 ## See Also
 

@@ -53,6 +53,9 @@ Commands:
   transfer        Transfer playback to a visible device by ID or name
   playlist        Playlist operations
   library         Cached library operations
+  show            Podcast show operations
+  album           Album operations
+  artist          Artist operations
   lyrics          Synced lyrics operations
   refresh-media   Refresh current track cover art and lyrics
   viz             Configure the audio visualizer

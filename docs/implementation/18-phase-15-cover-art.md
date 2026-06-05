@@ -2,7 +2,10 @@
 
 ## Goal
 
-Show album/playlist cover art inside the TUI on terminals that support inline images (kitty, iTerm2, WezTerm, Konsole), with graceful degradation to text-only on others. Reuse the cover cache built for notifications/MPRIS in Phase 14.
+Show current-track and selected-item artwork inside the TUI on terminals that
+support inline images (kitty, iTerm2, WezTerm, Konsole), with graceful
+degradation to text-only on others. Reuse the cover cache built for
+notifications/MPRIS in Phase 14.
 
 ## Evidence base
 
@@ -53,7 +56,9 @@ Track `ratatui-image` upstream and pin to a known-good minor version with a comm
 - Player tab: large cover (~30% width, square aspect) when `player_large` mode.
 - Now-playing strip: small thumbnail (4-6 lines) in compact mode.
 - Search results: thumbnail per row when image protocol supports it AND user opts in (`[ui] inline_thumbnails = false` default — too busy by default).
-- Playlists tab: cover thumbnail next to playlist name.
+- Playlists tab: selected-playlist artwork in the preview area.
+- Search/Library: selected album, playlist, show, and episode artwork in the
+  preview area when image metadata exists. Row thumbnails remain deferred.
 
 ### Cover cache (shared with Phase 14)
 - Single on-disk cache at `~/.cache/spotuify/covers/`.
@@ -77,13 +82,16 @@ Track `ratatui-image` upstream and pin to a known-good minor version with a comm
 3. [x] Implement `crates/spotuify-system/src/cover_cache.rs` (shared with Phase 14).
 4. [x] Implement TUI cover rendering with `StatefulProtocol` from
    `ratatui-image`; a separate `CoverArt` widget module was not needed.
-5. [x] Wire cover art to the player tab. Now-playing-strip,
-   playlist-row, and search-result thumbnails are intentionally deferred:
+5. [x] Wire cover art to the player tab and selected-item previews for
+   playlists, albums, shows, and episodes. Now-playing-strip,
+   playlist-row, and search-result row thumbnails are intentionally deferred:
    they add visual noise and maintenance cost without a validated need.
-6. [x] Pre-cache covers for visible items in background sync is deliberately
-   not shipped with the current player-tab-only cover surface. Current behavior
-   fetches on demand through the daemon `CoverArt` request; background prefetch
-   can return when list thumbnails or another validated latency problem exists.
+6. [x] Pre-cache covers for visible list items in background sync is
+   deliberately not shipped with the current player-tab-only cover surface.
+   Current behavior fetches on demand through the daemon `CoverArt` request.
+   Queue-added tracks now schedule best-effort cover warming because the user
+   has already expressed near-term playback intent for those tracks. Broader
+   list-thumbnail prefetch remains deferred until there is a validated need.
 7. [x] Cache eviction is handled inside `CoverCache` on fetch/stat paths
    using the configured size cap and TTL.
 8. [x] Cache status reports cover-cache stats. Terminal protocol
@@ -108,12 +116,17 @@ Track `ratatui-image` upstream and pin to a known-good minor version with a comm
   dedupe, and size-cap eviction.
 - TUI player-tab cover rendering uses the shared daemon `CoverArt` request;
   live terminal protocol smoke remains manual.
+- `spotuify refresh-media` and TUI `U` re-request current cover art through
+  the same daemon `CoverArt` path without clearing the old image first.
 
 ## Definition of done
 
-The shipped Phase 15 slice shows player-tab cover art through
-`ratatui-image`, degrades by omitting the image when loading/rendering fails,
-and reuses the daemon cover cache across restarts. Phase 14 notifications
-and richer list thumbnails remain follow-ups until track metadata and a
-clear UX need justify them. Cache state is reported; terminal protocol
-reporting is still a TUI-side diagnostics follow-up.
+The shipped Phase 15 slice shows player-tab cover art and selected-item
+previews through `ratatui-image`, degrades by omitting the image when
+loading/rendering fails, and reuses the daemon cover cache across restarts.
+Search and Library selected previews include albums, playlists, shows, and
+episodes when image metadata exists. Phase 14 notifications and richer row
+thumbnails remain follow-ups until track metadata and a clear UX need justify
+them. Current-track manual refresh and queue-added cover warming are shipped.
+Cache state is reported; terminal protocol reporting is still a TUI-side
+diagnostics follow-up.

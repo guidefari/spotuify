@@ -1,13 +1,13 @@
 ---
 title: "spotuify library tracks"
-description: "Print cached saved tracks and albums"
+description: "Print cached saved tracks, albums, and shows"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Print cached saved tracks and albums
+Print cached saved tracks, albums, and shows
 
 ## Examples
 
@@ -18,7 +18,7 @@ spotuify library tracks --limit 50 --format json
 ## Help
 
 ```text
-Print cached saved tracks and albums
+Print cached saved tracks, albums, and shows
 
 Usage: spotuify library tracks [OPTIONS]
 

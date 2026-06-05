@@ -32,6 +32,11 @@ them. It does not replace the current queue.
 spotuify queue
 ```
 
+After tracks enter the queue, the daemon starts a best-effort background warm
+for those URIs. It resolves metadata, caches cover art, warms lyrics, indexes
+the items, and asks the embedded player to preload the next audio URI when that
+backend supports it. The queue command does not wait for this work.
+
 ### Queueing when nothing is playing
 
 The queue lives on the active Spotify session, so there has to be one. When
@@ -76,6 +81,15 @@ spotuify playlist tracks "Quiet Storm" --format jsonl
 ```bash
 spotuify playlist play "Quiet Storm"
 ```
+
+Playing an album or playlist context publishes a daemon queue snapshot. The
+first context track appears as the current item; the rest appear as up next.
+That snapshot is cached and broadcast, so Home, Queue, the queue rail, CLI
+watchers, MCP clients, and agents all see the same context queue instead of an
+empty queue.
+
+In the TUI, `Enter` on a playlist or playlist track uses the same context-play
+path. Space does too when there is no resumable current item.
 
 ## Add with a dry-run
 

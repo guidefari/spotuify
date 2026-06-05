@@ -1,34 +1,32 @@
 ---
-title: "spotuify library"
-description: "Cached library operations"
+title: "spotuify artist albums"
+description: "Print an artist's albums and singles"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Cached library operations
+Print an artist's albums and singles
 
 ## Examples
 
 ```bash
-spotuify library tracks
+spotuify artist albums
 ```
 
 ## Help
 
 ```text
-Cached library operations
+Print an artist's albums and singles
 
-Usage: spotuify library [OPTIONS] <COMMAND>
+Usage: spotuify artist albums [OPTIONS] <ARTIST>
 
-Commands:
-  tracks        Print cached saved tracks, albums, and shows
-  saved-tracks  Print liked songs (live `/me/tracks`, with date added)
-  shows         Print subscribed podcasts (saved shows)
-  help          Print this message or the help of the given subcommand(s)
+Arguments:
+  <ARTIST>  Artist ID or URI
 
 Options:
+      --format <FORMAT>          [default: table] [possible values: table, json, jsonl, csv, ids]
       --log-format <LOG_FORMAT>  Phase 13 (P13-A) - pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT` [possible values: text, json]
       --no-daemon-start          Phase 13 (P13-H) - if set, the CLI never auto-starts the daemon. Errors with a clear hint when the daemon socket is missing
   -o, --set <key.path=value>     Phase 13 (P13-H) - one-shot TOML override (e.g. `-o player.bitrate=160`). Repeatable. Applies for this invocation only; the config file on disk is unchanged

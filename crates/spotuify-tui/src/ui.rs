@@ -2950,7 +2950,7 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ]));
         left.push(Line::from(vec![
             Span::styled("Auth     ", Style::default().fg(MUTED)),
-            Span::styled(&report.auth_token.message, Style::default().fg(TEXT)),
+            Span::styled(&report.keychain_token.message, Style::default().fg(TEXT)),
         ]));
         left.push(Line::from(vec![
             Span::styled("Logs     ", Style::default().fg(MUTED)),
@@ -4265,17 +4265,45 @@ fn kind_color(kind: &MediaKind) -> Color {
 
 fn context_suffix(item: &MediaItem) -> String {
     let mut parts = Vec::new();
-    if !item.context.is_empty() {
-        parts.push(item.context.clone());
+    // Prefer the dedicated album field (tracks); fall back to the context label.
+    let album = item
+        .album
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(item.context.as_str());
+    if !album.is_empty() {
+        parts.push(album.to_string());
+    }
+    // Episode listened state.
+    if item.kind == MediaKind::Episode {
+        if item.fully_played == Some(true) {
+            parts.push("✓ played".to_string());
+        } else if let Some(resume) = item.resume_position_ms.filter(|ms| *ms > 0) {
+            parts.push(format!(
+                "{} left",
+                fmt_ms(item.duration_ms.saturating_sub(resume))
+            ));
+        }
     }
     if item.duration_ms > 0 {
         parts.push(fmt_ms(item.duration_ms));
+    }
+    if let Some(added) = item.added_at_ms.and_then(fmt_added_date) {
+        parts.push(added);
     }
     if parts.is_empty() {
         String::new()
     } else {
         format!("  {}", parts.join(" · "))
     }
+}
+
+/// Short "added" date label (e.g. `added Mar 2024`) for track rows.
+fn fmt_added_date(ms: i64) -> Option<String> {
+    if ms <= 0 {
+        return None;
+    }
+    chrono::DateTime::from_timestamp_millis(ms).map(|dt| dt.format("added %b %Y").to_string())
 }
 
 fn area_title(title: &str, count: usize) -> String {
@@ -4515,6 +4543,7 @@ mod tests {
             freshness: None,
             explicit: None,
             is_playable: None,
+            ..Default::default()
         }
     }
 

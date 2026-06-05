@@ -3,7 +3,7 @@ title: "Config"
 description: "Document config paths, keys, defaults, env vars, and one-shot overrides."
 ---
 
-Config is TOML. OAuth tokens live in the private config auth directory, not in `spotuify.toml`. On Unix, `spotuify` writes config and auth files with mode `0600`.
+Config is TOML. Secrets belong in the OS credential store when possible. On Unix, `spotuify` writes its config file with mode `0600`.
 
 ## Paths
 

@@ -111,6 +111,7 @@ fn track_item(uri: &str) -> MediaItem {
         freshness: None,
         explicit: Some(false),
         is_playable: Some(true),
+        ..Default::default()
     }
 }
 

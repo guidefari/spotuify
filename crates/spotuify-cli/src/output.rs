@@ -1562,6 +1562,7 @@ mod tests {
             freshness: Some("fresh".to_string()),
             explicit: None,
             is_playable: None,
+            ..Default::default()
         }];
         let mut out = Vec::new();
 
@@ -1648,6 +1649,7 @@ mod tests {
             freshness: None,
             explicit: None,
             is_playable: None,
+            ..Default::default()
         };
         let mut out = Vec::new();
 
@@ -1749,6 +1751,7 @@ mod tests {
             freshness: Some("fresh".to_string()),
             explicit: None,
             is_playable: None,
+            ..Default::default()
         }
     }
 }

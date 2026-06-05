@@ -29,6 +29,11 @@ spotuify cache status --format json
 
 What you get: database path, index path, row counts, search result counts, lyrics cache counts, cover cache size, and last sync/search timestamps.
 
+Queued tracks also warm the reusable cache in the background: metadata,
+search-index rows, cover art, lyrics, and the next embedded-player audio
+preload when available. This is best effort; playback and queue commands do not
+wait for it.
+
 ## Rebuild the search index
 
 ```bash

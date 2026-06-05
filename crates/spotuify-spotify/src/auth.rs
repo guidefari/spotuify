@@ -624,45 +624,30 @@ fn atomic_write_mode_0600(path: &std::path::Path, bytes: &[u8]) -> std::io::Resu
     let file_name = path
         .file_name()
         .map_or_else(|| "token".into(), |name| name.to_string_lossy());
-    for attempt in 0..16 {
-        let nonce: u64 = thread_rng().gen();
-        let tmp = parent.join(format!(
-            ".{file_name}.{}.{}.{}.tmp",
-            std::process::id(),
-            nonce,
-            attempt
-        ));
-        let mut file = match std::fs::OpenOptions::new()
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
+    {
+        let mut file = std::fs::OpenOptions::new()
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(true)
             .mode(0o600)
-            .open(&tmp)
-        {
-            Ok(file) => file,
-            Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(err),
-        };
-        if let Err(err) = file.write_all(bytes).and_then(|()| file.sync_all()) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(err);
-        }
-        let result = std::fs::rename(&tmp, path);
-        if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
-        return result;
+            .open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
     }
-    Err(std::io::Error::new(
-        ErrorKind::AlreadyExists,
-        "failed to allocate a unique auth temp file",
-    ))
+    let result = std::fs::rename(&tmp, path);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(not(unix))]
 fn atomic_write_mode_0600(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        spotuify_protocol::paths::ensure_private_dir(parent).map_err(std::io::Error::other)?;
-    }
     std::fs::write(path, bytes)
 }
 

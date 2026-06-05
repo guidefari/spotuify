@@ -18,6 +18,9 @@ Search in the TUI is grouped by media kind so tracks, artists, albums,
 playlists, podcasts, and episodes do not collapse into one undifferentiated
 list.
 
+The selection preview shows artwork for albums, playlists, shows, and episodes
+when the selected row has an image URL.
+
 ```bash
 spotuify search "design matters" --type show
 ```

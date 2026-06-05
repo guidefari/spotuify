@@ -49,7 +49,7 @@ const BULK_CHUNK_ROWS: usize = 64;
 /// - v10: queue cache snapshots and ordered upcoming items
 /// - v11: playlist track accessibility flag for Spotify 403 playlists
 /// - v12: lyrics lookup negative cache
-pub const CACHE_VERSION: u32 = 12;
+pub const CACHE_VERSION: u32 = 13;
 
 const FRESHNESS_FRESH: &str = "fresh";
 
@@ -339,6 +339,49 @@ impl Store {
              JOIN media_items ON media_items.uri = library_items.item_uri
              WHERE library_items.saved = 1 OR library_items.followed = 1
              ORDER BY library_items.fetched_at_ms DESC, name ASC
+             LIMIT ?",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.reader)
+        .await?;
+        rows.into_iter().map(row_to_media_item).collect()
+    }
+
+    /// Liked songs (cache fallback for `Request::SavedTracks`). Saved tracks
+    /// only, newest-saved first when `added_at_ms` is known.
+    pub async fn list_saved_tracks(&self, limit: u32) -> Result<Vec<MediaItem>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT media_items.uri, spotify_id, media_items.kind, name, subtitle, context,
+                    duration_ms, image_url, source, media_items.album,
+                    media_items.release_date, library_items.added_at_ms
+             FROM library_items
+             JOIN media_items ON media_items.uri = library_items.item_uri
+             WHERE library_items.saved = 1 AND media_items.kind = 'track'
+             ORDER BY library_items.added_at_ms DESC, library_items.fetched_at_ms DESC, name ASC
+             LIMIT ?",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.reader)
+        .await?;
+        rows.into_iter().map(row_to_media_item).collect()
+    }
+
+    /// Subscribed podcasts (cache-backed `Request::SavedShows`). Saved shows only.
+    pub async fn list_saved_shows(&self, limit: u32) -> Result<Vec<MediaItem>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT media_items.uri, spotify_id, media_items.kind, name, subtitle, context,
+                    duration_ms, image_url, source
+             FROM library_items
+             JOIN media_items ON media_items.uri = library_items.item_uri
+             WHERE (library_items.saved = 1 OR library_items.followed = 1)
+                   AND media_items.kind = 'show'
+             ORDER BY name ASC
              LIMIT ?",
         )
         .bind(limit as i64)
@@ -1811,6 +1854,24 @@ fn row_to_media_item(row: sqlx::sqlite::SqliteRow) -> Result<MediaItem> {
         freshness: Some("cached".to_string()),
         explicit: None,
         is_playable: None,
+        // Phase v2 columns — read resiliently so queries that don't SELECT
+        // them (the common case) still map cleanly.
+        album: row.try_get::<Option<String>, _>("album").ok().flatten(),
+        added_at_ms: row.try_get::<Option<i64>, _>("added_at_ms").ok().flatten(),
+        resume_position_ms: row
+            .try_get::<Option<i64>, _>("resume_position_ms")
+            .ok()
+            .flatten()
+            .map(|v| v.max(0) as u64),
+        fully_played: row
+            .try_get::<Option<i64>, _>("fully_played")
+            .ok()
+            .flatten()
+            .map(|v| v != 0),
+        release_date: row
+            .try_get::<Option<String>, _>("release_date")
+            .ok()
+            .flatten(),
     })
 }
 
@@ -1883,6 +1944,7 @@ fn playlist_media_item(playlist: &Playlist) -> MediaItem {
         freshness: None,
         explicit: None,
         is_playable: None,
+        ..Default::default()
     }
 }
 
@@ -2401,6 +2463,34 @@ const MIGRATION_011_COLUMNS: &[ColumnMigration] = &[ColumnMigration {
     definition: "tracks_accessible INTEGER NOT NULL DEFAULT 1",
 }];
 
+const MIGRATION_013_COLUMNS: &[ColumnMigration] = &[
+    ColumnMigration {
+        table: "media_items",
+        name: "album",
+        definition: "album TEXT",
+    },
+    ColumnMigration {
+        table: "media_items",
+        name: "release_date",
+        definition: "release_date TEXT",
+    },
+    ColumnMigration {
+        table: "media_items",
+        name: "resume_position_ms",
+        definition: "resume_position_ms INTEGER",
+    },
+    ColumnMigration {
+        table: "media_items",
+        name: "fully_played",
+        definition: "fully_played INTEGER",
+    },
+    ColumnMigration {
+        table: "library_items",
+        name: "added_at_ms",
+        definition: "added_at_ms INTEGER",
+    },
+];
+
 const MIGRATION_012_LYRICS_NEGATIVE_CACHE: &str = r#"
 CREATE TABLE IF NOT EXISTS lyrics_lookup_failures (
     track_uri            TEXT PRIMARY KEY,
@@ -2472,6 +2562,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 12,
         name: "lyrics_negative_cache",
         kind: MigrationKind::Sql(MIGRATION_012_LYRICS_NEGATIVE_CACHE),
+    },
+    Migration {
+        version: 13,
+        name: "media_enrichment",
+        kind: MigrationKind::AddColumns(MIGRATION_013_COLUMNS),
     },
 ];
 
@@ -3195,6 +3290,7 @@ mod tests {
             freshness: None,
             explicit: None,
             is_playable: None,
+            ..Default::default()
         }
     }
 }

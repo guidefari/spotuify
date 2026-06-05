@@ -35,7 +35,8 @@ use crate::config::{
 use crate::output::OutputFormat;
 use crate::spotify::SpotifyClient;
 use spotuify_cli::cli_args::{
-    LibraryCommand, LyricsCommand, MprisCommand, PlaylistCommand, QueueCommand, VizCommand,
+    AlbumCommand, ArtistCommand, LibraryCommand, LyricsCommand, MprisCommand, PlaylistCommand,
+    QueueCommand, ShowCommand, VizCommand,
 };
 
 #[derive(Parser)]
@@ -285,6 +286,21 @@ enum Command {
     Library {
         #[command(subcommand)]
         command: LibraryCommand,
+    },
+    /// Podcast show operations.
+    Show {
+        #[command(subcommand)]
+        command: ShowCommand,
+    },
+    /// Album operations.
+    Album {
+        #[command(subcommand)]
+        command: AlbumCommand,
+    },
+    /// Artist operations.
+    Artist {
+        #[command(subcommand)]
+        command: ArtistCommand,
     },
     /// Synced lyrics operations.
     Lyrics {
@@ -1116,6 +1132,9 @@ async fn run() -> Result<()> {
         Some(Command::Transfer { device, format }) => commands::ipc_transfer(&device, format).await,
         Some(Command::Playlist { command }) => commands::ipc_playlist(command).await,
         Some(Command::Library { command }) => commands::ipc_library(command).await,
+        Some(Command::Show { command }) => commands::ipc_show(command).await,
+        Some(Command::Album { command }) => commands::ipc_album(command).await,
+        Some(Command::Artist { command }) => commands::ipc_artist(command).await,
         Some(Command::Lyrics { command }) => commands::ipc_lyrics(command).await,
         Some(Command::RefreshMedia { format }) => commands::ipc_refresh_media(format).await,
         Some(Command::Viz { command }) => commands::ipc_viz(command).await,
@@ -3419,6 +3438,7 @@ support_email = "user@example.com"
                         uris,
                         ids,
                         search,
+                        many: _,
                         format,
                     }),
                 ..
@@ -3448,6 +3468,7 @@ support_email = "user@example.com"
                         uris,
                         ids,
                         search,
+                        many: _,
                         format,
                     }),
                 ..

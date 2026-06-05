@@ -124,6 +124,7 @@ async fn cache_track_duration(store: &Store, uri: &str, duration_ms: u64) {
                 freshness: None,
                 explicit: None,
                 is_playable: Some(true),
+                ..Default::default()
             }],
             "test",
         )

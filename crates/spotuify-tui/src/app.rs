@@ -5209,6 +5209,7 @@ mod tests {
             freshness: None,
             explicit: None,
             is_playable: None,
+            ..Default::default()
         }
     }
 
@@ -6970,6 +6971,7 @@ mod tests {
             freshness: None,
             explicit: None,
             is_playable: None,
+            ..Default::default()
         }
     }
 

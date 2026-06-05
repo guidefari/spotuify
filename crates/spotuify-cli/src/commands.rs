@@ -207,8 +207,9 @@ pub async fn ipc_queue(command: Option<crate::QueueCommand>, format: OutputForma
             uris,
             ids,
             search,
+            many,
             format,
-        }) => ipc_queue_add(uris, ids, search, format).await,
+        }) => ipc_queue_add(uris, ids, search, many, format).await,
         None => match daemon_request(Request::QueueGet).await? {
             ResponseData::Queue { queue } => output::print_queue(&queue, format),
             _ => unexpected_response(),
@@ -999,13 +1000,53 @@ async fn ipc_playlist_create(
 }
 
 pub async fn ipc_library(command: crate::LibraryCommand) -> Result<()> {
-    match command {
-        crate::LibraryCommand::Tracks { limit, format } => {
-            match daemon_request(Request::LibraryList { limit }).await? {
-                ResponseData::MediaItems { items } => output::print_media_items(&items, format),
-                _ => unexpected_response(),
-            }
-        }
+    let (request, format) = match command {
+        crate::LibraryCommand::Tracks { limit, format } => (Request::LibraryList { limit }, format),
+        crate::LibraryCommand::SavedTracks {
+            limit,
+            offset,
+            format,
+        } => (Request::SavedTracks { limit, offset }, format),
+        crate::LibraryCommand::Shows { limit, format } => (Request::SavedShows { limit }, format),
+    };
+    match daemon_request(request).await? {
+        ResponseData::MediaItems { items } => output::print_media_items(&items, format),
+        _ => unexpected_response(),
+    }
+}
+
+pub async fn ipc_show(command: crate::ShowCommand) -> Result<()> {
+    let crate::ShowCommand::Episodes {
+        show,
+        limit,
+        offset,
+        format,
+    } = command;
+    match daemon_request(Request::ShowEpisodes {
+        show,
+        limit,
+        offset,
+    })
+    .await?
+    {
+        ResponseData::MediaItems { items } => output::print_media_items(&items, format),
+        _ => unexpected_response(),
+    }
+}
+
+pub async fn ipc_album(command: crate::AlbumCommand) -> Result<()> {
+    let crate::AlbumCommand::Tracks { album, format } = command;
+    match daemon_request(Request::AlbumTracks { album }).await? {
+        ResponseData::MediaItems { items } => output::print_media_items(&items, format),
+        _ => unexpected_response(),
+    }
+}
+
+pub async fn ipc_artist(command: crate::ArtistCommand) -> Result<()> {
+    let crate::ArtistCommand::Albums { artist, format } = command;
+    match daemon_request(Request::ArtistAlbums { artist }).await? {
+        ResponseData::MediaItems { items } => output::print_media_items(&items, format),
+        _ => unexpected_response(),
     }
 }
 
@@ -1038,6 +1079,7 @@ async fn ipc_queue_add(
     uris: Vec<String>,
     ids: Option<PathBuf>,
     search: Option<String>,
+    many: bool,
     format: OutputFormat,
 ) -> Result<()> {
     match search {
@@ -1069,6 +1111,19 @@ async fn ipc_queue_add(
                 ids.as_deref(),
                 "provide a URI or --search QUERY",
             )?;
+            if many {
+                // One aggregate request + receipt + undo entry.
+                return match daemon_request(Request::QueueAddMany {
+                    uris: selection.uris.clone(),
+                })
+                .await?
+                {
+                    ResponseData::Mutation { receipt } => {
+                        output::print_basic_receipt(&receipt.action, &receipt.message, format)
+                    }
+                    _ => unexpected_response(),
+                };
+            }
             let mut errors = Vec::new();
             let mut succeeded = 0;
             for uri in &selection.uris {
@@ -1383,6 +1438,7 @@ mod tests {
             freshness: None,
             explicit: None,
             is_playable: None,
+            ..Default::default()
         }
     }
 

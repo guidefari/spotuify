@@ -686,7 +686,12 @@ impl SpotifyClient {
             items: response
                 .items
                 .into_iter()
-                .map(|item| item.track.into_media_item())
+                .map(|item| {
+                    let added_at_ms = item.added_at.as_deref().and_then(parse_rfc3339_ms);
+                    let mut media = item.track.into_media_item();
+                    media.added_at_ms = added_at_ms;
+                    media
+                })
                 .collect(),
         })
     }
@@ -851,6 +856,47 @@ impl SpotifyClient {
             }
         }
         Ok(albums)
+    }
+
+    /// Episodes of a show (Spotify's `/v1/shows/{id}/episodes`). Single page;
+    /// the caller paginates via `offset`. Episodes carry `resume_point`
+    /// (listened state) when the token has `user-read-playback-position`.
+    pub async fn show_episodes(
+        &mut self,
+        show_id: &str,
+        limit: u8,
+        offset: u64,
+    ) -> SpotifyResult<Vec<MediaItem>> {
+        if self.fake {
+            return Ok(vec![MediaItem {
+                id: Some("ep1".to_string()),
+                uri: "spotify:episode:ep1".to_string(),
+                name: "Fake Episode 1".to_string(),
+                subtitle: "Fake Show".to_string(),
+                context: "Fake Show".to_string(),
+                duration_ms: 1_800_000,
+                kind: MediaKind::Episode,
+                source: Some("spotify".to_string()),
+                release_date: Some("2024-01-01".to_string()),
+                fully_played: Some(false),
+                ..Default::default()
+            }]);
+        }
+        let show_id = show_id.trim_start_matches("spotify:show:");
+        let path = format!(
+            "{}?limit={}&offset={offset}",
+            endpoints::show_episodes(show_id),
+            limit.min(50)
+        );
+        let response = self
+            .request_json::<Paging<RawEpisode>>(Method::GET, &path, None::<()>)
+            .await?
+            .ok_or_else(|| anyhow!("Spotify returned no show episodes response"))?;
+        Ok(response
+            .items
+            .into_iter()
+            .map(RawEpisode::into_media_item)
+            .collect())
     }
 
     pub async fn play_pause(&mut self, is_playing: bool) -> SpotifyResult<()> {
@@ -1992,6 +2038,16 @@ struct RecentlyPlayedItem {
 #[derive(Debug, Deserialize)]
 struct SavedTrackItem {
     track: RawTrack,
+    /// RFC3339 timestamp of when the user saved the track (`/me/tracks`).
+    #[serde(default)]
+    added_at: Option<String>,
+}
+
+/// Parse a Spotify RFC3339 timestamp (e.g. `2024-03-01T12:00:00Z`) to epoch ms.
+fn parse_rfc3339_ms(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|dt| dt.timestamp_millis())
 }
 
 #[derive(Debug, Deserialize)]
@@ -2076,6 +2132,8 @@ impl RawTrack {
             freshness: None,
             explicit: self.explicit,
             is_playable: self.is_playable,
+            album: Some(self.album.name),
+            ..Default::default()
         }
     }
 }
@@ -2107,8 +2165,17 @@ impl RawAlbumTrack {
             freshness: None,
             explicit: self.explicit,
             is_playable: self.is_playable,
+            ..Default::default()
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ResumePoint {
+    #[serde(default)]
+    fully_played: Option<bool>,
+    #[serde(default)]
+    resume_position_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2120,6 +2187,12 @@ struct RawEpisode {
     show: Option<SimpleShow>,
     #[serde(default, deserialize_with = "null_to_default")]
     images: Vec<ImageRef>,
+    /// Listened state — present on user-context endpoints with the
+    /// `user-read-playback-position` scope; absent on plain search results.
+    #[serde(default)]
+    resume_point: Option<ResumePoint>,
+    #[serde(default)]
+    release_date: Option<String>,
 }
 
 impl RawEpisode {
@@ -2127,6 +2200,10 @@ impl RawEpisode {
         let show = self
             .show
             .map_or_else(|| "Podcast episode".to_string(), |show| show.name);
+        let resume = self.resume_point.unwrap_or(ResumePoint {
+            fully_played: None,
+            resume_position_ms: None,
+        });
         MediaItem {
             id: self.id,
             uri: self.uri,
@@ -2140,6 +2217,10 @@ impl RawEpisode {
             freshness: None,
             explicit: None,
             is_playable: None,
+            resume_position_ms: resume.resume_position_ms,
+            fully_played: resume.fully_played,
+            release_date: self.release_date,
+            ..Default::default()
         }
     }
 }
@@ -2173,6 +2254,7 @@ impl RawShow {
             freshness: None,
             explicit: None,
             is_playable: None,
+            ..Default::default()
         }
     }
 }
@@ -2187,6 +2269,8 @@ struct RawAlbum {
     #[serde(default, deserialize_with = "null_to_default")]
     images: Vec<ImageRef>,
     total_tracks: Option<u64>,
+    #[serde(default)]
+    release_date: Option<String>,
 }
 
 impl RawAlbum {
@@ -2208,6 +2292,8 @@ impl RawAlbum {
             freshness: None,
             explicit: None,
             is_playable: None,
+            release_date: self.release_date.clone(),
+            ..Default::default()
         }
     }
 }
@@ -2240,6 +2326,7 @@ impl RawArtist {
             freshness: None,
             explicit: None,
             is_playable: None,
+            ..Default::default()
         }
     }
 }
@@ -2291,6 +2378,7 @@ impl RawPlaylist {
             freshness: None,
             explicit: None,
             is_playable: None,
+            ..Default::default()
         })
     }
 }
@@ -2546,6 +2634,7 @@ fn fake_track() -> MediaItem {
         freshness: None,
         explicit: Some(false),
         is_playable: Some(true),
+        ..Default::default()
     }
 }
 
@@ -2563,6 +2652,7 @@ fn fake_second_track() -> MediaItem {
         freshness: None,
         explicit: Some(false),
         is_playable: Some(true),
+        ..Default::default()
     }
 }
 
@@ -2580,6 +2670,7 @@ fn fake_album() -> MediaItem {
         freshness: None,
         explicit: None,
         is_playable: None,
+        ..Default::default()
     }
 }
 
@@ -2597,6 +2688,7 @@ fn fake_artist() -> MediaItem {
         freshness: None,
         explicit: None,
         is_playable: None,
+        ..Default::default()
     }
 }
 
@@ -2614,6 +2706,7 @@ fn fake_playlist_media_item() -> MediaItem {
         freshness: None,
         explicit: None,
         is_playable: None,
+        ..Default::default()
     }
 }
 
@@ -2652,9 +2745,34 @@ fn selection_like_uri_check(uri: &str) -> AnyResult<()> {
 mod tests {
     use super::{
         format_followers, group_items_by_position, library_endpoint_for_uri,
-        normalize_spotify_response, playlist_remove_items_body, playlist_reorder_body, search_path,
-        Config, MediaKind, SpotifyClient,
+        normalize_spotify_response, parse_rfc3339_ms, playlist_remove_items_body,
+        playlist_reorder_body, search_path, Config, MediaKind, RawEpisode, SpotifyClient,
     };
+
+    #[test]
+    fn episode_resume_point_and_release_date_map_into_media_item() {
+        let raw: RawEpisode = serde_json::from_value(json!({
+            "id": "ep1",
+            "uri": "spotify:episode:ep1",
+            "name": "Episode 1",
+            "duration_ms": 1_800_000,
+            "show": { "name": "My Show" },
+            "release_date": "2024-03-01",
+            "resume_point": { "fully_played": true, "resume_position_ms": 12_000 }
+        }))
+        .expect("episode should deserialize");
+        let item = raw.into_media_item();
+        assert_eq!(item.kind, MediaKind::Episode);
+        assert_eq!(item.fully_played, Some(true));
+        assert_eq!(item.resume_position_ms, Some(12_000));
+        assert_eq!(item.release_date.as_deref(), Some("2024-03-01"));
+    }
+
+    #[test]
+    fn rfc3339_parses_to_epoch_ms() {
+        assert_eq!(parse_rfc3339_ms("1970-01-01T00:00:01Z"), Some(1_000));
+        assert!(parse_rfc3339_ms("not-a-date").is_none());
+    }
     use reqwest::Method;
     use serde_json::json;
     use std::path::PathBuf;

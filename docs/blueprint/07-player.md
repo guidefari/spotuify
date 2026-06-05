@@ -17,6 +17,8 @@ The daemon should ensure the preferred device is running and visible before play
 - play selected item
 - play query result
 - play URI
+- play album or playlist context while publishing a queue snapshot that shows
+  the first track as current and the remaining tracks as up next
 - pause
 - resume
 - toggle play/pause
@@ -82,6 +84,10 @@ Album art should degrade gracefully:
 - text fallback
 
 Art loading should never block input.
+
+Selection artwork is not only for albums and playlists. Search and Library
+selection previews should also show artwork for saved shows and episodes when
+Spotify provides an image URL.
 
 ## Device failure UX
 

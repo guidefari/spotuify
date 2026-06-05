@@ -91,6 +91,17 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_auth_bearer", &["auth", "bearer", "--help"]),
         ("cli_help_library", &["library", "--help"]),
         ("cli_help_library_tracks", &["library", "tracks", "--help"]),
+        (
+            "cli_help_library_saved_tracks",
+            &["library", "saved-tracks", "--help"],
+        ),
+        ("cli_help_library_shows", &["library", "shows", "--help"]),
+        ("cli_help_show", &["show", "--help"]),
+        ("cli_help_show_episodes", &["show", "episodes", "--help"]),
+        ("cli_help_album", &["album", "--help"]),
+        ("cli_help_album_tracks", &["album", "tracks", "--help"]),
+        ("cli_help_artist", &["artist", "--help"]),
+        ("cli_help_artist_albums", &["artist", "albums", "--help"]),
         ("cli_help_lyrics", &["lyrics", "--help"]),
         ("cli_help_lyrics_show", &["lyrics", "show", "--help"]),
         ("cli_help_lyrics_follow", &["lyrics", "follow", "--help"]),
@@ -129,7 +140,7 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_sync", &["sync", "--help"]),
     ];
 
-    assert_eq!(cases.len(), 79);
+    assert_eq!(cases.len(), 87);
     for (name, args) in cases {
         assert_help_snapshot(name, args);
     }

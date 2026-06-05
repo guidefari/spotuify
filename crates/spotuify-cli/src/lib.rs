@@ -18,5 +18,6 @@ pub mod selection {
 }
 
 pub use cli_args::{
-    LibraryCommand, LyricsCommand, MprisCommand, PlaylistCommand, QueueCommand, VizCommand,
+    AlbumCommand, ArtistCommand, LibraryCommand, LyricsCommand, MprisCommand, PlaylistCommand,
+    QueueCommand, ShowCommand, VizCommand,
 };

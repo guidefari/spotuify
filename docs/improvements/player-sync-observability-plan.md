@@ -1,8 +1,26 @@
 # Player Sync and Observability Improvement Plan
 
 Date: 2026-05-16
-Status: Proposed
+Status: Superseded by shipped player hot-path work
 Owner: spotuify player reliability work
+
+## Current status as of 2026-06-02
+
+This plan is kept as the investigation ledger, not the current implementation
+plan. The main direction shipped: the daemon owns `PlaybackClock`, clients seed
+from daemon truth, playback mutations emit daemon-owned optimistic events, and
+the embedded player has a dedicated transport lane for play/pause/next/previous
+seek/volume before falling back to Spotify Web API reconciliation.
+
+Still valid: player actions are the product hot path; Web API polling is a
+fallback/reconciliation source; TUI state should render daemon truth rather
+than local guesses.
+
+Out of date: transport commands no longer wait only behind the ordinary Spotify
+Web API mutation body. `Request::PlaybackCommand` now freezes the effective
+command before optimistic state changes, tries local embedded transport within
+a bounded fast window, and the player actor checks transport before ordinary
+player commands and warm preloads.
 
 ## Summary
 

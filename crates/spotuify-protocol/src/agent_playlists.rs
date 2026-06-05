@@ -505,6 +505,7 @@ mod tests {
             freshness: None,
             explicit: Some(false),
             is_playable: Some(playable),
+            ..Default::default()
         }
     }
 

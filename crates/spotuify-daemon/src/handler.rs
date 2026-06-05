@@ -720,6 +720,148 @@ async fn dispatch(
             )
             .await
         }
+        Request::QueueAddMany { uris } => {
+            // "Queue all" — append a whole batch (e.g. every liked song).
+            // Spotify's queue endpoint is single-URI, so we loop internally
+            // and emit one aggregate receipt. Not reversible (Spotify can't
+            // remove queue items), so no undo plan.
+            let state_for_event = state.clone();
+            let subject = uris.clone();
+            state.bump_mutation_seq();
+            spawn_optimistic_mutation(
+                &state,
+                OperationKind::QueueAdd,
+                operation_source,
+                subject,
+                "queue",
+                request_json.clone(),
+                None,
+                None,
+                mutation_lane,
+                move |_op_id| async move {
+                    let mut client = state_for_event.spotify_client().await?;
+                    // Expand each selection (tracks pass through; album/playlist
+                    // URIs expand to their tracks) and dedupe across the batch.
+                    let mut seen: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    let mut queue_uris: Vec<String> = Vec::new();
+                    let mut queued_items: Vec<MediaItem> = Vec::new();
+                    for selection in &uris {
+                        let resolved =
+                            queueable_items_for_selection(&state_for_event, &mut client, selection)
+                                .await?;
+                        for item in resolved {
+                            if seen.insert(item.uri.clone()) {
+                                queue_uris.push(item.uri.clone());
+                                queued_items.push(item);
+                            }
+                        }
+                    }
+                    if queue_uris.is_empty() {
+                        emit_mutation_finished(&state_for_event, "queue", "nothing to queue");
+                        return Ok(());
+                    }
+                    let mut played_first = false;
+                    if let Some(first) = queue_uris.first().cloned() {
+                        match queue_one(state_for_event.as_ref(), &mut client, &first).await? {
+                            QueueAttempt::Queued => {}
+                            QueueAttempt::NoActiveDevice => {
+                                state_for_event
+                                    .transport(crate::state::TransportCmd::PlayUri {
+                                        uri: first.clone(),
+                                        position_ms: 0,
+                                    })
+                                    .await
+                                    .map_err(|err| {
+                                        anyhow::anyhow!(
+                                            "failed to start playback for {first}: {err}"
+                                        )
+                                    })?;
+                                played_first = true;
+                            }
+                        }
+                    }
+                    for queue_uri in queue_uris.iter().skip(1) {
+                        let mut attempt = 0u32;
+                        loop {
+                            match queue_one(state_for_event.as_ref(), &mut client, queue_uri)
+                                .await?
+                            {
+                                QueueAttempt::Queued => break,
+                                QueueAttempt::NoActiveDevice if played_first && attempt < 6 => {
+                                    attempt += 1;
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                }
+                                QueueAttempt::NoActiveDevice => {
+                                    return Err(anyhow::anyhow!(
+                                        "queue add for {queue_uri} failed: no active device"
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    let queued_uris: Vec<String> = if played_first {
+                        queue_uris.iter().skip(1).cloned().collect()
+                    } else {
+                        queue_uris.clone()
+                    };
+                    let appended_items: Vec<MediaItem> = if played_first {
+                        queued_items.iter().skip(1).cloned().collect()
+                    } else {
+                        queued_items.clone()
+                    };
+                    let queue_snapshot = optimistic_queue_with_appends(appended_items).await;
+                    if let Some(queue) = queue_snapshot.as_ref() {
+                        cache_queue(&state_for_event, queue).await;
+                    }
+                    let message = if played_first {
+                        format!("playing now, queued {} item(s)", queued_uris.len())
+                    } else {
+                        format!("queued {} item(s)", queue_uris.len())
+                    };
+                    state_for_event.emit_event(DaemonEvent::QueueChanged {
+                        action: "queue".to_string(),
+                        uris: queued_uris.clone(),
+                        queue: queue_snapshot,
+                    });
+                    state_for_event.warm_queue_uris(queued_uris.clone());
+                    spawn_queue_refresh(state_for_event.clone());
+                    emit_mutation_finished(&state_for_event, "queue", &message);
+                    Ok(())
+                },
+            )
+            .await
+        }
+        Request::SavedTracks { limit, offset } => {
+            // Liked songs — live `/me/tracks`, cache fallback on failure.
+            let mut client = state.spotify_client().await?;
+            match client
+                .saved_tracks_page(limit.min(50) as u8, offset as u64)
+                .await
+            {
+                Ok(page) => Ok(ResponseData::MediaItems { items: page.items }),
+                Err(err) => {
+                    tracing::warn!(error = %err, "saved tracks live fetch failed; serving cache");
+                    Ok(ResponseData::MediaItems {
+                        items: state.store().list_saved_tracks(limit).await?,
+                    })
+                }
+            }
+        }
+        Request::SavedShows { limit } => Ok(ResponseData::MediaItems {
+            items: state.store().list_saved_shows(limit).await?,
+        }),
+        Request::ShowEpisodes {
+            show,
+            limit,
+            offset,
+        } => {
+            let mut client = state.spotify_client().await?;
+            let items = client
+                .show_episodes(&show, limit.min(50) as u8, offset as u64)
+                .await?;
+            Ok(ResponseData::MediaItems { items })
+        }
         Request::PlaylistsList => {
             // Cache hit returns immediately + schedules refresh; cache
             // miss falls through to a blocking Spotify call. Unlike
@@ -4045,6 +4187,7 @@ fn media_item_from_uri(uri: &str) -> anyhow::Result<MediaItem> {
         freshness: None,
         explicit: None,
         is_playable: None,
+        ..Default::default()
     })
 }
 
@@ -4071,6 +4214,7 @@ mod queue_tests {
             freshness: None,
             explicit: None,
             is_playable: None,
+            ..Default::default()
         }
     }
 
@@ -4508,6 +4652,7 @@ mod post_command_persist_tests {
             freshness: None,
             explicit: Some(false),
             is_playable: Some(true),
+            ..Default::default()
         }
     }
 

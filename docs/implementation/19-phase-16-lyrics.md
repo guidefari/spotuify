@@ -121,6 +121,8 @@ Re-render only when `active` changes (avoid every-frame re-render).
 - `spotuify lyrics fetch <track-uri>` (force refresh)
 - `spotuify lyrics export <track-uri> [--output FILE]` writes LRC to stdout or a file
 - `spotuify lyrics offset <track-uri> +50ms` (save per-track timing tweak)
+- `spotuify refresh-media` force-refreshes current-track lyrics alongside
+  cover art without clearing the old TUI content first.
 - Provider selection is currently automatic: Spotify mercury first, LRCLIB fallback. A manual `provider --set spotify|lrclib|auto` command is deferred until there is a validated need to override automatic fallback.
 
 ### MCP integration
@@ -157,6 +159,9 @@ Re-render only when `active` changes (avoid every-frame re-render).
 - Store tests cover lyrics cache/offset round-trips and migrations.
 - TUI tests cover opening the Lyrics screen through keyboard/action flow.
 - Daemon tests cover LRCLIB fallback through the real `LyricsGet` handler and cached lyrics surviving daemon restart without refetching.
+- `spotuify refresh-media` and TUI `U` call `LyricsGet` with
+  `force_refresh: true` for the current track and leave current lyrics visible
+  until replacement data arrives.
 
 ## Definition of done
 

@@ -36,7 +36,7 @@ spotuify
 
 | Key | CLI equivalent |
 | --- | --- |
-| Space | `spotuify toggle`; on idle Home, play selected item |
+| Space | `spotuify toggle`; when idle/ended, play selected Home, Search, Library, or Playlist item |
 | `n` | `spotuify next` |
 | `p` | `spotuify previous` |
 | Left | `spotuify seek -15s` |
@@ -49,10 +49,12 @@ spotuify
 | `v` | toggle visualizer |
 | `V` | cycle visualizer source |
 | `O` | choose local audio output device (`spotuify audio-output NAME`) |
+| `U` | `spotuify refresh-media` |
 
 ```bash
 spotuify toggle
 spotuify next
+spotuify refresh-media
 ```
 
 `O` opens a picker of the Mac audio outputs the embedded `spotuify-hume` player can render to; selecting one writes `player.audio_output_device` and restarts the player. The CLI equivalent:
@@ -61,6 +63,13 @@ spotuify next
 spotuify audio-outputs                          # list outputs
 spotuify audio-output "MacBook Pro Speakers"    # set + reconnect
 ```
+
+`U` refetches the current track's cover art and lyrics. The TUI keeps the
+current media visible until the new fetch returns.
+
+When there is no resumable current item, Space starts the selected item instead
+of toggling. That applies on Home, Search, Library, and Playlists. Once a
+current item can resume, Space goes back to play/pause.
 
 ## Search and filters
 

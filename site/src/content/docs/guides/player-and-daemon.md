@@ -73,6 +73,14 @@ Start music, quit with `q`, then check:
 spotuify status
 ```
 
+## Playback controls are hot
+
+Play/pause, next, previous, seek, and volume are treated as hot-path actions.
+The daemon updates its playback clock optimistically for subscribers, then tries
+the embedded player's local transport path before waiting on Spotify Web API
+reconciliation. That is why pressing Space in the TUI should feel immediate
+even when Spotify's API response is slow.
+
 ## Opening the TUI is not a refresh
 
 The TUI seeds Home from cached daemon state. It does not fetch playback,

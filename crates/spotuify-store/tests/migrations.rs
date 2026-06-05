@@ -130,13 +130,34 @@ async fn test_open_refuses_future_schema_before_running_current_migrations() {
 }
 
 #[tokio::test]
-async fn test_cache_version_constant_is_twelve() {
+async fn test_cache_version_constant_is_current() {
     // History: v3 receipts, v4 analytics derivations (Phase 10),
     // v5 operations log (Phase 12), v6 lyrics cache (Phase 16),
     // v7 playlist freshness, v8 saved-library sync position,
     // v9 playlist duplicate-track preservation, v10 queue cache,
-    // v11 playlist track accessibility, v12 lyrics negative cache.
-    assert_eq!(CACHE_VERSION, 12);
+    // v11 playlist track accessibility, v12 lyrics negative cache,
+    // v13 media enrichment (album/added_at/resume_point columns).
+    assert_eq!(CACHE_VERSION, 13);
+}
+
+#[tokio::test]
+async fn test_v13_adds_media_enrichment_columns() {
+    let store = fresh_store().await;
+    for col in [
+        "album",
+        "release_date",
+        "resume_position_ms",
+        "fully_played",
+    ] {
+        assert!(
+            column_exists(&store, "media_items", col).await,
+            "media_items.{col} must exist after v13"
+        );
+    }
+    assert!(
+        column_exists(&store, "library_items", "added_at_ms").await,
+        "library_items.added_at_ms must exist after v13"
+    );
 }
 
 // --- v4 analytics derivations (Phase 10) ---

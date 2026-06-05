@@ -27,11 +27,13 @@ Want the most polished desktop experience? Use the official app. Want Spotify as
 - Config commands for `path`, `init`, `get`, and `set`.
 - Embedded librespot registers spotuify as a Spotify Connect device at daemon start.
 - Playback controls: play, pause, next, previous, seek, volume, shuffle, repeat.
-- Search across tracks, albums, playlists, and podcast episodes.
-- Queue viewing and add-to-queue support.
+- Playback actions take the daemon hot path first; embedded play/pause/next/seek/volume try local transport before waiting on Spotify Web API reconciliation.
+- Search across tracks, episodes, shows/podcasts, albums, artists, and playlists.
+- Queue viewing and add-to-queue support, with background warming for queued track metadata, cover art, lyrics, and next-track audio.
 - Playlist browsing and quick add-current-to-playlist flow.
 - Device list and Spotify Connect transfer.
 - Cover art rendering through Kitty, iTerm2, Sixel, or half-block fallback.
+- Manual current-track media refresh via `spotuify refresh-media` or `U` in the TUI.
 - Synced lyrics in the TUI and terminal: `spotuify lyrics show`, `spotuify lyrics follow`, LRC export, and per-track offset tuning.
 - Fully keyboard navigable with vim-style movement, pane switching, help overlay, paging, and back navigation.
 - Local analytics: `listen_facts` plus `spotuify analytics top` / `habits` / `rediscovery` for Wrapped-style insights, with shell-hook recipes for ListenBrainz, Last.fm, and Discord.
@@ -375,6 +377,7 @@ spotuify library tracks
 spotuify analytics top --kind tracks --format json
 spotuify lyrics show --track spotify:track:...
 spotuify lyrics follow --lines 3
+spotuify refresh-media
 spotuify viz enable
 spotuify hooks test
 spotuify mpris status
@@ -428,13 +431,14 @@ Ctrl-u / PageUp   page up
 Enter             activate selected item
 Esc / b           back from playlist tracks
 u                 refresh Spotify data
+U                 refresh current cover art and lyrics
 ```
 
 Playback keys:
 
 ```text
 Space             play or pause
-Space             on idle Home, play the selected saved item
+Space             when idle/ended, play the selected Home, Search, Library, or Playlist item
 n                 next
 p                 previous
 Left              seek backward 15 seconds
@@ -460,7 +464,7 @@ Playlist keys:
 
 ```text
 Enter             open selected playlist
-Enter             play selected playlist track
+Enter             play selected playlist or selected playlist track
 a                 add current item to selected playlist
 Esc / b           return from playlist tracks to playlist list
 ```

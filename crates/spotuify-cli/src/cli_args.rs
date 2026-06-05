@@ -86,7 +86,48 @@ pub enum QueueCommand {
         /// Search for a track and queue the first result.
         #[arg(long)]
         search: Option<String>,
+        /// Append all URIs in one batch request (single receipt). Use for
+        /// "queue all". Without it, each URI is queued individually.
+        #[arg(long)]
+        many: bool,
         /// Output format for the mutation receipt.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ShowCommand {
+    /// Print a podcast show's episodes (with listened state).
+    Episodes {
+        /// Show ID or URI.
+        show: String,
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AlbumCommand {
+    /// Print an album's tracks.
+    Tracks {
+        /// Album ID or URI.
+        album: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ArtistCommand {
+    /// Print an artist's albums and singles.
+    Albums {
+        /// Artist ID or URI.
+        artist: String,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
@@ -197,12 +238,28 @@ pub enum PlaylistCommand {
 
 #[derive(Subcommand)]
 pub enum LibraryCommand {
-    /// Print cached saved tracks and albums.
+    /// Print cached saved tracks, albums, and shows.
     Tracks {
         /// Maximum cached library rows to print.
         #[arg(long, default_value_t = 100)]
         limit: u32,
         /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Print liked songs (live `/me/tracks`, with date added).
+    SavedTracks {
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Print subscribed podcasts (saved shows).
+    Shows {
+        #[arg(long, default_value_t = 200)]
+        limit: u32,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },

@@ -22,7 +22,8 @@ Default view should be immediately playable:
 - podcasts / episodes when cached
 - recent plays as fallback
 - live queue preview when a Spotify session exists
-- Space starts the selected Home item when no live item is active
+- Space starts the selected Home, Search, Library, or Playlist item when no
+  active item can be resumed
 - key hints
 
 ### Search view
@@ -89,6 +90,7 @@ m               mark/unmark item
 M               mark range
 l               like selected/current
 Enter           play/open selected
+Space           toggle playback, or start selected item when idle/ended
 ```
 
 ## Action registry

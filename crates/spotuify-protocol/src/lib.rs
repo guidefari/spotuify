@@ -123,6 +123,25 @@ pub enum Request {
     LibraryList {
         limit: u32,
     },
+    /// Liked songs — the user's saved tracks (`GET /me/tracks`). Distinct from
+    /// `LibraryList`, which returns saved albums/shows. Live provider read with
+    /// `added_at_ms` populated; falls back to the cache when offline.
+    SavedTracks {
+        limit: u32,
+        offset: u32,
+    },
+    /// Subscribed podcasts — the user's saved shows (`GET /me/shows`),
+    /// served from the synced library cache.
+    SavedShows {
+        limit: u32,
+    },
+    /// Episodes of a single show (`GET /shows/{id}/episodes`), carrying
+    /// per-episode `resume_point` (listened state) and `release_date`.
+    ShowEpisodes {
+        show: String,
+        limit: u32,
+        offset: u32,
+    },
     LogsTail {
         lines: usize,
     },
@@ -139,6 +158,12 @@ pub enum Request {
     QueueGet,
     QueueAdd {
         uri: String,
+    },
+    /// Append many URIs to the queue in one request. Spotify's queue endpoint
+    /// takes a single URI, so the daemon loops internally and returns one
+    /// aggregate receipt + a single undo entry. Used for "queue all".
+    QueueAddMany {
+        uris: Vec<String>,
     },
     PlaylistsList,
     PlaylistTracks {
@@ -382,6 +407,10 @@ impl Request {
             | Self::CoverArt { .. }
             | Self::QueueGet
             | Self::QueueAdd { .. }
+            | Self::QueueAddMany { .. }
+            | Self::SavedTracks { .. }
+            | Self::SavedShows { .. }
+            | Self::ShowEpisodes { .. }
             | Self::PlaylistsList
             | Self::PlaylistTracks { .. }
             | Self::ArtistAlbums { .. }
@@ -427,6 +456,10 @@ impl Request {
             Self::CoverArt { .. } => "cover-art",
             Self::QueueGet => "queue-get",
             Self::QueueAdd { .. } => "queue-add",
+            Self::QueueAddMany { .. } => "queue-add-many",
+            Self::SavedTracks { .. } => "saved-tracks",
+            Self::SavedShows { .. } => "saved-shows",
+            Self::ShowEpisodes { .. } => "show-episodes",
             Self::PlaylistsList => "playlists-list",
             Self::PlaylistTracks { .. } => "playlist-tracks",
             Self::ArtistAlbums { .. } => "artist-albums",
@@ -1583,8 +1616,7 @@ pub struct DoctorReport {
     pub client_id: Option<String>,
     pub client_secret_present: Option<bool>,
     pub redirect_uri: Option<String>,
-    #[serde(alias = "keychain_token")]
-    pub auth_token: DoctorCheck,
+    pub keychain_token: DoctorCheck,
     pub daemon: DaemonStatus,
     pub api_checks: Vec<DoctorCheck>,
     pub device_diagnostics: Option<DeviceDiagnostics>,
@@ -1849,6 +1881,49 @@ mod tests {
 
         assert!(raw.contains("\"cmd\":\"playback-command\""));
         assert!(raw.contains("\"command\":\"next\""));
+    }
+
+    #[test]
+    fn v2_library_and_queue_requests_round_trip() {
+        for (request, tag) in [
+            (
+                Request::SavedTracks {
+                    limit: 50,
+                    offset: 0,
+                },
+                "saved-tracks",
+            ),
+            (Request::SavedShows { limit: 200 }, "saved-shows"),
+            (
+                Request::ShowEpisodes {
+                    show: "spotify:show:abc".to_string(),
+                    limit: 50,
+                    offset: 0,
+                },
+                "show-episodes",
+            ),
+            (
+                Request::QueueAddMany {
+                    uris: vec!["spotify:track:1".to_string(), "spotify:track:2".to_string()],
+                },
+                "queue-add-many",
+            ),
+        ] {
+            assert_eq!(request.kind_label(), tag);
+            assert_eq!(request.category(), IpcCategory::CoreMusic);
+            let raw = serde_json::to_string(&IpcMessage {
+                id: 1,
+                source: None,
+                payload: IpcPayload::Request(request.clone()),
+            })
+            .unwrap();
+            assert!(raw.contains(&format!("\"cmd\":\"{tag}\"")), "wire: {raw}");
+            let decoded: IpcMessage = serde_json::from_str(&raw).unwrap();
+            match decoded.payload {
+                IpcPayload::Request(decoded) => assert_eq!(decoded, request),
+                other => panic!("expected request, got {other:?}"),
+            }
+        }
     }
 
     #[test]

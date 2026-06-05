@@ -162,7 +162,7 @@ pub async fn collect_report_with_events(
         client_id: config.as_ref().map(Config::redacted_client_id),
         client_secret_present: config.as_ref().map(|config| config.client_secret.is_some()),
         redirect_uri: config.as_ref().map(|config| config.redirect_uri.clone()),
-        auth_token,
+        keychain_token: auth_token,
         daemon,
         api_checks,
         device_diagnostics: device_diagnostics_report,
@@ -435,11 +435,11 @@ fn build_findings(report: &DoctorReport) -> Vec<DoctorFinding> {
             remediation: vec!["spotuify daemon start".to_string()],
         });
     }
-    if !report.auth_token.ok {
+    if !report.keychain_token.ok {
         findings.push(DoctorFinding {
             category: DoctorFindingCategory::Auth,
             severity: DoctorFindingSeverity::Error,
-            message: format!("auth token: {}", report.auth_token.message),
+            message: format!("auth token: {}", report.keychain_token.message),
             remediation: vec!["spotuify login".to_string()],
         });
     }
@@ -578,7 +578,7 @@ fn print_report_table(report: &DoctorReport) {
     );
     println!(
         "Auth token:   {} ({}ms)",
-        report.auth_token.message, report.auth_token.elapsed_ms
+        report.keychain_token.message, report.keychain_token.elapsed_ms
     );
     if let Some(system) = &report.system {
         println!(
@@ -685,9 +685,9 @@ fn print_report_csv(report: &DoctorReport) {
         "{}",
         csv_row(&[
             "auth token",
-            bool_str(report.auth_token.ok),
-            &report.auth_token.elapsed_ms.to_string(),
-            &report.auth_token.message,
+            bool_str(report.keychain_token.ok),
+            &report.keychain_token.elapsed_ms.to_string(),
+            &report.keychain_token.message,
         ])
     );
     for check in &report.api_checks {
@@ -819,7 +819,7 @@ mod tests {
             client_id: Some("present".into()),
             client_secret_present: Some(false),
             redirect_uri: Some("http://127.0.0.1:8888/callback".into()),
-            auth_token: DoctorCheck {
+            keychain_token: DoctorCheck {
                 name: "auth token".into(),
                 ok: true,
                 message: "present".into(),

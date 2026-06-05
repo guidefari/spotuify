@@ -916,6 +916,7 @@ fn playlist_as_media_item(playlist: &Playlist) -> MediaItem {
         freshness: Some("fresh".to_string()),
         explicit: None,
         is_playable: None,
+        ..Default::default()
     }
 }
 

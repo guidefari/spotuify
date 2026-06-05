@@ -240,6 +240,23 @@ pub struct MediaItem {
     pub explicit: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_playable: Option<bool>,
+    /// Album name for tracks (distinct from `context`, which the player rail
+    /// reuses for the playback context label). `None` for non-track items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    /// When the item was saved/added (Unix epoch ms) — `added_at` from
+    /// `/me/tracks` or a playlist's `added_at`. Enables "Date Added" sort.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_at_ms: Option<i64>,
+    /// Episode resume position (ms) from Spotify's `resume_point`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_position_ms: Option<u64>,
+    /// Episode listened state from Spotify's `resume_point.fully_played`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fully_played: Option<bool>,
+    /// Release date (episodes/albums), as Spotify's `YYYY-MM-DD` string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_date: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -369,6 +386,7 @@ mod tests {
             freshness: None,
             explicit: None,
             is_playable: None,
+            ..Default::default()
         };
         let json = serde_json::to_value(&item).expect("media item should serialize");
         let obj = json.as_object().expect("media item JSON should be object");
@@ -376,6 +394,38 @@ mod tests {
         assert!(!obj.contains_key("freshness"));
         assert!(!obj.contains_key("explicit"));
         assert!(!obj.contains_key("is_playable"));
+        assert!(!obj.contains_key("album"));
+        assert!(!obj.contains_key("added_at_ms"));
+        assert!(!obj.contains_key("resume_position_ms"));
+        assert!(!obj.contains_key("fully_played"));
+        assert!(!obj.contains_key("release_date"));
+    }
+
+    #[test]
+    fn media_item_serializes_new_optional_fields_when_present() {
+        let item = MediaItem {
+            uri: "spotify:track:abc".to_string(),
+            name: "Song".to_string(),
+            duration_ms: 1000,
+            kind: MediaKind::Track,
+            album: Some("Greatest Hits".to_string()),
+            added_at_ms: Some(1_700_000_000_000),
+            fully_played: Some(true),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&item).expect("media item should serialize");
+        assert_eq!(
+            json.get("album").and_then(|v| v.as_str()),
+            Some("Greatest Hits")
+        );
+        assert_eq!(
+            json.get("added_at_ms").and_then(|v| v.as_i64()),
+            Some(1_700_000_000_000)
+        );
+        assert_eq!(
+            json.get("fully_played").and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 
     #[test]

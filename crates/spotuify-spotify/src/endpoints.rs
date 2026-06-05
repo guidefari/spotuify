@@ -94,6 +94,10 @@ pub fn artist_albums(artist_id: &str) -> String {
     format!("/artists/{}/albums", encode_component(artist_id))
 }
 
+pub fn show_episodes(show_id: &str) -> String {
+    format!("/shows/{}/episodes", encode_component(show_id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

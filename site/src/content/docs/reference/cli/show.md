@@ -1,32 +1,30 @@
 ---
-title: "spotuify library"
-description: "Cached library operations"
+title: "spotuify show"
+description: "Podcast show operations"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Cached library operations
+Podcast show operations
 
 ## Examples
 
 ```bash
-spotuify library tracks
+spotuify show
 ```
 
 ## Help
 
 ```text
-Cached library operations
+Podcast show operations
 
-Usage: spotuify library [OPTIONS] <COMMAND>
+Usage: spotuify show [OPTIONS] <COMMAND>
 
 Commands:
-  tracks        Print cached saved tracks, albums, and shows
-  saved-tracks  Print liked songs (live `/me/tracks`, with date added)
-  shows         Print subscribed podcasts (saved shows)
-  help          Print this message or the help of the given subcommand(s)
+  episodes  Print a podcast show's episodes (with listened state)
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
       --log-format <LOG_FORMAT>  Phase 13 (P13-A) - pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT` [possible values: text, json]
