@@ -54,7 +54,18 @@ bash install.sh
 ```
     </div>
 
-    <p class="home-install-note"><a href="/getting-started/install/">Other install methods</a></p>
+    <div class="home-install-option">
+      <p class="home-install-title">Windows x64</p>
+
+```powershell
+$Version = "v<version>"
+$Archive = "spotuify-$Version-windows-x86_64.zip"
+Invoke-WebRequest "https://github.com/planetaryescape/spotuify/releases/download/$Version/$Archive" -OutFile $Archive
+Expand-Archive $Archive -DestinationPath "$env:LOCALAPPDATA\spotuify\bin" -Force
+```
+    </div>
+
+    <p class="home-install-note"><a href="/getting-started/install/">Checksums, Windows download URL, and other install methods</a></p>
   </div>
 </section>
 

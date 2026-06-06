@@ -53,20 +53,54 @@ spotuify --help
 
 ## Windows x64
 
-Download `spotuify-v*-windows-x86_64.zip` from GitHub Releases, unzip it, put `spotuify.exe` on your `PATH`, then run:
+Install the Windows x64 release zip from GitHub Releases. Pick the tag you want, then download the matching `spotuify-v<version>-windows-x86_64.zip` archive and `.sha256` file:
 
 ```powershell
+$Version = "v<version>"
+$Archive = "spotuify-$Version-windows-x86_64.zip"
+$Base = "https://github.com/planetaryescape/spotuify/releases/download/$Version"
+
+Invoke-WebRequest "$Base/$Archive" -OutFile $Archive
+Invoke-WebRequest "$Base/$Archive.sha256" -OutFile "$Archive.sha256"
+
+$Expected = (Get-Content "$Archive.sha256").Split()[0].ToLowerInvariant()
+$Actual = (Get-FileHash $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($Actual -ne $Expected) { throw "checksum mismatch for $Archive" }
+```
+
+Unzip it into a user-owned directory and put that directory on your `PATH`:
+
+```powershell
+$InstallDir = "$env:LOCALAPPDATA\spotuify\bin"
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+Expand-Archive $Archive -DestinationPath $InstallDir -Force
+
+$env:Path = "$InstallDir;$env:Path"
+[Environment]::SetEnvironmentVariable(
+  "Path",
+  "$InstallDir;" + [Environment]::GetEnvironmentVariable("Path", "User"),
+  "User"
+)
+
 spotuify.exe --help
+```
+
+Install the user-level daemon service only when you want `spotuify` to start at login. On Windows this registers a Task Scheduler logon trigger:
+
+```powershell
 spotuify daemon install-service
 ```
 
-Windows binaries are beta until login, daemon startup, playback, and Task Scheduler install are verified on a real Windows machine.
+Windows x64 is shipped as a release artifact and covered by CI check/test/build plus fake-provider smoke. Real login, playback, and Task Scheduler install are still beta until verified on a real Windows machine. Headless daemon media keys are also limited on Windows because SMTC needs a foreground window handle; keep the TUI open when you need global media-key handling.
 
-From this repo:
+Source install on Windows:
 
-```bash
-cargo build --release
-./target/release/spotuify --help
+```powershell
+cargo install --git https://github.com/planetaryescape/spotuify --locked `
+  --no-default-features `
+  --features "embedded-playback system-integrations loopback-cpal rodio-backend" `
+  spotuify
+spotuify.exe --help
 ```
 
 ## Configure Spotify
