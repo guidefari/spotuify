@@ -16,23 +16,65 @@ struct DaemonGuard {
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
         if let Some(pid) = self.pid {
-            let pid = pid.to_string();
-            let _ = StdCommand::new("kill").arg(&pid).status();
+            terminate_process(pid, false);
             let mut stopped = false;
             for _ in 0..40 {
-                if !self.socket_path.exists() {
+                if !process_is_alive(pid) {
                     stopped = true;
                     break;
                 }
                 sleep(Duration::from_millis(50));
             }
-            // SIGTERM didn't take in time — don't leave it running.
+            // Graceful termination didn't take in time; don't leave it running.
             if !stopped {
-                let _ = StdCommand::new("kill").args(["-KILL", &pid]).status();
+                terminate_process(pid, true);
             }
         }
         let _ = std::fs::remove_file(&self.socket_path);
     }
+}
+
+#[cfg(unix)]
+fn terminate_process(pid: u64, force: bool) {
+    let pid = pid.to_string();
+    let mut command = StdCommand::new("kill");
+    if force {
+        command.arg("-KILL");
+    }
+    let _ = command.arg(pid).status();
+}
+
+#[cfg(windows)]
+fn terminate_process(pid: u64, force: bool) {
+    let pid = pid.to_string();
+    let mut command = StdCommand::new("taskkill");
+    command.args(["/PID", &pid, "/T"]);
+    if force {
+        command.arg("/F");
+    }
+    let _ = command.status();
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u64) -> bool {
+    StdCommand::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(windows)]
+fn process_is_alive(pid: u64) -> bool {
+    StdCommand::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}"
+            ),
+        ])
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 #[cfg(unix)]
