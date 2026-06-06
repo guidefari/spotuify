@@ -95,6 +95,7 @@ chrono = { version = "0.4", features = ["serde"] }
 bytes = "1"
 sha2 = "0.10"
 unicode-bidi = "0.3"
+sysinfo = "0.36"
 
 # Database
 sqlx = { version = "0.8", default-features = false, features = [

@@ -1179,7 +1179,7 @@ fn clear_daemon_pid_file() {
 /// PID so a daemon they auto-started can't outlive a killed
 /// `cargo test`/`nextest` run and orphan itself. Unset in real use, so
 /// this is inert for dev/prod daemons (which must survive the launching
-/// CLI). Polls with `kill -0` to avoid an `unsafe` libc call under the
+/// CLI). Uses a platform process probe to avoid unsafe FFI under the
 /// workspace's `deny(unsafe_code)`.
 fn spawn_parent_death_watchdog() {
     let Some(parent_pid) = std::env::var("SPOTUIFY_EXIT_WITH_PARENT")
@@ -1190,26 +1190,41 @@ fn spawn_parent_death_watchdog() {
         return;
     };
     tracing::info!(parent_pid, "parent-death watchdog armed (test mode)");
-    std::thread::spawn(move || {
-        let pid = parent_pid.to_string();
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            let alive = std::process::Command::new("kill")
-                .args(["-0", &pid])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success());
-            if !alive {
-                tracing::warn!(
-                    parent_pid,
-                    "parent process gone — exiting to avoid orphaning the daemon"
-                );
-                std::process::exit(0);
-            }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        if !process_is_alive(parent_pid) {
+            tracing::warn!(
+                parent_pid,
+                "parent process gone — exiting to avoid orphaning the daemon"
+            );
+            std::process::exit(0);
         }
     });
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(pid: u32) -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    system.process(pid).is_some()
 }
 
 /// Kill an orphaned daemon only when it is named by this instance's
