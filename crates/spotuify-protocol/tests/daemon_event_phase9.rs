@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Phase 9 — new DaemonEvent variants for the embedded librespot player.
 //!
 //! Adversarial assertions: wire shape (kebab-case `event` tag), round-trip

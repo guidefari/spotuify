@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Phase 6.5 — sync refetch gate decision tests.
 
 use spotuify_protocol::{DaemonEvent, SyncTargetData};

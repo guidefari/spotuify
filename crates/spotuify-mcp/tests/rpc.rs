@@ -1,6 +1,6 @@
-//! Phase 8.6/8.7 — MCP JSON-RPC dispatch tests.
+#![allow(clippy::panic, clippy::unwrap_used)]
 
-#![allow(clippy::unwrap_used)]
+//! Phase 8.6/8.7 — MCP JSON-RPC dispatch tests.
 
 use serde_json::{json, Value};
 use spotuify_mcp::{dispatch, RpcRequest};

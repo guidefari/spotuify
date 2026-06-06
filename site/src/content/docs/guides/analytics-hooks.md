@@ -55,6 +55,8 @@ spotuify config set player.event_hook "/Users/me/bin/spotuify-listen-hook"
 
 The hook can scrobble to ListenBrainz, post a now-playing notification, or feed your own logs. Keep it fast; hooks have timeouts so playback is not held hostage.
 
+Hook commands are executed by the shell exactly as configured. Track data is passed through `SPOTUIFY_*` environment variables; it is not interpolated into the command string.
+
 ## Export and import
 
 ```bash

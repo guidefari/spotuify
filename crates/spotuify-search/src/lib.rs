@@ -83,9 +83,9 @@ enum SearchCommand {
 impl SearchServiceHandle {
     pub fn start(index: SearchIndex) -> (Self, JoinHandle<()>) {
         let (tx, mut rx) = mpsc::channel::<SearchCommand>(32);
-        let handle = tokio::spawn(async move {
+        let handle = tokio::task::spawn_blocking(move || {
             let mut index = index;
-            while let Some(command) = rx.recv().await {
+            while let Some(command) = rx.blocking_recv() {
                 match command {
                     SearchCommand::ApplyBatch { batch, resp } => {
                         let _ = resp.send(apply_batch(&mut index, batch));
@@ -194,7 +194,7 @@ impl SearchIndex {
         let dir = tantivy::directory::MmapDirectory::open(index_path)?;
         let index = match Index::open_or_create(dir, schema.schema.clone()) {
             Ok(index) => index,
-            Err(err) if err.to_string().contains("schema does not match") => {
+            Err(tantivy::TantivyError::SchemaError(_)) => {
                 std::fs::remove_dir_all(index_path)?;
                 std::fs::create_dir_all(index_path)?;
                 let dir = tantivy::directory::MmapDirectory::open(index_path)?;
@@ -317,7 +317,7 @@ impl SearchIndex {
         };
 
         let searcher = self.reader.searcher();
-        let top_docs = searcher.search(&*query, &TopDocs::with_limit(limit))?;
+        let top_docs = searcher.search(&*query, &TopDocs::with_limit(limit).order_by_score())?;
         let mut hits = Vec::with_capacity(top_docs.len());
         for (score, doc_address) in top_docs {
             let doc: TantivyDocument = searcher.doc(doc_address)?;

@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Phase 6.6/6.7 — extended receipt + new DaemonEvent variants.
 //!
 //! Verifies serde round-trip stability and the event tag scheme. The

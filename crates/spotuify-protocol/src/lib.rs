@@ -718,12 +718,22 @@ pub enum Response {
 
 impl Response {
     pub fn error(message: impl Into<String>) -> Self {
-        let message = message.into();
-        let kind = classify_error_kind(&message);
+        Self::error_with_kind(message, IpcErrorKind::Internal)
+    }
+
+    pub fn error_with_kind(message: impl Into<String>, kind: IpcErrorKind) -> Self {
+        Self::error_with_retryable(message, kind, kind.is_retryable())
+    }
+
+    pub fn error_with_retryable(
+        message: impl Into<String>,
+        kind: IpcErrorKind,
+        retryable: bool,
+    ) -> Self {
         Self::Error {
-            message,
+            message: message.into(),
             code: kind.as_code().to_string(),
-            retryable: error_looks_retryable(kind),
+            retryable,
             kind,
         }
     }
@@ -760,36 +770,10 @@ impl IpcErrorKind {
             Self::Internal => "internal",
         }
     }
-}
 
-fn classify_error_kind(message: &str) -> IpcErrorKind {
-    let lower = message.to_ascii_lowercase();
-    // Specific cases first — "refresh token revoked" / "session expired"
-    // would otherwise be swallowed by the generic `Auth` arm.
-    if lower.contains("refresh token revoked")
-        || lower.contains("session expired")
-        || lower.contains("invalid_grant")
-    {
-        IpcErrorKind::AuthRevoked
-    } else if lower.contains("auth") || lower.contains("oauth") || lower.contains("login") {
-        IpcErrorKind::Auth
-    } else if lower.contains("rate limit") || lower.contains("rate limited") {
-        IpcErrorKind::RateLimited
-    } else if lower.contains("timeout") || lower.contains("timed out") || lower.contains("dns") {
-        IpcErrorKind::Network
-    } else if lower.contains("spotify") || lower.contains("device") {
-        IpcErrorKind::Provider
-    } else if lower.contains("unsupported") || lower.contains("not supported") {
-        IpcErrorKind::Unsupported
-    } else if lower.contains("invalid") || lower.contains("expected") {
-        IpcErrorKind::InvalidRequest
-    } else {
-        IpcErrorKind::Internal
+    pub fn is_retryable(self) -> bool {
+        matches!(self, IpcErrorKind::Network | IpcErrorKind::RateLimited)
     }
-}
-
-fn error_looks_retryable(kind: IpcErrorKind) -> bool {
-    matches!(kind, IpcErrorKind::Network | IpcErrorKind::RateLimited)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1796,30 +1780,46 @@ impl Encoder<IpcMessage> for IpcCodec {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
     use super::{
-        classify_error_kind, sanitize_daemon_event, DaemonEvent, IpcCategory, IpcErrorKind,
-        IpcMessage, IpcPayload, PlaybackCommand, Request, Response, ResponseData,
+        sanitize_daemon_event, DaemonEvent, IpcCategory, IpcErrorKind, IpcMessage, IpcPayload,
+        PlaybackCommand, Request, Response, ResponseData,
     };
 
     #[test]
-    fn auth_revoked_kind_classifies_and_roundtrips() {
+    fn error_kind_roundtrips_and_typed_constructor_sets_code_and_retryability() {
         // The CLI keys off the exact `IpcErrorKind` to decide whether
-        // to prompt for re-auth — the classifier must catch the daemon's
-        // canonical messages.
-        assert_eq!(
-            classify_error_kind("Spotify refresh token revoked — re-login required"),
-            IpcErrorKind::AuthRevoked
-        );
-        assert_eq!(
-            classify_error_kind("Spotify session expired"),
-            IpcErrorKind::AuthRevoked
-        );
-        assert_eq!(
-            classify_error_kind("token exchange failed: invalid_grant"),
-            IpcErrorKind::AuthRevoked
-        );
-        // Generic auth messages keep the broad `Auth` kind.
-        assert_eq!(classify_error_kind("login required"), IpcErrorKind::Auth);
+        // to prompt for re-auth; daemon call sites must set it
+        // structurally rather than relying on message text.
+        let response =
+            Response::error_with_kind("Spotify refresh token revoked", IpcErrorKind::AuthRevoked);
+        assert!(matches!(
+            response,
+            Response::Error {
+                kind: IpcErrorKind::AuthRevoked,
+                ref code,
+                retryable: false,
+                ..
+            } if code == "auth_revoked"
+        ));
+        let retryable =
+            Response::error_with_kind("Spotify rate limited", IpcErrorKind::RateLimited);
+        assert!(matches!(
+            retryable,
+            Response::Error {
+                kind: IpcErrorKind::RateLimited,
+                retryable: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            Response::error("plain internal failure"),
+            Response::Error {
+                kind: IpcErrorKind::Internal,
+                ..
+            }
+        ));
         // JSON round-trip via serde.
         let json = serde_json::to_string(&IpcErrorKind::AuthRevoked).unwrap();
         assert_eq!(json, "\"auth_revoked\"");

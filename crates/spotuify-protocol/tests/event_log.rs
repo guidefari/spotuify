@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Phase 6.9 — recent event log + doctor finding derivation.
 
 use spotuify_protocol::{

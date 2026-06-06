@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Phase 10 (P10.3-P10.5) — analytics query behaviour tests.
 //!
 //! Exercises `top_entries`, `habit_buckets`, `rediscovery_candidates`,

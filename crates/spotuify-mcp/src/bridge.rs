@@ -338,7 +338,8 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
         "ops_log" => {
             use spotuify_protocol::{OperationSource, Request as R};
             let limit = optional_u64(args, "limit").map_or(20, |n| n.min(200) as u32);
-            let source = optional_str(args, "source").and_then(OperationSource::from_label);
+            let source = optional_str(args, "source")
+                .and_then(|value| value.parse::<OperationSource>().ok());
             Ok(TranslatedCall::Request(R::OpsLog {
                 limit,
                 since_ms: None,

@@ -50,13 +50,14 @@ Want the most polished desktop experience? Use the official app. Want Spotify as
 
 ## Install
 
-Prebuilt binaries ship for macOS (Apple Silicon and Intel) and Linux x86_64 on each [GitHub Release](https://github.com/planetaryescape/spotuify/releases); the Homebrew tap is the quickest path. Other targets (Windows, Linux musl or arm, other distros) build from source with `cargo install` or Nix. Pick your platform:
+Prebuilt binaries ship for macOS (Apple Silicon and Intel), Linux x86_64, and Windows x64 on each [GitHub Release](https://github.com/planetaryescape/spotuify/releases); the Homebrew tap is the quickest macOS path. Other targets (Linux musl or arm, other distros) build from source with `cargo install` or Nix. Pick your platform:
 
 ### macOS (Apple Silicon or Intel)
 
 ```sh
 brew tap planetaryescape/spotuify
-brew install spotuify
+brew trust --formula planetaryescape/spotuify/spotuify
+brew install planetaryescape/spotuify/spotuify
 spotuify daemon install-service   # registers a launchd LaunchAgent
 spotuify                          # first run kicks off onboarding
 ```
@@ -65,7 +66,7 @@ To update an existing Homebrew install:
 
 ```sh
 brew update
-brew upgrade spotuify
+brew upgrade planetaryescape/spotuify/spotuify
 ```
 
 Release archives include SHA256 checksums and GitHub artifact provenance attestations. macOS binaries are not notarized today, so Gatekeeper may still block the first launch:
@@ -104,11 +105,17 @@ spotuify daemon install-service
 
 ### Windows
 
-No prebuilt Windows binary yet. Build from source (the Windows paths exist, including Credential Manager storage):
+Download `spotuify-v*-windows-x86_64.zip` from [Releases](https://github.com/planetaryescape/spotuify/releases), unzip it, and put `spotuify.exe` on your `PATH`:
+
+```sh
+spotuify.exe --help
+spotuify daemon install-service          # registers a Task Scheduler logon trigger
+```
+
+Windows x64 binaries are beta until login, daemon startup, playback, and Task Scheduler install are verified on a real Windows machine. Source installs still work:
 
 ```sh
 cargo install --git https://github.com/planetaryescape/spotuify --locked spotuify
-spotuify daemon install-service          # registers a Task Scheduler logon trigger
 ```
 
 Daemon-mode media-key handling on Windows is currently limited: SMTC requires a foreground window handle, so background-only operation cannot register media keys. Workaround: keep the TUI process alive.
@@ -123,7 +130,7 @@ inputs.spotuify.url = "github:planetaryescape/spotuify";
 
 ### From source (any platform)
 
-Plain first-time `brew install spotuify` only works after `brew tap planetaryescape/spotuify`. Without that tap, Homebrew searches `homebrew/core`, where `spotuify` is not published.
+Plain first-time `brew install spotuify` only works after `brew tap planetaryescape/spotuify`. Without that tap, Homebrew searches `homebrew/core`, where `spotuify` is not published. Homebrew's tap-trust checks can also ignore third-party taps unless the formula is trusted; use `brew trust --formula planetaryescape/spotuify/spotuify` after tapping.
 
 From this repository:
 
@@ -173,7 +180,7 @@ The flow:
 3. The release-lockfile workflow runs on that release PR and commits `Cargo.lock` if `cargo update --workspace` changes the workspace package versions.
 4. Merge the Release Please PR once CI is green.
 5. Release Please creates the GitHub release and tag.
-6. The tag-driven release workflow builds Linux x86_64, macOS arm64, and macOS Intel binaries, uploads them to the GitHub release, generates a Homebrew formula, and updates the tap.
+6. The tag-driven release workflow builds Linux x86_64, macOS arm64, macOS Intel, and Windows x64 binaries, uploads them to the GitHub release, generates a Homebrew formula, and updates the tap.
 
 Required GitHub setup:
 
@@ -341,6 +348,8 @@ notifications.on_resume
 notifications.on_skip
 notifications.on_error
 ```
+
+`analytics.hook_command` is executed by the shell exactly as configured. Track data is passed through `SPOTUIFY_*` environment variables, not interpolated into the command string.
 
 ## Commands
 

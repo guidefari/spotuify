@@ -203,7 +203,9 @@ pub async fn access_token_cached(
     let mut cached = cache.lock().await;
     let token = match cached.clone() {
         Some(token) => token,
-        None => load_token_for_access()?.ok_or(SpotifyError::AuthRequired)?,
+        None => load_token_for_access_blocking()
+            .await?
+            .ok_or(SpotifyError::AuthRequired)?,
     };
 
     // Phase 6.8: route the refresh decision through the typed
@@ -219,8 +221,8 @@ pub async fn access_token_cached(
     }
 
     tracing::info!("refreshing Spotify access token (proactive or due)");
-    let _lock = acquire_token_store_lock_bounded()?;
-    let token = load_token_for_access()?.unwrap_or(token);
+    let _lock = acquire_token_store_lock_blocking().await?;
+    let token = load_token_for_access_blocking().await?.unwrap_or(token);
     if !should_refresh_token(&token) {
         *cached = Some(token.clone());
         return Ok(token.access_token);
@@ -239,11 +241,13 @@ pub async fn refresh_access_token_cached(
     let mut cached = cache.lock().await;
     let token = match cached.clone() {
         Some(token) => token,
-        None => load_token_for_access()?.ok_or(SpotifyError::AuthRequired)?,
+        None => load_token_for_access_blocking()
+            .await?
+            .ok_or(SpotifyError::AuthRequired)?,
     };
     tracing::info!("refreshing Spotify access token after 401");
-    let _lock = acquire_token_store_lock_bounded()?;
-    let token = load_token_for_access()?.unwrap_or(token);
+    let _lock = acquire_token_store_lock_blocking().await?;
+    let token = load_token_for_access_blocking().await?.unwrap_or(token);
     if cached
         .as_ref()
         .is_some_and(|old| token_changed(old, &token))
@@ -498,6 +502,13 @@ fn acquire_token_store_lock_bounded() -> AnyResult<TokenStoreLock> {
     acquire_token_store_lock_with_timeout(TOKEN_LOCK_TIMEOUT)
 }
 
+async fn acquire_token_store_lock_blocking() -> SpotifyResult<TokenStoreLock> {
+    tokio::task::spawn_blocking(acquire_token_store_lock_bounded)
+        .await
+        .map_err(|err| SpotifyError::from(anyhow!("token lock task failed: {err}")))?
+        .map_err(SpotifyError::from)
+}
+
 fn acquire_token_store_lock_with_timeout(timeout: Duration) -> AnyResult<TokenStoreLock> {
     let path = token_lock_file();
     if let Some(parent) = path.parent() {
@@ -663,6 +674,12 @@ fn load_token_for_access() -> SpotifyResult<Option<StoredToken>> {
     load_token_bounded().map_err(map_token_load_error)
 }
 
+async fn load_token_for_access_blocking() -> SpotifyResult<Option<StoredToken>> {
+    tokio::task::spawn_blocking(load_token_for_access)
+        .await
+        .map_err(|err| SpotifyError::from(anyhow!("token load task failed: {err}")))?
+}
+
 fn map_token_load_error(err: anyhow::Error) -> SpotifyError {
     SpotifyError::from(err)
 }
@@ -680,6 +697,13 @@ fn save_token_unlocked_bounded(token: &StoredToken) -> AnyResult<()> {
     save_token(token)
 }
 
+async fn save_token_unlocked_blocking(token: StoredToken) -> SpotifyResult<()> {
+    tokio::task::spawn_blocking(move || save_token_unlocked_bounded(&token))
+        .await
+        .map_err(|err| SpotifyError::from(anyhow!("token save task failed: {err}")))?
+        .map_err(SpotifyError::from)
+}
+
 fn delete_token_bounded() -> AnyResult<()> {
     let _lock = acquire_token_store_lock_bounded()?;
     delete_token_unlocked_bounded(true)
@@ -689,30 +713,46 @@ fn delete_token_unlocked_bounded(verbose: bool) -> AnyResult<()> {
     delete_token(verbose)
 }
 
-fn purge_revoked_token_unlocked(
+async fn purge_revoked_token_unlocked_blocking(
     cache: &mut Option<StoredToken>,
     failed: &StoredToken,
 ) -> Option<StoredToken> {
-    match load_token_bounded() {
-        Ok(Some(current)) if token_changed(failed, &current) => {
-            *cache = Some(current);
-            tracing::info!(
-                "Spotify refresh token was replaced while revoked refresh was in-flight; keeping newer token"
-            );
-            cache.clone()
+    let failed = failed.clone();
+    let outcome = tokio::task::spawn_blocking(move || match load_token_bounded() {
+        Ok(Some(current)) if token_changed(&failed, &current) => {
+            PurgeRevokedOutcome::Replacement(current)
         }
         Ok(_) | Err(_) => {
-            *cache = None;
-            delete_token_from_disk();
             if let Err(err) = delete_token_unlocked_bounded(false) {
                 tracing::warn!(
                     error = %err,
                     "failed to clear revoked Spotify token file; re-login will overwrite it"
                 );
             }
+            PurgeRevokedOutcome::Cleared
+        }
+    })
+    .await
+    .unwrap_or(PurgeRevokedOutcome::Cleared);
+
+    match outcome {
+        PurgeRevokedOutcome::Replacement(token) => {
+            *cache = Some(token.clone());
+            tracing::info!(
+                "Spotify refresh token was replaced while revoked refresh was in-flight; keeping newer token"
+            );
+            Some(token)
+        }
+        PurgeRevokedOutcome::Cleared => {
+            *cache = None;
             None
         }
     }
+}
+
+enum PurgeRevokedOutcome {
+    Replacement(StoredToken),
+    Cleared,
 }
 
 async fn exchange_code(config: &Config, code: &str, verifier: &str) -> AnyResult<StoredToken> {
@@ -820,7 +860,7 @@ async fn refresh_access_token_locked(
 ) -> SpotifyResult<StoredToken> {
     match refresh_token(config, http, token).await {
         Ok(token) => {
-            save_token_unlocked_bounded(&token)?;
+            save_token_unlocked_blocking(token.clone()).await?;
             *cached = Some(token.clone());
             Ok(token)
         }
@@ -830,7 +870,7 @@ async fn refresh_access_token_locked(
                 Some(SpotifyError::AuthRevoked)
             ) =>
         {
-            if let Some(replacement) = purge_revoked_token_unlocked(cached, token) {
+            if let Some(replacement) = purge_revoked_token_unlocked_blocking(cached, token).await {
                 return Ok(replacement);
             }
             Err(SpotifyError::AuthRevoked)

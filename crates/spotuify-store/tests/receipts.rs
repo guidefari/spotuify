@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Phase 6.6 — receipts SQLite lifecycle.
 //!
 //! Adversarial coverage:

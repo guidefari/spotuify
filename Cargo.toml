@@ -103,7 +103,7 @@ sqlx = { version = "0.8", default-features = false, features = [
 ] }
 
 # Search
-tantivy = "0.22"
+tantivy = "0.26"
 
 # HTTP
 reqwest = { version = "0.12", default-features = false, features = [

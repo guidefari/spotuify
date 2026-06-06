@@ -18,7 +18,8 @@ spotuify --help
 
 ```bash
 brew tap planetaryescape/spotuify
-brew install spotuify
+brew trust --formula planetaryescape/spotuify/spotuify
+brew install planetaryescape/spotuify/spotuify
 spotuify --help
 ```
 
@@ -26,8 +27,10 @@ To update an existing Homebrew install:
 
 ```bash
 brew update
-brew upgrade spotuify
+brew upgrade planetaryescape/spotuify/spotuify
 ```
+
+`brew trust --formula` keeps installs working when Homebrew tap-trust checks are enabled for third-party taps.
 
 Release archives include SHA256 checksums and GitHub artifact provenance attestations. macOS binaries are not notarized yet, so Gatekeeper may still ask you to approve the first launch.
 
@@ -47,6 +50,17 @@ spotuify --help
 cargo install --git https://github.com/planetaryescape/spotuify --locked
 spotuify --help
 ```
+
+## Windows x64
+
+Download `spotuify-v*-windows-x86_64.zip` from GitHub Releases, unzip it, put `spotuify.exe` on your `PATH`, then run:
+
+```powershell
+spotuify.exe --help
+spotuify daemon install-service
+```
+
+Windows binaries are beta until login, daemon startup, playback, and Task Scheduler install are verified on a real Windows machine.
 
 From this repo:
 

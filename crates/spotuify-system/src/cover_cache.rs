@@ -231,8 +231,27 @@ async fn fetch_and_persist_inner(
     if bytes.is_empty() {
         return Err(CoverCacheError::DecodeFailed("empty body".to_string()));
     }
+    let root = root.to_path_buf();
+    let key = key.to_string();
+    let ext = ext.to_string();
+    let bytes = bytes.to_vec();
+    tokio::task::spawn_blocking(move || decode_and_write_cover(&root, &bytes, &key, &ext))
+        .await
+        .map_err(|err| {
+            CoverCacheError::Io(std::io::Error::other(format!(
+                "cover cache blocking task failed: {err}"
+            )))
+        })?
+}
+
+fn decode_and_write_cover(
+    root: &Path,
+    bytes: &[u8],
+    key: &str,
+    ext: &str,
+) -> Result<PathBuf, CoverCacheError> {
     // Integrity gate: must decode, must be non-tiny.
-    let decoded = image::load_from_memory(&bytes)
+    let decoded = image::load_from_memory(bytes)
         .map_err(|err| CoverCacheError::DecodeFailed(err.to_string()))?;
     let (w, h) = (decoded.width(), decoded.height());
     if w < 32 || h < 32 {
@@ -248,7 +267,7 @@ async fn fetch_and_persist_inner(
     // Atomic-ish replace: write to tmp then rename, so a concurrent
     // reader never sees a half-written file.
     let tmp = path.with_extension(format!("{ext}.tmp"));
-    fs::write(&tmp, &bytes)?;
+    fs::write(&tmp, bytes)?;
     fs::rename(&tmp, &path)?;
     Ok(path)
 }

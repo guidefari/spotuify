@@ -34,11 +34,16 @@ else
   fake_root="$(mktemp -d "${TMPDIR:-/tmp}/spotuify-smoke.XXXXXX")"
 fi
 
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) fake_socket="\\\\.\\pipe\\spotuify-smoke-$$-${RANDOM:-0}" ;;
+  *) fake_socket="$fake_root/runtime/daemon.sock" ;;
+esac
+
 fake_spotuify() {
   SPOTUIFY_FAKE_SPOTIFY=1 \
     SPOTUIFY_INSTANCE=spotuify-smoke \
     SPOTUIFY_RUNTIME_DIR="$fake_root/runtime" \
-    SPOTUIFY_SOCKET="$fake_root/runtime/daemon.sock" \
+    SPOTUIFY_SOCKET="$fake_socket" \
     SPOTUIFY_DATA_DIR="$fake_root/data" \
     SPOTUIFY_CACHE_DIR="$fake_root/cache-dir" \
     SPOTUIFY_CONFIG_DIR="$fake_root/config-dir" \

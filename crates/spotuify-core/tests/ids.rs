@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Phase 10 — typed ID newtypes.
 //!
 //! Adversarial coverage:

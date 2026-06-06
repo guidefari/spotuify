@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Compiler-enforced dependency DAG for the spotuify workspace.
 //!
 //! Adapted from mxr's `tests/workspace_boundaries.rs`. Each rule encodes the
@@ -6,8 +8,6 @@
 //!
 //! The test is permissive while crates are being extracted (no errors when a
 //! crate doesn't yet exist). It tightens automatically as crates land.
-
-#![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::{collections::BTreeSet, fs, path::PathBuf};
 

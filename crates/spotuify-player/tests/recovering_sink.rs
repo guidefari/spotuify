@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Phase 9.3a — RecoveringSink contract tests.
 //!
 //! Wraps an audio backend Sink in `catch_unwind` so a panic (AirPods

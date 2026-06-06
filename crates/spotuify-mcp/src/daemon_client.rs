@@ -1,6 +1,6 @@
 //! Phase 8 — connect spotuify-mcp to a running spotuify daemon.
 //!
-//! Sends a typed `spotuify_protocol::Request` over the Unix socket
+//! Sends a typed `spotuify_protocol::Request` over the daemon IPC stream
 //! and returns the `Response`. Used by `tools/call` to actually
 //! execute mutations after the catalogue + confirm gating and
 //! bridge translation.
@@ -18,10 +18,9 @@ use spotuify_protocol::{
     default_socket_path as protocol_socket_path, IpcCodec, IpcMessage, IpcPayload, OperationSource,
     Request, Response,
 };
-use tokio::net::UnixStream;
 use tokio_util::codec::Framed;
 
-/// Default daemon socket path. The daemon writes here at startup.
+/// Default daemon IPC address.
 pub fn default_socket_path() -> PathBuf {
     protocol_socket_path()
 }
@@ -34,10 +33,13 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// Successful protocol exchanges -- including daemon-side error
 /// envelopes -- come back as Ok(Response::Error { .. }).
 pub async fn round_trip(socket_path: &Path, request: Request) -> Result<Response> {
-    let stream = tokio::time::timeout(Duration::from_secs(2), UnixStream::connect(socket_path))
-        .await
-        .map_err(|_| anyhow!("timed out connecting to daemon socket {socket_path:?}"))?
-        .with_context(|| format!("connect to daemon socket {socket_path:?}"))?;
+    let stream = tokio::time::timeout(
+        Duration::from_secs(2),
+        spotuify_protocol::ipc_stream::connect(socket_path),
+    )
+    .await
+    .map_err(|_| anyhow!("timed out connecting to daemon IPC {socket_path:?}"))?
+    .with_context(|| format!("connect to daemon IPC {socket_path:?}"))?;
 
     let mut framed = Framed::new(stream, IpcCodec::new());
 
@@ -49,7 +51,7 @@ pub async fn round_trip(socket_path: &Path, request: Request) -> Result<Response
     framed
         .send(envelope)
         .await
-        .context("send Request over daemon socket")?;
+        .context("send Request over daemon IPC")?;
 
     let resp = tokio::time::timeout(REQUEST_TIMEOUT, framed.next())
         .await
@@ -100,7 +102,13 @@ mod tests {
         std::env::remove_var("SPOTUIFY_SOCKET");
         std::env::set_var("SPOTUIFY_RUNTIME_DIR", "/tmp/spotuify-runtime-test");
         let p = default_socket_path();
+        #[cfg(unix)]
         assert_eq!(p, PathBuf::from("/tmp/spotuify-runtime-test/daemon.sock"));
+        #[cfg(windows)]
+        assert!(
+            p.to_string_lossy().starts_with(r"\\.\pipe\"),
+            "windows IPC should use a named-pipe address"
+        );
         std::env::remove_var("SPOTUIFY_RUNTIME_DIR");
     }
 }

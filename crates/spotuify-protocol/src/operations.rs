@@ -10,6 +10,29 @@
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationLabelParseError {
+    kind: &'static str,
+    value: String,
+}
+
+impl OperationLabelParseError {
+    fn new(kind: &'static str, value: &str) -> Self {
+        Self {
+            kind,
+            value: value.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for OperationLabelParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown {} `{}`", self.kind, self.value)
+    }
+}
+
+impl std::error::Error for OperationLabelParseError {}
+
 /// Newtype around uuid v7 for time-orderable IDs. Distinct from
 /// `ReceiptId` so the type system catches mix-ups: an operation row
 /// has its own ID and points at a receipt (which may be `None` for
@@ -63,13 +86,27 @@ impl OperationSource {
     }
 
     pub fn from_label(value: &str) -> Option<Self> {
+        value.parse().ok()
+    }
+}
+
+impl std::fmt::Display for OperationSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl std::str::FromStr for OperationSource {
+    type Err = OperationLabelParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "cli" => Some(Self::Cli),
-            "tui" => Some(Self::Tui),
-            "mcp" => Some(Self::Mcp),
-            "agent" => Some(Self::Agent),
-            "daemon-internal" => Some(Self::DaemonInternal),
-            _ => None,
+            "cli" => Ok(Self::Cli),
+            "tui" => Ok(Self::Tui),
+            "mcp" => Ok(Self::Mcp),
+            "agent" => Ok(Self::Agent),
+            "daemon-internal" => Ok(Self::DaemonInternal),
+            _ => Err(OperationLabelParseError::new("operation source", value)),
         }
     }
 }
@@ -93,6 +130,27 @@ impl OperationStatus {
             Self::Failed => "failed",
             Self::Undone => "undone",
             Self::Redone => "redone",
+        }
+    }
+}
+
+impl std::fmt::Display for OperationStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl std::str::FromStr for OperationStatus {
+    type Err = OperationLabelParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "succeeded" => Ok(Self::Succeeded),
+            "failed" => Ok(Self::Failed),
+            "undone" => Ok(Self::Undone),
+            "redone" => Ok(Self::Redone),
+            _ => Err(OperationLabelParseError::new("operation status", value)),
         }
     }
 }
@@ -177,6 +235,46 @@ impl OperationKind {
                 | Self::Undo
                 | Self::Redo
         )
+    }
+}
+
+impl std::fmt::Display for OperationKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl std::str::FromStr for OperationKind {
+    type Err = OperationLabelParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "queue_add" => Ok(Self::QueueAdd),
+            "playlist_add" => Ok(Self::PlaylistAdd),
+            "playlist_remove" => Ok(Self::PlaylistRemove),
+            "playlist_create" => Ok(Self::PlaylistCreate),
+            "playlist_unfollow" => Ok(Self::PlaylistUnfollow),
+            "playlist_set_image" => Ok(Self::PlaylistSetImage),
+            "playlist_reorder" => Ok(Self::PlaylistReorder),
+            "library_save" => Ok(Self::LibrarySave),
+            "library_unsave" => Ok(Self::LibraryUnsave),
+            "transfer" => Ok(Self::Transfer),
+            "like" => Ok(Self::Like),
+            "unlike" => Ok(Self::Unlike),
+            "play" => Ok(Self::Play),
+            "pause" => Ok(Self::Pause),
+            "resume" => Ok(Self::Resume),
+            "toggle" => Ok(Self::Toggle),
+            "next" => Ok(Self::Next),
+            "previous" => Ok(Self::Previous),
+            "seek" => Ok(Self::Seek),
+            "volume" => Ok(Self::Volume),
+            "shuffle" => Ok(Self::Shuffle),
+            "repeat" => Ok(Self::Repeat),
+            "undo" => Ok(Self::Undo),
+            "redo" => Ok(Self::Redo),
+            _ => Err(OperationLabelParseError::new("operation kind", value)),
+        }
     }
 }
 

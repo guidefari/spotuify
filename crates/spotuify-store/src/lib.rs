@@ -49,7 +49,10 @@ const BULK_CHUNK_ROWS: usize = 64;
 /// - v10: queue cache snapshots and ordered upcoming items
 /// - v11: playlist track accessibility flag for Spotify 403 playlists
 /// - v12: lyrics lookup negative cache
-pub const CACHE_VERSION: u32 = 14;
+/// - v13: media enrichment for cached media/library rows
+/// - v14: listening reminders
+/// - v15: typed retry-after seconds on sync_events
+pub const CACHE_VERSION: u32 = 15;
 
 const FRESHNESS_FRESH: &str = "fresh";
 
@@ -71,6 +74,15 @@ pub struct Store {
     reader: SqlitePool,
     db_path: PathBuf,
     index_path: PathBuf,
+}
+
+struct SyncEventRecord<'a> {
+    domain: &'a str,
+    started_at_ms: i64,
+    status: &'a str,
+    row_count: u32,
+    error: Option<&'a str>,
+    retry_after_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -1256,11 +1268,37 @@ impl Store {
         error: Option<&str>,
     ) -> Result<()> {
         self.record_sync_event_with(
-            domain,
-            started_at_ms,
-            status,
-            row_count,
-            error,
+            SyncEventRecord {
+                domain,
+                started_at_ms,
+                status,
+                row_count,
+                error,
+                retry_after_secs: None,
+            },
+            &self.writer,
+        )
+        .await
+    }
+
+    pub async fn record_sync_event_with_retry_after(
+        &self,
+        domain: &str,
+        started_at_ms: i64,
+        status: &str,
+        row_count: u32,
+        error: Option<&str>,
+        retry_after_secs: Option<u64>,
+    ) -> Result<()> {
+        self.record_sync_event_with(
+            SyncEventRecord {
+                domain,
+                started_at_ms,
+                status,
+                row_count,
+                error,
+                retry_after_secs,
+            },
             &self.writer,
         )
         .await
@@ -1275,11 +1313,37 @@ impl Store {
         error: Option<&str>,
     ) -> Result<()> {
         self.record_sync_event_with(
-            domain,
-            started_at_ms,
-            status,
-            row_count,
-            error,
+            SyncEventRecord {
+                domain,
+                started_at_ms,
+                status,
+                row_count,
+                error,
+                retry_after_secs: None,
+            },
+            &self.bulk_writer,
+        )
+        .await
+    }
+
+    pub async fn record_sync_event_bulk_with_retry_after(
+        &self,
+        domain: &str,
+        started_at_ms: i64,
+        status: &str,
+        row_count: u32,
+        error: Option<&str>,
+        retry_after_secs: Option<u64>,
+    ) -> Result<()> {
+        self.record_sync_event_with(
+            SyncEventRecord {
+                domain,
+                started_at_ms,
+                status,
+                row_count,
+                error,
+                retry_after_secs,
+            },
             &self.bulk_writer,
         )
         .await
@@ -1287,24 +1351,27 @@ impl Store {
 
     async fn record_sync_event_with(
         &self,
-        domain: &str,
-        started_at_ms: i64,
-        status: &str,
-        row_count: u32,
-        error: Option<&str>,
+        event: SyncEventRecord<'_>,
         pool: &SqlitePool,
     ) -> Result<()> {
         let finished_at_ms = now_ms();
         sqlx::query(
-            "INSERT INTO sync_events (domain, started_at_ms, finished_at_ms, status, row_count, error)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sync_events (
+                domain, started_at_ms, finished_at_ms, status, row_count, error, retry_after_secs
+             )
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(domain)
-        .bind(started_at_ms)
+        .bind(event.domain)
+        .bind(event.started_at_ms)
         .bind(finished_at_ms)
-        .bind(status)
-        .bind(row_count as i64)
-        .bind(error)
+        .bind(event.status)
+        .bind(event.row_count as i64)
+        .bind(event.error)
+        .bind(
+            event
+                .retry_after_secs
+                .and_then(|secs| i64::try_from(secs).ok()),
+        )
         .execute(pool)
         .await?;
         sqlx::query(
@@ -1314,30 +1381,36 @@ impl Store {
                 last_success_at_ms = CASE WHEN ? = 'ok' THEN excluded.last_success_at_ms ELSE sync_cursors.last_success_at_ms END,
                 last_error = excluded.last_error",
         )
-        .bind(domain)
-        .bind(if status == "ok" { Some(finished_at_ms) } else { None })
-        .bind(error)
-        .bind(status)
+        .bind(event.domain)
+        .bind(if event.status == "ok" {
+            Some(finished_at_ms)
+        } else {
+            None
+        })
+        .bind(event.error)
+        .bind(event.status)
         .execute(pool)
         .await?;
         Ok(())
     }
 
     pub async fn rate_limit_cooldown_remaining_ms(&self, domain: &str) -> Result<Option<i64>> {
-        let row: Option<(i64, Option<String>)> = sqlx::query_as(
-            "SELECT finished_at_ms, error
+        let row: Option<(i64, Option<String>, Option<i64>)> = sqlx::query_as(
+            "SELECT finished_at_ms, error, retry_after_secs
              FROM sync_events
-             WHERE domain = ? AND error IS NOT NULL
+             WHERE domain = ? AND (retry_after_secs IS NOT NULL OR error IS NOT NULL)
              ORDER BY finished_at_ms DESC
              LIMIT 1",
         )
         .bind(domain)
         .fetch_optional(&self.reader)
         .await?;
-        let Some((finished_at_ms, Some(error))) = row else {
+        let Some((finished_at_ms, error, retry_after_secs)) = row else {
             return Ok(None);
         };
-        let Some(retry_after_secs) = retry_after_seconds(&error) else {
+        let retry_after_secs =
+            retry_after_secs.or_else(|| error.as_deref().and_then(legacy_retry_after_seconds));
+        let Some(retry_after_secs) = retry_after_secs else {
             return Ok(None);
         };
         let retry_until_ms = finished_at_ms.saturating_add(retry_after_secs.saturating_mul(1000));
@@ -2095,7 +2168,7 @@ fn row_to_media_item(row: sqlx::sqlite::SqliteRow) -> Result<MediaItem> {
         context: row.get("context"),
         duration_ms: row.get::<i64, _>("duration_ms").max(0) as u64,
         image_url: row.get("image_url"),
-        kind: media_kind_from_label(&row.get::<String, _>("kind"))?,
+        kind: row.get::<String, _>("kind").parse::<MediaKind>()?,
         source: Some(row.get("source")),
         freshness: Some("cached".to_string()),
         explicit: None,
@@ -2152,8 +2225,7 @@ fn row_to_playlist(row: sqlx::sqlite::SqliteRow) -> Result<Playlist> {
 
 fn row_to_lyrics(track_uri: &str, row: sqlx::sqlite::SqliteRow) -> Result<SyncedLyrics> {
     let provider: String = row.get("provider");
-    let provider = LyricsProvider::from_label(&provider)
-        .ok_or_else(|| anyhow::anyhow!("unknown lyrics provider `{provider}`"))?;
+    let provider = provider.parse::<LyricsProvider>()?;
     let lines_json: String = row.get("lines_json");
     let lines: Vec<LyricLine> = serde_json::from_str(&lines_json)?;
     let synced: i64 = row.get("synced");
@@ -2208,7 +2280,7 @@ fn row_to_reminder(row: sqlx::sqlite::SqliteRow) -> Result<Reminder> {
     Ok(Reminder {
         id: row.get("id"),
         media_uri: row.get("media_uri"),
-        media_kind: media_kind_from_label(&row.get::<String, _>("media_kind"))?,
+        media_kind: row.get::<String, _>("media_kind").parse::<MediaKind>()?,
         name: row.get("name"),
         subtitle: row.get("subtitle"),
         image_url: row.get("image_url"),
@@ -2227,7 +2299,7 @@ fn row_to_notification(row: sqlx::sqlite::SqliteRow) -> Result<Notification> {
         id: row.get("id"),
         reminder_id: row.get("reminder_id"),
         media_uri: row.get("media_uri"),
-        media_kind: media_kind_from_label(&row.get::<String, _>("media_kind"))?,
+        media_kind: row.get::<String, _>("media_kind").parse::<MediaKind>()?,
         name: row.get("name"),
         subtitle: row.get("subtitle"),
         image_url: row.get("image_url"),
@@ -2238,18 +2310,6 @@ fn row_to_notification(row: sqlx::sqlite::SqliteRow) -> Result<Notification> {
         acted: row.get("acted"),
         message: row.get("message"),
     })
-}
-
-fn media_kind_from_label(label: &str) -> Result<MediaKind> {
-    match label {
-        "track" => Ok(MediaKind::Track),
-        "episode" => Ok(MediaKind::Episode),
-        "show" => Ok(MediaKind::Show),
-        "album" => Ok(MediaKind::Album),
-        "artist" => Ok(MediaKind::Artist),
-        "playlist" => Ok(MediaKind::Playlist),
-        _ => anyhow::bail!("unknown media kind `{label}`"),
-    }
 }
 
 fn playlist_media_item(playlist: &Playlist) -> MediaItem {
@@ -2278,7 +2338,7 @@ fn playlist_uri(playlist_id: &str) -> String {
     }
 }
 
-fn retry_after_seconds(message: &str) -> Option<i64> {
+fn legacy_retry_after_seconds(message: &str) -> Option<i64> {
     let message = message.to_ascii_lowercase();
     if !(message.contains("rate limit") || message.contains("rate limited")) {
         return None;
@@ -2426,13 +2486,14 @@ CREATE TABLE IF NOT EXISTS search_results (
 );
 
 CREATE TABLE IF NOT EXISTS sync_events (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    domain         TEXT NOT NULL,
-    started_at_ms  INTEGER NOT NULL,
-    finished_at_ms INTEGER NOT NULL,
-    status         TEXT NOT NULL,
-    row_count      INTEGER NOT NULL,
-    error          TEXT
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain           TEXT NOT NULL,
+    started_at_ms    INTEGER NOT NULL,
+    finished_at_ms   INTEGER NOT NULL,
+    status           TEXT NOT NULL,
+    row_count        INTEGER NOT NULL,
+    error            TEXT,
+    retry_after_secs INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_sync_events_domain_time ON sync_events(domain, finished_at_ms DESC);
 
@@ -2824,6 +2885,12 @@ CREATE INDEX IF NOT EXISTS idx_lyrics_lookup_failures_until
     ON lyrics_lookup_failures(unavailable_until_ms DESC);
 "#;
 
+const MIGRATION_015_COLUMNS: &[ColumnMigration] = &[ColumnMigration {
+    table: "sync_events",
+    name: "retry_after_secs",
+    definition: "retry_after_secs INTEGER",
+}];
+
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -2894,6 +2961,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 14,
         name: "reminders",
         kind: MigrationKind::Sql(MIGRATION_014_REMINDERS),
+    },
+    Migration {
+        version: 15,
+        name: "sync_events_retry_after",
+        kind: MigrationKind::AddColumns(MIGRATION_015_COLUMNS),
     },
 ];
 
@@ -3035,7 +3107,13 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
     ("search_results", &["search_run_id", "position", "item_uri"]),
     (
         "sync_events",
-        &["domain", "finished_at_ms", "status", "row_count"],
+        &[
+            "domain",
+            "finished_at_ms",
+            "status",
+            "row_count",
+            "retry_after_secs",
+        ],
     ),
     (
         "sync_cursors",
@@ -3104,6 +3182,8 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
     use super::*;
 
     #[tokio::test]
@@ -3622,6 +3702,30 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limit_cooldown_uses_latest_retry_after_error() {
+        let store = Store::in_memory().await.unwrap();
+        let started_at_ms = now_ms();
+
+        store
+            .record_sync_event_with_retry_after(
+                "recent",
+                started_at_ms,
+                "error",
+                0,
+                Some("Spotify GET /me/player/recently-played was rate limited"),
+                Some(60),
+            )
+            .await
+            .unwrap();
+
+        assert!(store
+            .rate_limit_cooldown_remaining_ms("recent")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn rate_limit_cooldown_keeps_legacy_retry_after_text_fallback() {
         let store = Store::in_memory().await.unwrap();
         let started_at_ms = now_ms();
 

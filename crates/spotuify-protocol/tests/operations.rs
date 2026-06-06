@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Phase 12 — operation log protocol tests.
 //!
 //! Adversarial coverage:
@@ -190,6 +192,14 @@ fn operation_status_round_trips_every_variant_through_serde() {
         let json = serde_json::to_string(&status).unwrap();
         let back: OperationStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(status, back);
+        assert_eq!(status.to_string(), status.label());
+        assert_eq!(
+            status
+                .label()
+                .parse::<OperationStatus>()
+                .expect("status label parses"),
+            status
+        );
     }
 }
 
@@ -208,6 +218,55 @@ fn operation_source_round_trips_every_variant_through_serde() {
         // Label-based parse also round-trips:
         let label = source.label();
         assert_eq!(OperationSource::from_label(label), Some(source));
+        assert_eq!(source.to_string(), label);
+        assert_eq!(
+            label
+                .parse::<OperationSource>()
+                .expect("source label parses"),
+            source
+        );
+    }
+}
+
+#[test]
+fn operation_kind_round_trips_every_variant_through_label_display_parse_and_serde() {
+    for kind in [
+        OperationKind::QueueAdd,
+        OperationKind::PlaylistAdd,
+        OperationKind::PlaylistRemove,
+        OperationKind::PlaylistCreate,
+        OperationKind::PlaylistUnfollow,
+        OperationKind::PlaylistSetImage,
+        OperationKind::PlaylistReorder,
+        OperationKind::LibrarySave,
+        OperationKind::LibraryUnsave,
+        OperationKind::Transfer,
+        OperationKind::Like,
+        OperationKind::Unlike,
+        OperationKind::Play,
+        OperationKind::Pause,
+        OperationKind::Resume,
+        OperationKind::Toggle,
+        OperationKind::Next,
+        OperationKind::Previous,
+        OperationKind::Seek,
+        OperationKind::Volume,
+        OperationKind::Shuffle,
+        OperationKind::Repeat,
+        OperationKind::Undo,
+        OperationKind::Redo,
+    ] {
+        let json = serde_json::to_string(&kind).unwrap();
+        let back: OperationKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, back);
+        assert_eq!(json.trim_matches('"'), kind.label());
+        assert_eq!(kind.to_string(), kind.label());
+        assert_eq!(
+            kind.label()
+                .parse::<OperationKind>()
+                .expect("kind label parses"),
+            kind
+        );
     }
 }
 

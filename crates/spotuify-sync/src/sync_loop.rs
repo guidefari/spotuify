@@ -39,6 +39,7 @@ const PLAYBACK_RECONCILE_CADENCE: Duration = Duration::from_secs(30);
 const SLOW_CADENCE: Duration = Duration::from_secs(15 * 60);
 const SLOW_INITIAL_DELAY: Duration = Duration::from_secs(60);
 const PER_TARGET_TIMEOUT: Duration = Duration::from_secs(10);
+const SLOW_TARGET_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const BACKOFF_BASE: Duration = Duration::from_secs(15);
 const BACKOFF_MAX: Duration = Duration::from_secs(2 * 60);
 /// Circuit breaker for the shared global cooldown. On consecutive 429s
@@ -241,7 +242,11 @@ where
                         tracing::debug!("slow sync paused: global Spotify rate-limit cooldown");
                         continue;
                     }
-                    let playlists = sync_target(slow_ctx.as_ref(), SyncTargetData::Playlists).await;
+                    let playlists = sync_target_with_timeout(
+                        slow_ctx.as_ref(),
+                        SyncTargetData::Playlists,
+                        SLOW_TARGET_TIMEOUT,
+                    ).await;
                     if let Err(err) = &playlists {
                         tracing::warn!(error = %err, "background playlists sync failed");
                     }
@@ -252,7 +257,11 @@ where
                     if record_global_slow(&global_backoff, now, &playlists) {
                         continue;
                     }
-                    let library = sync_target(slow_ctx.as_ref(), SyncTargetData::Library).await;
+                    let library = sync_target_with_timeout(
+                        slow_ctx.as_ref(),
+                        SyncTargetData::Library,
+                        SLOW_TARGET_TIMEOUT,
+                    ).await;
                     if let Err(err) = &library {
                         tracing::warn!(error = %err, "background library sync failed");
                     }
@@ -334,14 +343,28 @@ async fn sync_target_with_backoff<C: SyncContext>(
         tracing::debug!(target = target.label(), "background sync target in backoff");
         return None;
     }
-    let result = tokio::time::timeout(PER_TARGET_TIMEOUT, sync_target(ctx, target))
-        .await
-        .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out")));
+    let result = sync_target_with_timeout(ctx, target, PER_TARGET_TIMEOUT).await;
     match &result {
         Ok(_) => backoff.record_success(),
         Err(err) => backoff.record_failure(tokio::time::Instant::now(), err),
     }
     Some(result)
+}
+
+async fn sync_target_with_timeout<C: SyncContext>(
+    ctx: &C,
+    target: SyncTargetData,
+    timeout: Duration,
+) -> Result<CacheSyncSummary> {
+    tokio::time::timeout(timeout, sync_target(ctx, target))
+        .await
+        .unwrap_or_else(|_| {
+            Err(anyhow::anyhow!(
+                "timed out syncing {} after {}s",
+                target.label(),
+                timeout.as_secs()
+            ))
+        })
 }
 
 fn log_background_result(target: SyncTargetData, result: &Option<Result<CacheSyncSummary>>) {
@@ -537,9 +560,7 @@ async fn sync_queue<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> 
             Ok(())
         }
         Err(err) => {
-            ctx.store()
-                .record_sync_event_bulk("queue", started_at_ms, "error", 0, Some(&err.to_string()))
-                .await?;
+            record_sync_error(ctx, "queue", started_at_ms, &err).await?;
             Err(err.into())
         }
     }
@@ -620,15 +641,7 @@ async fn sync_playback<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) 
             Ok(())
         }
         Err(err) => {
-            ctx.store()
-                .record_sync_event_bulk(
-                    "playback",
-                    started_at_ms,
-                    "error",
-                    0,
-                    Some(&err.to_string()),
-                )
-                .await?;
+            record_sync_error(ctx, "playback", started_at_ms, &err).await?;
             Err(err.into())
         }
     }
@@ -667,15 +680,7 @@ async fn sync_devices<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -
             Ok(())
         }
         Err(err) => {
-            ctx.store()
-                .record_sync_event_bulk(
-                    "devices",
-                    started_at_ms,
-                    "error",
-                    0,
-                    Some(&err.to_string()),
-                )
-                .await?;
+            record_sync_error(ctx, "devices", started_at_ms, &err).await?;
             Err(err.into())
         }
     }
@@ -795,15 +800,7 @@ async fn sync_playlists<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary)
             Ok(())
         }
         Err(err) => {
-            ctx.store()
-                .record_sync_event_bulk(
-                    "playlists",
-                    started_at_ms,
-                    "error",
-                    0,
-                    Some(&err.to_string()),
-                )
-                .await?;
+            record_sync_error(ctx, "playlists", started_at_ms, &err).await?;
             Err(err.into())
         }
     }
@@ -837,9 +834,7 @@ async fn sync_recent<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) ->
             Ok(())
         }
         Err(err) => {
-            ctx.store()
-                .record_sync_event_bulk("recent", started_at_ms, "error", 0, Some(&err.to_string()))
-                .await?;
+            record_sync_error(ctx, "recent", started_at_ms, &err).await?;
             Err(err.into())
         }
     }
@@ -1028,6 +1023,32 @@ async fn fail_if_rate_limited_domain<C: SyncContext>(ctx: &C, domain: &str) -> R
     Ok(())
 }
 
+async fn record_sync_error<C: SyncContext>(
+    ctx: &C,
+    domain: &str,
+    started_at_ms: i64,
+    err: &SpotifyError,
+) -> Result<()> {
+    ctx.store()
+        .record_sync_event_bulk_with_retry_after(
+            domain,
+            started_at_ms,
+            "error",
+            0,
+            Some(&err.to_string()),
+            retry_after_secs(err),
+        )
+        .await
+}
+
+fn retry_after_secs(err: &SpotifyError) -> Option<u64> {
+    let SpotifyError::RateLimited { retry_after, .. } = err else {
+        return None;
+    };
+    let millis = retry_after.as_millis();
+    Some(millis.div_ceil(1000).max(1).min(u128::from(u64::MAX)) as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1039,6 +1060,12 @@ mod tests {
         assert!(DEVICES_CADENCE > ACTIVE_CADENCE);
         assert!(QUEUE_CADENCE > ACTIVE_CADENCE);
         assert!(DEVICES_CADENCE >= QUEUE_CADENCE);
+    }
+
+    #[test]
+    fn slow_target_timeout_is_generous_for_paginated_syncs() {
+        assert!(SLOW_TARGET_TIMEOUT > PER_TARGET_TIMEOUT);
+        assert_eq!(SLOW_TARGET_TIMEOUT, Duration::from_secs(30 * 60));
     }
 
     #[test]

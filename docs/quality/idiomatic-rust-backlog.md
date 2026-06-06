@@ -8,47 +8,35 @@
 
 Judged against [`idiomatic-rust-rubric.md`](./idiomatic-rust-rubric.md). Rubric dimension in brackets.
 
-## A. Async: blocking work on the Tokio runtime [D1]
+## A. Structural maintainability [F1, F2]
 
-1. **`spotuify-spotify/src/auth.rs`** — `acquire_token_store_lock_bounded` still runs a blocking `fs2` file-lock poll loop with `std::thread::sleep` inside the token-refresh path while the `cache.lock().await` tokio mutex is held. The old macOS Keychain read was removed by the file-backed auth store. **Fix:** move the blocking lock + auth-file IO into `tokio::task::spawn_blocking`. **Deferred because:** this is the hottest cross-cutting path (every Spotify call refreshes through it), and it needs a focused before/after test around concurrent refresh behavior.
+1. **`spotuify-daemon/src/handler.rs:64`** — `dispatch` is a 1190-line, 62-arm god-function in the integration crate. **Fix:** extract each fat arm into `async fn handle_<request>(state, …)`, leave `dispatch` a thin router. **Deferred because:** highest comprehension/merge-conflict cost, but it is the daemon's hottest function; extraction must be incremental with per-request behavior tests to avoid breakage.
 
-2. **`spotuify-system/src/cover_cache.rs:228,244`** — `image::load_from_memory` (CPU) and `std::fs::write`/`rename` (blocking IO) run inside `async fn fetch_and_persist_inner`. **Fix:** wrap decode + write in `tokio::task::spawn_blocking` (or `tokio::fs`). **Deferred because:** only reached on a cache miss, and there is no `get_or_fetch` behavior test; add a wiremock-backed test asserting fetched bytes + on-disk cache before refactoring.
+2. **`spotuify-tui/src/app.rs:221`** — `App` has 79 `pub` fields mixing client view-state with daemon-owned render caches. **Fix:** group into `ViewState`/`ModalState`/`DaemonCache` sub-structs; demote `pub`→`pub(crate)`/private. **Deferred because:** the TUI is human-verified only (no render/golden tests), so a wide refactor across `app.rs`/`ui.rs` has no automated safety net.
 
-3. **`spotuify-search/src/lib.rs:86-99`** — the search actor calls tantivy `commit()` / `search` inline on its tokio task (CPU/IO-blocking). **Fix:** `spawn_blocking` the commit/search, or run the actor loop on a dedicated thread. **Deferred because:** the actor already isolates the blocking to a single task (mitigates worker starvation); lower priority, and the `IndexWriter` lifetime across `spawn_blocking` needs care.
+3. **`spotuify-store/src/lib.rs`** — raw `sqlx::query("...")` strings throughout; no compile-time schema check [G3]. **Fix:** `sqlx::query!`/`query_as!` with a committed offline `.sqlx` cache. **Deferred because:** highest compile-time-safety payoff but the widest, most schema-coupled surface; needs offline-cache setup against a live schema plus per-query migration.
 
-## B. Aggregate timeout [D2]
+4. **God-file splits [F2]:** `protocol/lib.rs` (1943), `spotify/client.rs` (3054), `store/lib.rs` (3280), `tui/ui.rs` (5333), `tui/app.rs` (7748), `daemon/handler.rs` (5362). **Fix:** split by concern into submodules. Mechanical but large; pair with the items above.
 
-4. **`spotuify-sync/src/sync_loop.rs:162-167`** — the slow loop (`Playlists`, `Library`) calls `sync_target` without an aggregate timeout (the fast loop uses `sync_target_with_backoff` → `PER_TARGET_TIMEOUT` = 10s). **Fix:** a *generous* `SLOW_TARGET_TIMEOUT`. **Deferred because:** reusing the 10s `PER_TARGET_TIMEOUT` would truncate legitimate large-library paginated syncs (a real regression). Each underlying HTTP call is already bounded by the 8s reqwest timeout, so no infinite hang is possible; a correct aggregate bound must be sized against worst-case library size and validated, ideally with a fake `SyncContext` test (see H4).
-
-## C. Structural maintainability [F1, F2]
-
-5. **`spotuify-daemon/src/handler.rs:64`** — `dispatch` is a 1190-line, 62-arm god-function in the integration crate. **Fix:** extract each fat arm into `async fn handle_<request>(state, …)`, leave `dispatch` a thin router. **Deferred because:** highest comprehension/merge-conflict cost, but it is the daemon's hottest function; extraction must be incremental with per-request behavior tests to avoid breakage.
-
-6. **`spotuify-tui/src/app.rs:221`** — `App` has 79 `pub` fields mixing client view-state with daemon-owned render caches. **Fix:** group into `ViewState`/`ModalState`/`DaemonCache` sub-structs; demote `pub`→`pub(crate)`/private. **Deferred because:** the TUI is human-verified only (no render/golden tests), so a wide refactor across `app.rs`/`ui.rs` has no automated safety net.
-
-7. **`spotuify-store/src/lib.rs`** — raw `sqlx::query("...")` strings throughout; no compile-time schema check [G3]. **Fix:** `sqlx::query!`/`query_as!` with a committed offline `.sqlx` cache. **Deferred because:** highest compile-time-safety payoff but the widest, most schema-coupled surface; needs offline-cache setup against a live schema plus per-query migration.
-
-8. **God-file splits [F2]:** `protocol/lib.rs` (1883), `spotify/client.rs` (2912), `store/lib.rs` (3180), `tui/ui.rs` (4937). **Fix:** split by concern into submodules. Mechanical but large; pair with the items above.
-
-## D. Stringly-typed round-tripping [B2, C4]
-
-9. `label()` + `from_label()`/`parse()` enum pairs across `core`/`protocol`/`store` (`MediaKind`, `LyricsProvider`, `OperationSource`, `parse_kind`/`parse_status`, `media_kind_from_label`) duplicate `#[serde(rename_all)]` and hand-roll reverse maps. **Fix:** `Display`/`FromStr` (or `TryFrom<&str>`) on the defining enum; store/protocol reuse it. **Deferred because:** touches many enums + call sites; needs a round-trip test per enum (`label()` ↔ `parse()` ↔ serde) first.
-
-10. `protocol/lib.rs:607 classify_error_kind`, `event_log.rs:61 format!("{:?}", kind)`, `store retry_after_seconds`, `search` schema-mismatch `contains("schema does not match")` — error *kind* / control flow recovered by substring-matching `Display`/`Debug` text. **Fix:** carry the typed kind structurally across the IPC seam. **Deferred because:** threading typed kinds through the wire contract is a protocol change needing its own tests.
-
-## E. Low-value polish (recommendations, not planned work)
+## B. Low-value polish (recommendations, not planned work)
 
 - Per-byte hex `format!("{:02x}")` → `hex::encode`/`write!` in `core::sha256_hex` and `player::derive_device_id`. Skipped: micro-allocation in cold paths; `hex` would add a dependency to the foundational `core` crate.
 - `#[must_use]` on pure predicates (`should_refetch_*`, `PrivacyGate::is_private`). Skipped: `must_use_candidate` is in the rubric allow-list (noisy); add selectively if wanted.
 - `premium_gate.rs:79 .expect()` on `Client::builder().build()` → return `GateError` [C1].
 - `cli/commands.rs:30 ipc_search` 8-arg `#[allow(too_many_arguments)]` → `SearchArgs` struct [E2].
-- `store migrations.rs:56` tautological `CACHE_VERSION == 12` → an invariant like `CACHE_VERSION as usize == MIGRATIONS.len()` [H3]. Verify the true relationship (`.len()` vs `.last().version`) before changing the assert.
 
 ---
 
-## Fixed in the 2026-05-23 pass (TDD: green → refactor → green)
+## Fixed (TDD: green → refactor → green)
 
 - `protocol/event_log.rs` — bounded FIFO `Vec` + `remove(0)` (O(n) shift) → `VecDeque` + `pop_front` (O(1)). Covered by `event_log_drops_oldest_when_over_capacity` (asserts eviction order; survives the swap). [F4, D-perf]
 - `search/lib.rs:320` — removed a discarded `Count` collector query that ran full-result counting on every search and threw the result away. [F3, perf]
 - `spotify/rate_limit.rs:204,211` — `&PathBuf` → `&Path` on `BackoffState::load`/`save` (clippy `ptr_arg`; accepts more callers). [F4]
 - `daemon/server.rs:155` — accept-loop `accepted?` (a transient accept error killed the whole daemon and skipped graceful drain) → log + brief backoff + continue. [D5, robustness]
+- `spotify/auth.rs` — blocking file lock and auth-file IO moved into `spawn_blocking`; concurrent refresh behavior is covered by auth tests. [D1]
+- `system/cover_cache.rs` — image decode and cache writes moved into `spawn_blocking`; cover cache fetch/write tests cover the path. [D1]
+- `search/lib.rs` — Tantivy actor now runs on a blocking worker; schema mismatch recovery matches typed `TantivyError::SchemaError`. [D1, C4]
+- `sync/sync_loop.rs` — slow playlist/library targets now have a 30-minute aggregate timeout with a focused test. [D2]
+- `core`/`protocol`/`store` — `MediaKind`, `LyricsProvider`, `OperationSource`, `OperationKind`, and `OperationStatus` now implement `Display`/`FromStr`; store parsing reuses those traits with round-trip tests. [B2]
+- `protocol`/`daemon`/`store` — IPC response errors are constructed with typed `IpcErrorKind`, sync rate-limit cooldown persists typed `retry_after_secs`, and legacy text parsing is retained only for pre-v13 rows. [C4]
+- `store/tests/migrations.rs` — removed tautological `CACHE_VERSION == 12`; tests now assert applied migration count and max version match `CACHE_VERSION`. [H3]

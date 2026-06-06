@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Phase 12 — operations log CRUD tests.
 //!
 //! Adversarial coverage:
@@ -75,6 +77,30 @@ async fn insert_pending_operation_round_trips() {
     assert!(back.reversible);
     assert_eq!(back.subject_uris, vec!["spotify:track:1"]);
     assert!(back.reversal_plan.is_some());
+}
+
+#[tokio::test]
+async fn insert_pending_operation_round_trips_all_operation_kind_labels() {
+    let s = store().await;
+    let kinds = [
+        OperationKind::PlaylistUnfollow,
+        OperationKind::PlaylistSetImage,
+    ];
+    for kind in kinds {
+        let id = OperationId::new_v7();
+        s.insert_pending_operation(&op(
+            id,
+            kind,
+            now_ms(),
+            OperationSource::Cli,
+            OperationStatus::Pending,
+            false,
+        ))
+        .await
+        .unwrap();
+        let back = s.get_operation(id).await.unwrap();
+        assert_eq!(back.kind, kind);
+    }
 }
 
 #[tokio::test]

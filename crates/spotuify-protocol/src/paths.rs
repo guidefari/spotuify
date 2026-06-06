@@ -237,10 +237,13 @@ pub fn socket_path() -> PathBuf {
             .and_then(|os| os.into_string().ok())
             .unwrap_or_else(|| "user".to_string());
         let pipe = format!("\\\\.\\pipe\\{}-{}", app_instance_name(), user);
-        return PathBuf::from(pipe);
+        PathBuf::from(pipe)
     }
 
-    runtime_dir().join("daemon.sock")
+    #[cfg(not(windows))]
+    {
+        runtime_dir().join("daemon.sock")
+    }
 }
 
 /// Sibling pidfile used to detect stale sockets at daemon startup.
@@ -250,15 +253,18 @@ pub fn pid_path() -> PathBuf {
     }
     #[cfg(windows)]
     {
-        return runtime_dir().join("daemon.pid");
+        runtime_dir().join("daemon.pid")
     }
-    let mut p = socket_path();
-    let file = p.file_name().map_or_else(
-        || "daemon".to_string(),
-        |s| s.to_string_lossy().into_owned(),
-    );
-    p.set_file_name(format!("{file}.pid"));
-    p
+    #[cfg(not(windows))]
+    {
+        let mut p = socket_path();
+        let file = p.file_name().map_or_else(
+            || "daemon".to_string(),
+            |s| s.to_string_lossy().into_owned(),
+        );
+        p.set_file_name(format!("{file}.pid"));
+        p
+    }
 }
 
 #[cfg(unix)]
@@ -334,6 +340,8 @@ pub fn secure_current_instance_dirs() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
     use super::*;
 
     // Process-global env is shared across parallel tests; serialize

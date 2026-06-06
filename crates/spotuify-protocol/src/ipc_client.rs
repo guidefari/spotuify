@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 use futures::{SinkExt, StreamExt};
-use tokio::net::UnixStream;
 use tokio::time::timeout;
 use tokio_util::codec::Framed;
 
+use crate::ipc_stream::{self, IpcStream};
 use crate::{DaemonEvent, IpcCodec, IpcMessage, IpcPayload, OperationSource, Request, Response};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -19,7 +19,7 @@ pub fn default_socket_path() -> std::path::PathBuf {
 }
 
 pub struct IpcClient {
-    framed: Framed<UnixStream, IpcCodec>,
+    framed: Framed<IpcStream, IpcCodec>,
     next_id: AtomicU64,
     source: Option<OperationSource>,
     events_subscribed: bool,
@@ -46,7 +46,7 @@ impl IpcClient {
     }
 
     async fn connect_to_inner(socket_path: &Path, source: Option<OperationSource>) -> Result<Self> {
-        let stream = UnixStream::connect(socket_path).await.map_err(|err| {
+        let stream = ipc_stream::connect(socket_path).await.map_err(|err| {
             anyhow::anyhow!(
                 "Cannot connect to daemon at {}: {}. Try: spotuify daemon start",
                 socket_path.display(),
@@ -156,15 +156,17 @@ fn describe_ipc_failure(message: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
     use std::path::PathBuf;
     use std::time::Duration;
 
     use futures::{SinkExt, StreamExt};
     use tempfile::TempDir;
-    use tokio::net::UnixListener;
     use tokio_util::codec::Framed;
 
     use super::{default_socket_path, IpcClient};
+    use crate::ipc_stream::IpcListener;
     use crate::{DaemonEvent, IpcCodec, IpcMessage, IpcPayload, Request, Response, ResponseData};
 
     #[test]
@@ -175,21 +177,42 @@ mod tests {
         std::env::remove_var("SPOTUIFY_SOCKET");
         std::env::set_var("SPOTUIFY_RUNTIME_DIR", "/tmp/spotuify-runtime-test");
 
+        #[cfg(unix)]
         assert_eq!(
             default_socket_path(),
             PathBuf::from("/tmp/spotuify-runtime-test/daemon.sock")
+        );
+        #[cfg(windows)]
+        assert!(
+            default_socket_path()
+                .to_string_lossy()
+                .starts_with(r"\\.\pipe\"),
+            "windows IPC should use a named-pipe address"
         );
 
         std::env::remove_var("SPOTUIFY_RUNTIME_DIR");
     }
 
+    #[cfg(unix)]
+    fn test_ipc_path(temp: &TempDir, name: &str) -> PathBuf {
+        temp.path().join(name)
+    }
+
+    #[cfg(windows)]
+    fn test_ipc_path(_temp: &TempDir, name: &str) -> PathBuf {
+        PathBuf::from(format!(
+            r"\\.\pipe\spotuify-test-{}-{name}",
+            std::process::id()
+        ))
+    }
+
     #[tokio::test]
     async fn request_with_timeout_returns_actionable_error_when_daemon_stalls() {
         let temp = TempDir::new().unwrap();
-        let socket = temp.path().join("stall.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
+        let socket = test_ipc_path(&temp, "stall.sock");
+        let listener = IpcListener::bind(&socket).unwrap();
         tokio::spawn(async move {
-            let (_stream, _) = listener.accept().await.unwrap();
+            let _stream = listener.accept().await.unwrap();
             tokio::time::sleep(Duration::from_millis(200)).await;
         });
         let mut client = IpcClient::connect_to(&socket).await.unwrap();
@@ -208,10 +231,10 @@ mod tests {
     #[tokio::test]
     async fn request_ignores_events_until_matching_response_arrives() {
         let temp = TempDir::new().unwrap();
-        let socket = temp.path().join("events.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
+        let socket = test_ipc_path(&temp, "events.sock");
+        let listener = IpcListener::bind(&socket).unwrap();
         tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
+            let stream = listener.accept().await.unwrap();
             let mut framed = Framed::new(stream, IpcCodec::new());
             let request = framed.next().await.unwrap().unwrap();
             framed
@@ -251,10 +274,10 @@ mod tests {
     #[tokio::test]
     async fn request_sends_configured_operation_source() {
         let temp = TempDir::new().expect("temp dir should be created");
-        let socket = temp.path().join("source.sock");
-        let listener = UnixListener::bind(&socket).expect("listener should bind");
+        let socket = test_ipc_path(&temp, "source.sock");
+        let listener = IpcListener::bind(&socket).expect("listener should bind");
         tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("client should connect");
+            let stream = listener.accept().await.expect("client should connect");
             let mut framed = Framed::new(stream, IpcCodec::new());
             let request = framed
                 .next()
@@ -293,10 +316,10 @@ mod tests {
     #[tokio::test]
     async fn next_event_returns_broadcast_daemon_events() {
         let temp = TempDir::new().unwrap();
-        let socket = temp.path().join("event-stream.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
+        let socket = test_ipc_path(&temp, "event-stream.sock");
+        let listener = IpcListener::bind(&socket).unwrap();
         tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
+            let stream = listener.accept().await.unwrap();
             let mut framed = Framed::new(stream, IpcCodec::new());
             let subscribe = framed.next().await.unwrap().unwrap();
             assert!(matches!(

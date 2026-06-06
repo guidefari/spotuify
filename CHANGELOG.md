@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.1.39](https://github.com/planetaryescape/spotuify/compare/v0.1.38...v0.1.39) (2026-06-04)
+
+
+### Documentation
+
+* sharpen homepage positioning ([948a205](https://github.com/planetaryescape/spotuify/commit/948a20523aac39e8c1e4e3914ae67ad30789c48b))
+
+
+### Chores
+
+* prepare spotuify 0.1.39 ([633b5a1](https://github.com/planetaryescape/spotuify/commit/633b5a1e74041b8d6fe4c24c658b34e7725eef73))
+
+## [0.1.38](https://github.com/planetaryescape/spotuify/compare/v0.1.37...v0.1.38) (2026-06-04)
+
+
+### Bug Fixes
+
+* keep lyrics and cover art synced ([c3ec454](https://github.com/planetaryescape/spotuify/commit/c3ec45423833c8ed4e62797a0c7e3e65c24debb2))
+
+
+### Documentation
+
+* update homepage hero video ([06f6231](https://github.com/planetaryescape/spotuify/commit/06f6231f684d879a5d31c6582312cb11eedf9bb8))
+
+
+### Chores
+
+* prepare spotuify 0.1.38 ([abbf669](https://github.com/planetaryescape/spotuify/commit/abbf669227e2642b7f34494c4b5461fa5727e08c))
+
+## [0.1.37](https://github.com/planetaryescape/spotuify/compare/v0.1.36...v0.1.37) (2026-06-03)
+
+
+### Features
+
+* replace keychain auth with file store ([5447301](https://github.com/planetaryescape/spotuify/commit/5447301b61850b60b071af8e0bfe33b481a0cd0b))
+
+## [0.1.36](https://github.com/planetaryescape/spotuify/compare/v0.1.35...v0.1.36) (2026-06-03)
+
+
+### Bug Fixes
+
+* keep playlist context queue visible ([012c195](https://github.com/planetaryescape/spotuify/commit/012c19590db2cefd0b35899179c99bf4925376dd))
+
+
+### Chores
+
+* release 0.1.36 ([879aa25](https://github.com/planetaryescape/spotuify/commit/879aa25d786b8135e7bff65ae4b0ab7fa556dcb3))
+
 ## [0.1.35](https://github.com/planetaryescape/spotuify/compare/v0.1.34...v0.1.35) (2026-06-01)
 
 

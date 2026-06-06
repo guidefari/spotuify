@@ -328,12 +328,11 @@ fn row_to_operation(row: &sqlx::sqlite::SqliteRow) -> Result<Operation> {
         .map_err(|err| anyhow::anyhow!("malformed operation_id `{id_str}`: {err}"))?;
 
     let kind_label: String = row.try_get("kind")?;
-    let kind = parse_kind(&kind_label)?;
+    let kind = kind_label.parse::<OperationKind>()?;
     let source_label: String = row.try_get("source")?;
-    let source = OperationSource::from_label(&source_label)
-        .ok_or_else(|| anyhow::anyhow!("unknown operation source `{source_label}`"))?;
+    let source = source_label.parse::<OperationSource>()?;
     let status_label: String = row.try_get("status")?;
-    let status = parse_status(&status_label)?;
+    let status = status_label.parse::<OperationStatus>()?;
 
     let subject_uris_json: String = row.try_get("subject_uris_json")?;
     let subject_uris: Vec<String> = serde_json::from_str(&subject_uris_json)
@@ -403,45 +402,4 @@ fn parse_optional_op_id(
         }
         None => Ok(None),
     }
-}
-
-fn parse_kind(label: &str) -> Result<OperationKind> {
-    use OperationKind::*;
-    Ok(match label {
-        "queue_add" => QueueAdd,
-        "playlist_add" => PlaylistAdd,
-        "playlist_remove" => PlaylistRemove,
-        "playlist_create" => PlaylistCreate,
-        "playlist_reorder" => PlaylistReorder,
-        "library_save" => LibrarySave,
-        "library_unsave" => LibraryUnsave,
-        "transfer" => Transfer,
-        "like" => Like,
-        "unlike" => Unlike,
-        "play" => Play,
-        "pause" => Pause,
-        "resume" => Resume,
-        "toggle" => Toggle,
-        "next" => Next,
-        "previous" => Previous,
-        "seek" => Seek,
-        "volume" => Volume,
-        "shuffle" => Shuffle,
-        "repeat" => Repeat,
-        "undo" => Undo,
-        "redo" => Redo,
-        other => anyhow::bail!("unknown operation kind `{other}`"),
-    })
-}
-
-fn parse_status(label: &str) -> Result<OperationStatus> {
-    use OperationStatus::*;
-    Ok(match label {
-        "pending" => Pending,
-        "succeeded" => Succeeded,
-        "failed" => Failed,
-        "undone" => Undone,
-        "redone" => Redone,
-        other => anyhow::bail!("unknown operation status `{other}`"),
-    })
 }

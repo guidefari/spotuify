@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Phase 6.3 — rate-limit middleware tests.
 //!
 //! Focus on the testable pure-function core: retry decisions, backoff

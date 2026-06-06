@@ -52,12 +52,7 @@ fn error_response_from(err: &anyhow::Error) -> Response {
     if let Some(spotify_err) = err.downcast_ref::<spotuify_spotify::SpotifyError>() {
         let kind = spotify_err.ipc_kind();
         let retryable = spotify_err.is_retryable();
-        return Response::Error {
-            message,
-            kind,
-            code: kind.as_code().to_string(),
-            retryable,
-        };
+        return Response::error_with_retryable(message, kind, retryable);
     }
     Response::error(message)
 }

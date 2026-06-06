@@ -232,6 +232,34 @@ jobs:
             --features "embedded-playback system-integrations loopback-cpal alsa-backend"
       - run: SPOTUIFY_BIN=./target/release/spotuify scripts/smoke.sh
 
+  windows:
+    name: Windows x64
+    runs-on: windows-2025
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.expensive == 'true'
+    env:
+      RUSTFLAGS: ""
+      WINDOWS_FEATURES: embedded-playback system-integrations loopback-cpal rodio-backend
+      WINDOWS_TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ env.WINDOWS_TARGET }}
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: windows-${{ env.WINDOWS_TARGET }}
+      - name: Check Windows target
+        run: cargo check --locked --target "$env:WINDOWS_TARGET" --all-targets --no-default-features --features "$env:WINDOWS_FEATURES"
+      - name: Test Windows target
+        run: cargo test --locked --target "$env:WINDOWS_TARGET" --no-default-features --features "$env:WINDOWS_FEATURES"
+      - name: Build Windows smoke binary
+        run: cargo build --locked --release --bin spotuify --target "$env:WINDOWS_TARGET" --no-default-features --features "$env:WINDOWS_FEATURES"
+      - name: Run Windows fake-provider smoke
+        run: |
+          $env:SPOTUIFY_BIN = "target/$env:WINDOWS_TARGET/release/spotuify.exe"
+          bash scripts/smoke.sh
+
   test-quality-audit:
     name: Test Quality Audit (non-blocking)
     runs-on: ubuntu-latest

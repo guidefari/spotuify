@@ -222,6 +222,43 @@ impl MediaKind {
     }
 }
 
+impl std::fmt::Display for MediaKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl std::str::FromStr for MediaKind {
+    type Err = MediaKindParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "track" => Ok(Self::Track),
+            "episode" => Ok(Self::Episode),
+            "show" => Ok(Self::Show),
+            "album" => Ok(Self::Album),
+            "artist" => Ok(Self::Artist),
+            "playlist" => Ok(Self::Playlist),
+            other => Err(MediaKindParseError {
+                value: other.to_string(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaKindParseError {
+    pub value: String,
+}
+
+impl std::fmt::Display for MediaKindParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown media kind `{}`", self.value)
+    }
+}
+
+impl std::error::Error for MediaKindParseError {}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct MediaItem {
     pub id: Option<String>,
@@ -313,13 +350,42 @@ impl LyricsProvider {
     }
 
     pub fn from_label(value: &str) -> Option<Self> {
+        value.parse().ok()
+    }
+}
+
+impl std::fmt::Display for LyricsProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl std::str::FromStr for LyricsProvider {
+    type Err = LyricsProviderParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "spotify-mercury" | "spotify" => Some(Self::SpotifyMercury),
-            "lrclib" => Some(Self::Lrclib),
-            _ => None,
+            "spotify-mercury" | "spotify" => Ok(Self::SpotifyMercury),
+            "lrclib" => Ok(Self::Lrclib),
+            other => Err(LyricsProviderParseError {
+                value: other.to_string(),
+            }),
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LyricsProviderParseError {
+    pub value: String,
+}
+
+impl std::fmt::Display for LyricsProviderParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown lyrics provider `{}`", self.value)
+    }
+}
+
+impl std::error::Error for LyricsProviderParseError {}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LyricLine {
@@ -488,7 +554,37 @@ mod tests {
                 serde_json::from_str(&encoded).expect("media kind should deserialize");
             assert_eq!(kind, decoded);
             assert_eq!(encoded.trim_matches('"'), kind.label());
+            assert_eq!(kind.to_string(), kind.label());
+            assert_eq!(
+                kind.label().parse::<MediaKind>().expect("label parses"),
+                kind
+            );
         }
+    }
+
+    #[test]
+    fn lyrics_provider_round_trips_through_label_display_parse_and_json() {
+        let providers = [LyricsProvider::SpotifyMercury, LyricsProvider::Lrclib];
+        for provider in providers {
+            let encoded =
+                serde_json::to_string(&provider).expect("lyrics provider should serialize");
+            let decoded: LyricsProvider =
+                serde_json::from_str(&encoded).expect("lyrics provider should deserialize");
+            assert_eq!(provider, decoded);
+            assert_eq!(encoded.trim_matches('"'), provider.label());
+            assert_eq!(provider.to_string(), provider.label());
+            assert_eq!(
+                provider
+                    .label()
+                    .parse::<LyricsProvider>()
+                    .expect("label parses"),
+                provider
+            );
+        }
+        assert_eq!(
+            "spotify".parse::<LyricsProvider>().expect("alias parses"),
+            LyricsProvider::SpotifyMercury
+        );
     }
 
     #[test]

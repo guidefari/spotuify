@@ -1,7 +1,6 @@
 [advisories]
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "Transitive via librespot-core 0.8.0. librespot-core is current upstream, and spotuify does not expose arbitrary RSA signature verification to users. Revisit on each librespot upgrade." },
-    { id = "RUSTSEC-2024-0384", reason = "Transitive via tantivy 0.22 through measure_time. It is an unmaintained dependency advisory rather than a known exploit path in spotuify. Revisit when planning the Tantivy upgrade." },
 ]
 
 [licenses]

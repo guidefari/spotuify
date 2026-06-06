@@ -86,14 +86,15 @@ std::env::set_var("PULSE_PROP_stream.description", "Spotify (spotuify)");
 - Current implementation is a hand-rolled `cargo build --target <triple>` matrix
   in `.github/workflows/release.yml`, not `cargo dist`.
 - Current release targets:
-  `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, and
-  `x86_64-apple-darwin`.
-- Each current release artifact is a tarball with the `spotuify` binary,
+  `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`,
+  `x86_64-apple-darwin`, and `x86_64-pc-windows-msvc`.
+- Unix release artifacts are tarballs with the `spotuify` binary,
   `install.sh`, `README.md`, `install/` service templates, and `docs/recipes/`.
+  The Windows x64 artifact is `spotuify-v{version}-windows-x86_64.zip`.
 - macOS tarballs are not signed or notarized today. README documents the
   Gatekeeper quarantine workaround and points users at checksums/provenance.
-- Linux musl, Linux arm64, and Windows remain source-build paths, not published
-  binary artifacts.
+- Linux musl and Linux arm64 remain source-build paths, not published binary
+  artifacts.
 
 ### Distribution channels
 - **Homebrew tap**: separate repo `planetaryescape/homebrew-spotuify`, auto-bumped by the tag-driven release workflow.
@@ -146,11 +147,11 @@ std::env::set_var("PULSE_PROP_stream.description", "Spotify (spotuify)");
 ## Work items
 
 1. [x] Audit every credential/path call site and remove the runtime `keyring` dependency.
-2. [x] Centralize path resolution in `spotuify-protocol::paths`. Runtime/socket/cache/config/data paths no longer use cache dir for sockets. Windows named-pipe paths and IPC aliases are pre-staged; the daemon accept loop still needs the final named-pipe wrapper before Windows IPC is fully live.
+2. [x] Centralize path resolution in `spotuify-protocol::paths`. Runtime/socket/cache/config/data paths no longer use cache dir for sockets. `spotuify-protocol::ipc_stream` now routes Unix sockets and Windows named pipes through the same codec path.
 3. [x] Add Pulse env vars in `spotuify-player::embedded` init (Linux-only `#[cfg]`).
 4. [x] Author launchd plist, systemd unit, Windows Task XML. Add `daemon install-service`/`uninstall-service` subcommands.
 5. [x] Set up the release matrix in `.github/workflows/release.yml`.
-6. [x] Release workflow covers Linux GNU x86_64, macOS arm64, and macOS Intel. Linux musl, Linux arm64, and Windows remain release-matrix follow-ups.
+6. [x] Release workflow covers Linux GNU x86_64, macOS arm64, macOS Intel, and Windows x64. Linux musl and Linux arm64 remain release-matrix follow-ups.
 7. [ ] Apple Developer signing key setup; codesign + notarize in CI remains external release-ops work.
 8. [x] Homebrew formula generation/update workflow exists. The separate tap repo/token must be provisioned outside this repo.
 9. [ ] AUR PKGBUILD repo + maintenance docs are classified as distribution-channel follow-up outside this repo.
@@ -174,15 +175,16 @@ Current release QA should verify:
 - `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.spotuify.daemon.plist` on macOS starts the user service.
 - `scripts/cargo-test -p spotuify-mcp default_socket_path_uses_shared_runtime_resolver --quiet` and `scripts/cargo-test -p spotuify-protocol default_socket_path_uses_shared_runtime_resolver --quiet` cover shared socket-path resolution.
 
-AUR, Scoop, Windows prebuilt binaries, `.deb`, Linux musl, and Linux arm64 are
-not current release verification gates because those channels are not shipped.
+AUR, Scoop, `.deb`, Linux musl, and Linux arm64 are not current release
+verification gates because those channels are not shipped. Windows x64 is a
+published artifact, but remains beta until login, daemon startup, playback,
+and Task Scheduler install are verified on a real Windows machine.
 
 ## Definition of done
 
 The shipped Phase 11 slice provides cross-platform credential-store
 selection, centralized path resolution, service-file templates, install
-commands, a three-target release matrix, Nix/Homebrew/source-build paths, and
+commands, a four-target release matrix, Nix/Homebrew/source-build paths, and
 README quickstarts. Fully verified signed distribution across every external
-channel (Apple notarization, AUR, Scoop, `.deb`, Windows prebuilt binaries,
-clean-VM smoke) remains release-operations follow-up rather than core app
-functionality.
+channel (Apple notarization, AUR, Scoop, `.deb`, clean-VM smoke) remains
+release-operations follow-up rather than core app functionality.

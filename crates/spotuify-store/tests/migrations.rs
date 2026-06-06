@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Schema migration + cache_version gate tests.
 //!
 //! Adversarial coverage:
@@ -130,14 +132,35 @@ async fn test_open_refuses_future_schema_before_running_current_migrations() {
 }
 
 #[tokio::test]
-async fn test_cache_version_constant_is_current() {
-    // History: v3 receipts, v4 analytics derivations (Phase 10),
-    // v5 operations log (Phase 12), v6 lyrics cache (Phase 16),
-    // v7 playlist freshness, v8 saved-library sync position,
-    // v9 playlist duplicate-track preservation, v10 queue cache,
-    // v11 playlist track accessibility, v12 lyrics negative cache,
-    // v13 media enrichment (album/added_at/resume_point columns).
-    assert_eq!(CACHE_VERSION, 14);
+async fn test_cache_version_matches_applied_migrations() {
+    let store = fresh_store().await;
+    let (count, max_version): (i64, i64) =
+        sqlx::query_as("SELECT COUNT(*), COALESCE(MAX(version), 0) FROM schema_migrations")
+            .fetch_one(store.reader())
+            .await
+            .unwrap();
+    assert_eq!(count, CACHE_VERSION as i64);
+    assert_eq!(max_version, CACHE_VERSION as i64);
+}
+
+#[tokio::test]
+async fn test_v13_adds_media_enrichment_columns() {
+    let store = fresh_store().await;
+    for col in [
+        "album",
+        "release_date",
+        "resume_position_ms",
+        "fully_played",
+    ] {
+        assert!(
+            column_exists(&store, "media_items", col).await,
+            "media_items.{col} must exist after v13"
+        );
+    }
+    assert!(
+        column_exists(&store, "library_items", "added_at_ms").await,
+        "library_items.added_at_ms must exist after v13"
+    );
 }
 
 #[tokio::test]
@@ -163,26 +186,6 @@ async fn test_v14_creates_reminder_tables() {
             "reminder_notifications.{col} must exist"
         );
     }
-}
-
-#[tokio::test]
-async fn test_v13_adds_media_enrichment_columns() {
-    let store = fresh_store().await;
-    for col in [
-        "album",
-        "release_date",
-        "resume_position_ms",
-        "fully_played",
-    ] {
-        assert!(
-            column_exists(&store, "media_items", col).await,
-            "media_items.{col} must exist after v13"
-        );
-    }
-    assert!(
-        column_exists(&store, "library_items", "added_at_ms").await,
-        "library_items.added_at_ms must exist after v13"
-    );
 }
 
 // --- v4 analytics derivations (Phase 10) ---
@@ -612,6 +615,12 @@ async fn test_v12_creates_lyrics_lookup_failures_table() {
     ] {
         assert!(column_exists(&store, "lyrics_lookup_failures", column).await);
     }
+}
+
+#[tokio::test]
+async fn test_v15_adds_sync_event_retry_after_secs() {
+    let store = fresh_store().await;
+    assert!(column_exists(&store, "sync_events", "retry_after_secs").await);
 }
 
 #[tokio::test]

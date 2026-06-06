@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Phase 6.1 — typed `SpotifyError` classifier tests.
 //!
 //! Adversarial coverage: every test injects a Spotify-flavoured response

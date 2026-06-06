@@ -6,7 +6,6 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use futures::{FutureExt, SinkExt, StreamExt};
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::codec::Framed;
@@ -16,9 +15,10 @@ use crate::handler::handle_request_with_source;
 use crate::retention::retention_cutoffs;
 use crate::state::DaemonState;
 use spotuify_protocol::ipc_client::IpcClient;
+use spotuify_protocol::ipc_stream::{self, IpcListener, IpcStream};
 use spotuify_protocol::{
-    DaemonEvent, DaemonStatus, IpcCodec, IpcMessage, IpcPayload, OperationSource, Request,
-    Response, ResponseData, IPC_PROTOCOL_VERSION,
+    DaemonEvent, DaemonStatus, IpcCodec, IpcErrorKind, IpcMessage, IpcPayload, OperationSource,
+    Request, Response, ResponseData, IPC_PROTOCOL_VERSION,
 };
 use spotuify_spotify::actions;
 use spotuify_spotify::config::Config;
@@ -67,7 +67,7 @@ pub async fn run_daemon() -> Result<()> {
             socket_path.display()
         ),
         SocketState::Stale => {
-            let _ = std::fs::remove_file(&socket_path);
+            remove_stale_socket(&socket_path);
             clear_daemon_pid_file();
         }
         SocketState::Missing => {}
@@ -140,7 +140,7 @@ pub async fn run_daemon() -> Result<()> {
     let retention_task = spawn_retention_loop(state.clone());
     // Listening reminders: fire due/overdue reminders, emit ReminderDue.
     let reminder_task = crate::reminders::spawn_reminder_loop(state.clone());
-    let listener = UnixListener::bind(&socket_path)
+    let listener = IpcListener::bind(&socket_path)
         .with_context(|| format!("failed to bind {}", socket_path.display()))?;
     spotuify_protocol::paths::secure_private_socket(&socket_path)
         .with_context(|| format!("failed to secure {}", socket_path.display()))?;
@@ -166,8 +166,8 @@ pub async fn run_daemon() -> Result<()> {
                 }
             }
             accepted = listener.accept() => {
-                let (stream, _) = match accepted {
-                    Ok(conn) => conn,
+                let stream = match accepted {
+                    Ok(stream) => stream,
                     Err(err) => {
                         // A transient accept error (e.g. EMFILE/ENFILE under
                         // load) must not take down the whole daemon and skip
@@ -221,7 +221,7 @@ pub async fn run_daemon() -> Result<()> {
     .await;
     drop(listener);
     drain_connection_tasks(&mut connections, CONNECTION_DRAIN_TIMEOUT).await;
-    let _ = std::fs::remove_file(&socket_path);
+    remove_bound_socket(&socket_path);
     clear_daemon_pid_file();
     Ok(())
 }
@@ -407,7 +407,14 @@ async fn record_initial_cache_warm_error(
     let message = err.to_string();
     if let Err(store_err) = state
         .store()
-        .record_sync_event_bulk(domain, started_at_ms, "error", 0, Some(&message))
+        .record_sync_event_bulk_with_retry_after(
+            domain,
+            started_at_ms,
+            "error",
+            0,
+            Some(&message),
+            spotify_retry_after_secs(err),
+        )
         .await
     {
         tracing::debug!(
@@ -416,6 +423,14 @@ async fn record_initial_cache_warm_error(
             "initial cache warm failed to record sync error"
         );
     }
+}
+
+fn spotify_retry_after_secs(err: &spotuify_spotify::SpotifyError) -> Option<u64> {
+    let spotuify_spotify::SpotifyError::RateLimited { retry_after, .. } = err else {
+        return None;
+    };
+    let millis = retry_after.as_millis();
+    Some(millis.div_ceil(1000).max(1).min(u128::from(u64::MAX)) as u64)
 }
 
 fn spawn_media_control_command_loop(state: Arc<DaemonState>) -> Option<JoinHandle<()>> {
@@ -452,7 +467,7 @@ fn spawn_media_control_command_loop(state: Arc<DaemonState>) -> Option<JoinHandl
 }
 
 async fn serve_client_connection(
-    stream: UnixStream,
+    stream: IpcStream,
     state: Arc<DaemonState>,
     request_semaphore: Arc<Semaphore>,
     transport_semaphore: Arc<Semaphore>,
@@ -700,10 +715,15 @@ async fn guard_ipc_response(
                     .await
                 {
                     Ok(response) => response,
-                    Err(_) => Response::error("IPC handler panicked"),
+                    Err(_) => {
+                        Response::error_with_kind("IPC handler panicked", IpcErrorKind::Internal)
+                    }
                 }
             }
-            _ => Response::error("IPC frame was not a request"),
+            _ => Response::error_with_kind(
+                "IPC frame was not a request",
+                IpcErrorKind::InvalidRequest,
+            ),
         }
     }
     .instrument(span.clone())
@@ -795,7 +815,7 @@ pub async fn start_daemon(foreground: bool) -> Result<Option<DaemonStatus>> {
     match inspect_socket_state(&socket_path).await {
         SocketState::Reachable => return daemon_status().await.map(Some),
         SocketState::Stale => {
-            let _ = std::fs::remove_file(&socket_path);
+            remove_stale_socket(&socket_path);
             clear_daemon_pid_file();
         }
         SocketState::Missing => {}
@@ -1077,19 +1097,31 @@ pub(crate) enum SocketState {
 }
 
 pub(crate) async fn inspect_socket_state(path: &Path) -> SocketState {
-    if !path.exists() {
-        return SocketState::Missing;
+    #[cfg(windows)]
+    {
+        return if socket_accepts_connections(path).await {
+            SocketState::Reachable
+        } else {
+            SocketState::Missing
+        };
     }
-    if socket_accepts_connections(path).await {
-        SocketState::Reachable
-    } else {
-        SocketState::Stale
+
+    #[cfg(not(windows))]
+    {
+        if !path.exists() {
+            return SocketState::Missing;
+        }
+        if socket_accepts_connections(path).await {
+            SocketState::Reachable
+        } else {
+            SocketState::Stale
+        }
     }
 }
 
 async fn socket_accepts_connections(path: &Path) -> bool {
     for attempt in 0..SOCKET_PROBE_ATTEMPTS {
-        match UnixStream::connect(path).await {
+        match ipc_stream::connect(path).await {
             Ok(_) => return true,
             Err(error)
                 if should_retry_socket_probe(&error) && attempt + 1 < SOCKET_PROBE_ATTEMPTS =>
@@ -1101,6 +1133,22 @@ async fn socket_accepts_connections(path: &Path) -> bool {
     }
     false
 }
+
+#[cfg(unix)]
+fn remove_stale_socket(path: &Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+#[cfg(not(unix))]
+fn remove_stale_socket(_path: &Path) {}
+
+#[cfg(unix)]
+fn remove_bound_socket(path: &Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+#[cfg(not(unix))]
+fn remove_bound_socket(_path: &Path) {}
 
 fn should_retry_socket_probe(error: &std::io::Error) -> bool {
     matches!(

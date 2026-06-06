@@ -15,8 +15,8 @@ Medium findings have been fixed on `main`:
 | L2 - log directory mode | Resolved | `crates/spotuify-daemon/src/logging.rs` sets the log directory to `0700` on Unix. |
 | L5 - site dependency lags | Resolved | `site/package.json` is on the audited target versions: Starlight `0.39.2`, Astro `6.3.6`, Sharp `0.34.5`. |
 
-Still valid: macOS release archives are unsigned/not notarized, and the two
-accepted RustSec advisories remain documented in `deny.toml`.
+Still valid: macOS release archives are unsigned/not notarized, and the one
+accepted RustSec advisory remains documented in `deny.toml`.
 
 Auth storage changed after the original audit: current builds store Spotify
 credentials under the private config auth directory (`<config_dir>/auth/`) with
@@ -82,20 +82,19 @@ The Medium items below are defence-in-depth gaps that an attentive auditor (Home
 
 `release.yml` builds and ships unsigned `.tar.gz` for both macOS architectures. README documents the `xattr -d com.apple.quarantine` workaround and points users at the SHA256 checksums + SLSA provenance attestations. This is acceptable for an OSS-distributed tool and is already the chosen posture. Track Apple Developer ID signing as future work.
 
-### L2 — Log directory inherits umask (commonly 0755)  (`SEC-A8`)
+### L2 — Log directory mode  (`SEC-A8`)
 
-`logging.rs` creates the log directory with `fs::create_dir_all`, inheriting umask. On single-user machines this is fine; on multi-user systems other users could read logs. Tracing redacts URIs / search queries (verified in `analytics.rs:572-594`) and the bearer is never logged, so the residual risk is small. Optional fix: `fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))` after `create_dir_all` on Unix.
+Resolved: `logging.rs` creates the log directory and then sets it to `0700` on Unix. Tracing redacts URIs / search queries (verified in `analytics.rs:572-594`) and the bearer is never logged.
 
 ### L3 — Hook command runs through `sh -c` with user-configured string  (`SEC-A7`)
 
-`crates/spotuify-daemon/src/hook_executor.rs:69` runs `Command::new("sh").arg("-c").arg(&cmd)` where `cmd` is `analytics.hook_command` from the config. The Spotify track data flows in as **environment variables** (`SPOTUIFY_TRACK_URI`, etc.) — not interpolated into the shell command — so this is not an injection vector from Spotify data. Risk only materialises if an attacker can already write to the user's config (`spotuify.toml` is enforced `0600` per `config.rs:1016`). Document that hook commands are executed as-is; consider offering a `--no-hooks` daemon flag for paranoid users.
+`crates/spotuify-daemon/src/hook_executor.rs:69` runs `Command::new("sh").arg("-c").arg(&cmd)` where `cmd` is `analytics.hook_command` from the config. The Spotify track data flows in as **environment variables** (`SPOTUIFY_TRACK_URI`, etc.) — not interpolated into the shell command — so this is not an injection vector from Spotify data. Risk only materialises if an attacker can already write to the user's config (`spotuify.toml` is enforced `0600` per `config.rs:1016`). Install docs now state that hook commands execute as shell commands exactly as configured.
 
-### L4 — Two accepted RustSec advisories  (`SEC-A5`)
+### L4 — One accepted RustSec advisory  (`SEC-A5`)
 
 - `RUSTSEC-2023-0071` — RSA Marvin Attack via `librespot-core` → `rsa`. Spotuify never exposes attacker-timed RSA verification; ignore is justified in `deny.toml`. Track librespot upstream for a fix.
-- `RUSTSEC-2024-0384` — `instant` unmaintained, via `tantivy 0.22 → measure_time`. Unmaintained, not exploitable. Revisit on Tantivy upgrade.
 
-Both are explicitly documented in `deny.toml` with a revisit trigger — exactly what an auditor expects.
+`RUSTSEC-2024-0384` is resolved by upgrading Tantivy to `0.26.x`, which removes the transitive `instant` dependency. The remaining advisory is explicitly documented in `deny.toml` with a revisit trigger.
 
 ### L5 — Three minor `site/` dep lags  (`SEC-A5`)
 

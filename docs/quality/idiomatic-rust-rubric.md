@@ -67,7 +67,7 @@
 
 - H1 Tests verify behavior through public interfaces, not internals. They must survive a full implementation rewrite. No asserting on call counts/order, private state, or expected values computed from the implementation.
 - H2 Each test covers a distinct equivalence class; includes boundary/empty/error paths, not just the happy path.
-- H3 The "delete test": if the function body were replaced with `return Default`, the test must fail. No tautological asserts (`CONST == literal` with no invariant). **spotuify hotspot:** `CACHE_VERSION == 12` should be `CACHE_VERSION as usize == MIGRATIONS.len()`.
+- H3 The "delete test": if the function body were replaced with `return Default`, the test must fail. No tautological asserts (`CONST == literal` with no invariant). **spotuify hotspot:** cache migration tests assert applied migration count and max version match `CACHE_VERSION`.
 - H4 Critical orchestration paths have behavior tests via their seams (fakes), not just the pure helpers. **spotuify hotspot:** `sync_loop` orchestration is untested behind `SyncContext`.
 
 ## I. Documentation (C-CRATE-DOC, C-EXAMPLE, C-FAILURE)

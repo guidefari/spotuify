@@ -1,6 +1,6 @@
-//! MCP tool catalogue + bridge + confirmation tests.
-
 #![allow(clippy::panic, clippy::unwrap_used)]
+
+//! MCP tool catalogue + bridge + confirmation tests.
 
 use serde_json::json;
 use spotuify_mcp::bridge::{translate, BridgeError, TranslatedCall};

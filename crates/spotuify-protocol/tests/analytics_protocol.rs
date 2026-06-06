@@ -1,3 +1,5 @@
+#![allow(clippy::panic, clippy::unwrap_used)]
+
 //! Phase 10 — analytics IPC types.
 //!
 //! Adversarial coverage:
