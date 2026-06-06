@@ -905,18 +905,6 @@ async fn nudge_daemon_reload_auth() -> Result<()> {
 
 #[tokio::main]
 async fn main() {
-    // Phase 11 (F9): force the Windows console code page to UTF-8 before
-    // any output so emoji + extended glyphs render correctly under cmd.exe
-    // and PowerShell. No-op on macOS/Linux.
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::System::Console::SetConsoleOutputCP;
-        // Safety: ffi call with no side-effects beyond setting the
-        // current process's output code page; CP_UTF8 = 65001.
-        unsafe {
-            SetConsoleOutputCP(65001);
-        }
-    }
     if let Err(err) = run().await {
         eprintln!("error: {err:#}");
         std::process::exit(exit_code_for_error(&err));
