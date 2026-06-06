@@ -903,9 +903,39 @@ async fn nudge_daemon_reload_auth() -> Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(err) = run().await {
+#[cfg(windows)]
+const WINDOWS_MAIN_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+fn main() {
+    #[cfg(windows)]
+    {
+        run_on_windows_stack();
+    }
+
+    #[cfg(not(windows))]
+    {
+        run_main();
+    }
+}
+
+#[cfg(windows)]
+fn run_on_windows_stack() {
+    let handle = std::thread::Builder::new()
+        .name("spotuify-main".to_string())
+        .stack_size(WINDOWS_MAIN_STACK_SIZE)
+        .spawn(run_main)
+        .expect("failed to start spotuify main thread");
+    if let Err(payload) = handle.join() {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+fn run_main() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to initialize tokio runtime");
+    if let Err(err) = runtime.block_on(Box::pin(run())) {
         eprintln!("error: {err:#}");
         std::process::exit(exit_code_for_error(&err));
     }
