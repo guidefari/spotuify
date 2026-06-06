@@ -57,15 +57,32 @@ fake_spotuify() {
     "$SPOTUIFY_BIN" "$@"
 }
 
+print_smoke_logs() {
+  [[ -d "$fake_root/logs" ]] || return 0
+  echo "---- spotuify smoke daemon logs ----" >&2
+  find "$fake_root/logs" -maxdepth 1 -type f -name 'spotuify.log*' -print \
+    | sort \
+    | while IFS= read -r log; do
+      echo "== $log ==" >&2
+      tail -n 160 "$log" >&2 || true
+    done
+}
+
 cleanup() {
+  status=$?
+  trap - EXIT
+  if [[ "$status" -ne 0 ]]; then
+    print_smoke_logs
+  fi
   fake_spotuify daemon stop >/dev/null 2>&1 || true
   if [[ -z "${SPOTUIFY_SMOKE_DIR:-}" ]]; then
     for _ in 1 2 3 4 5; do
-      rm -rf "$fake_root" 2>/dev/null && return
+      rm -rf "$fake_root" 2>/dev/null && exit "$status"
       sleep 1
     done
     rm -rf "$fake_root" 2>/dev/null || true
   fi
+  exit "$status"
 }
 trap cleanup EXIT
 
