@@ -140,7 +140,7 @@ pub async fn run_daemon() -> Result<()> {
     let retention_task = spawn_retention_loop(state.clone());
     // Listening reminders: fire due/overdue reminders, emit ReminderDue.
     let reminder_task = crate::reminders::spawn_reminder_loop(state.clone());
-    let listener = IpcListener::bind(&socket_path)
+    let mut listener = IpcListener::bind(&socket_path)
         .with_context(|| format!("failed to bind {}", socket_path.display()))?;
     spotuify_protocol::paths::secure_private_socket(&socket_path)
         .with_context(|| format!("failed to secure {}", socket_path.display()))?;

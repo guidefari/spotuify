@@ -28,7 +28,7 @@ impl IpcListener {
         tokio::net::UnixListener::bind(path).map(|inner| Self { inner })
     }
 
-    pub async fn accept(&self) -> io::Result<IpcStream> {
+    pub async fn accept(&mut self) -> io::Result<IpcStream> {
         let (stream, _) = self.inner.accept().await?;
         Ok(Box::new(stream))
     }
@@ -44,23 +44,32 @@ pub async fn connect(path: &Path) -> io::Result<IpcStream> {
 #[cfg(windows)]
 pub struct IpcListener {
     path: PathBuf,
+    pending: tokio::net::windows::named_pipe::NamedPipeServer,
 }
 
 #[cfg(windows)]
 impl IpcListener {
     pub fn bind(path: &Path) -> io::Result<Self> {
+        let pending = create_server(path)?;
         Ok(Self {
             path: path.to_path_buf(),
+            pending,
         })
     }
 
-    pub async fn accept(&self) -> io::Result<IpcStream> {
-        let server = tokio::net::windows::named_pipe::ServerOptions::new()
-            .first_pipe_instance(false)
-            .create(&self.path)?;
-        server.connect().await?;
-        Ok(Box::new(server))
+    pub async fn accept(&mut self) -> io::Result<IpcStream> {
+        self.pending.connect().await?;
+        let next = create_server(&self.path)?;
+        let connected = std::mem::replace(&mut self.pending, next);
+        Ok(Box::new(connected))
     }
+}
+
+#[cfg(windows)]
+fn create_server(path: &Path) -> io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    tokio::net::windows::named_pipe::ServerOptions::new()
+        .first_pipe_instance(false)
+        .create(path)
 }
 
 #[cfg(windows)]

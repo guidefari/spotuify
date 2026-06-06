@@ -210,7 +210,7 @@ mod tests {
     async fn request_with_timeout_returns_actionable_error_when_daemon_stalls() {
         let temp = TempDir::new().unwrap();
         let socket = test_ipc_path(&temp, "stall.sock");
-        let listener = IpcListener::bind(&socket).unwrap();
+        let mut listener = IpcListener::bind(&socket).unwrap();
         tokio::spawn(async move {
             let _stream = listener.accept().await.unwrap();
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -232,7 +232,7 @@ mod tests {
     async fn request_ignores_events_until_matching_response_arrives() {
         let temp = TempDir::new().unwrap();
         let socket = test_ipc_path(&temp, "events.sock");
-        let listener = IpcListener::bind(&socket).unwrap();
+        let mut listener = IpcListener::bind(&socket).unwrap();
         tokio::spawn(async move {
             let stream = listener.accept().await.unwrap();
             let mut framed = Framed::new(stream, IpcCodec::new());
@@ -275,7 +275,7 @@ mod tests {
     async fn request_sends_configured_operation_source() {
         let temp = TempDir::new().expect("temp dir should be created");
         let socket = test_ipc_path(&temp, "source.sock");
-        let listener = IpcListener::bind(&socket).expect("listener should bind");
+        let mut listener = IpcListener::bind(&socket).expect("listener should bind");
         tokio::spawn(async move {
             let stream = listener.accept().await.expect("client should connect");
             let mut framed = Framed::new(stream, IpcCodec::new());
@@ -317,7 +317,7 @@ mod tests {
     async fn next_event_returns_broadcast_daemon_events() {
         let temp = TempDir::new().unwrap();
         let socket = test_ipc_path(&temp, "event-stream.sock");
-        let listener = IpcListener::bind(&socket).unwrap();
+        let mut listener = IpcListener::bind(&socket).unwrap();
         tokio::spawn(async move {
             let stream = listener.accept().await.unwrap();
             let mut framed = Framed::new(stream, IpcCodec::new());
