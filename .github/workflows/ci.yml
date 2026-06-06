@@ -257,6 +257,7 @@ jobs:
       - name: Build Windows smoke binary
         run: cargo build --locked --release --bin spotuify --target "$env:WINDOWS_TARGET" --no-default-features --features "$env:WINDOWS_FEATURES"
       - name: Run Windows fake-provider smoke
+        timeout-minutes: 10
         run: |
           $env:SPOTUIFY_BIN = "target/$env:WINDOWS_TARGET/release/spotuify.exe"
           bash scripts/smoke.sh

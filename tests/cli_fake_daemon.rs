@@ -1,12 +1,16 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
+#![cfg(not(windows))]
 
 use assert_cmd::Command;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
+use std::sync::{Mutex, MutexGuard};
 use std::thread::sleep;
 use std::time::Duration;
 use tempfile::TempDir;
+
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct DaemonGuard {
     socket_path: PathBuf,
@@ -77,9 +81,16 @@ fn process_is_alive(pid: u64) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+fn serial_test() -> MutexGuard<'static, ()> {
+    TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+}
+
 #[cfg(unix)]
 #[test]
 fn fake_daemon_repairs_private_runtime_and_state_permissions() {
+    let _guard = serial_test();
     use std::os::unix::fs::PermissionsExt;
 
     let temp = TempDir::new().expect("temp dir");
@@ -128,6 +139,7 @@ fn fake_daemon_repairs_private_runtime_and_state_permissions() {
 
 #[test]
 fn fake_daemon_cli_journey_covers_json_ids_and_mutation_receipts() {
+    let _guard = serial_test();
     let temp = TempDir::new().expect("temp dir");
     let socket_path = test_socket_path(temp.path());
     let mut daemon = DaemonGuard {
@@ -191,7 +203,13 @@ fn fake_daemon_cli_journey_covers_json_ids_and_mutation_receipts() {
 
 #[test]
 fn fake_daemon_accepts_batch_ids_for_queue_and_playlist_preview() {
+    let _guard = serial_test();
     let temp = TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp.path());
+    let mut daemon = DaemonGuard {
+        socket_path,
+        pid: None,
+    };
     let ids_path = temp.path().join("tracks.txt");
     std::fs::write(
         &ids_path,
@@ -218,6 +236,8 @@ fn fake_daemon_accepts_batch_ids_for_queue_and_playlist_preview() {
         queue["uris"][0].as_str(),
         Some("spotify:track:never-too-much")
     );
+    let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
+    daemon.pid = status["daemon_pid"].as_u64();
 
     let preview = run_json(
         temp.path(),
@@ -242,7 +262,13 @@ fn fake_daemon_accepts_batch_ids_for_queue_and_playlist_preview() {
 
 #[test]
 fn fake_daemon_accepts_stdin_ids_for_queue() {
+    let _guard = serial_test();
     let temp = TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp.path());
+    let mut daemon = DaemonGuard {
+        socket_path,
+        pid: None,
+    };
     let output = command(temp.path())
         .args(["queue", "add", "--format", "ids"])
         .write_stdin("spotify:track:never-too-much\nspotify:track:sweet-thing\n")
@@ -256,10 +282,13 @@ fn fake_daemon_accepts_stdin_ids_for_queue() {
         stdout,
         "spotify:track:never-too-much\nspotify:track:sweet-thing\n"
     );
+    let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
+    daemon.pid = status["daemon_pid"].as_u64();
 }
 
 #[test]
 fn playlist_batch_commit_requires_yes_outside_dry_run() {
+    let _guard = serial_test();
     let temp = TempDir::new().expect("temp dir");
     let output = command(temp.path())
         .args([
