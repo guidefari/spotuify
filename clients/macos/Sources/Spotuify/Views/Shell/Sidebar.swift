@@ -6,6 +6,7 @@ import SpotuifyKit
 /// pinned as top/bottom insets.
 struct Sidebar: View {
     @Environment(AppModel.self) private var model
+    @Environment(ArtworkTheme.self) private var theme
     @Binding var selection: Destination
 
     var body: some View {
@@ -16,6 +17,18 @@ struct Sidebar: View {
             }
         }
         .listStyle(.sidebar)
+        // The accent (tint) already flows from the cover palette; wash the
+        // sidebar itself with the cover's background colour so the whole chrome
+        // — not just selections — shares the now-playing mood. Kept translucent
+        // so the window's vibrancy still reads through.
+        .scrollContentBackground(.hidden)
+        .background {
+            LinearGradient(
+                colors: [theme.background.opacity(0.95), theme.background.opacity(0.6)],
+                startPoint: .top, endPoint: .bottom)
+                .animation(.easeInOut(duration: 0.6), value: theme.background)
+                .ignoresSafeArea()
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
             Text("spotuify")
                 .font(.displayTitle(22))

@@ -245,6 +245,14 @@ pub(crate) struct DaemonState {
     /// otherwise clobber the optimistic local cache. Same shape as
     /// Linear's `lastSyncId`.
     mutation_seq: Arc<AtomicU64>,
+    /// Whether the user currently intends THIS device to be the playback
+    /// target. Set true when our embedded device starts/resumes/changes a
+    /// track, cleared when a poll shows another device became active. Gates
+    /// `schedule_player_reconnect` so that after the user hands off to another
+    /// device (e.g. their phone), a transient session drop doesn't auto-
+    /// reconnect and let librespot steal playback back. The device still
+    /// re-registers lazily on the next user transport targeting it.
+    we_are_active: Arc<AtomicBool>,
     /// Phase 2 — daemon-owned `PlaybackClock`. Single source of truth
     /// for "what's playing, where, since when". Fed by player events
     /// (highest), command results, and Web API polls (lowest). Reads
@@ -379,6 +387,8 @@ impl DaemonState {
         let own_device_name_for_worker = own_device_name.clone();
         let own_device_volume_for_worker = own_device_volume.clone();
         let reconnect_in_flight = Arc::new(AtomicBool::new(false));
+        let we_are_active = Arc::new(AtomicBool::new(false));
+        let we_are_active_for_worker = we_are_active.clone();
         let player_worker = tokio::spawn(async move {
             forward_player_events(
                 player_stream,
@@ -393,6 +403,7 @@ impl DaemonState {
                     own_device_name: own_device_name_for_worker,
                     own_device_volume: own_device_volume_for_worker,
                     reconnect_in_flight,
+                    we_are_active: we_are_active_for_worker,
                     embedded_sink_on_ready,
                 },
             )
@@ -445,6 +456,7 @@ impl DaemonState {
             system_integration,
             viz_coordinator,
             mutation_seq: Arc::new(AtomicU64::new(0)),
+            we_are_active,
             playback_clock,
             bg_runtime: Arc::new(OwnedBgRuntime::new(
                 RuntimeBuilder::new_multi_thread()
@@ -577,6 +589,28 @@ impl DaemonState {
             .lock()
             .as_deref()
             .map(derive_device_id_for_name)
+    }
+
+    /// Explicitly set whether the user intends this device to be the playback
+    /// target. Used by the transfer handler to flip immediately on a user-driven
+    /// hand-off (the poll-based [`Self::note_active_device`] otherwise lags by a
+    /// poll interval).
+    pub(crate) fn set_we_are_active(&self, active: bool) {
+        self.we_are_active.store(active, Ordering::Release);
+    }
+
+    /// Reconcile `we_are_active` against an authoritative playback snapshot: set
+    /// when our own device is the active one, clear when a *different* device is
+    /// active (the user handed off — e.g. to their phone). Leaves the flag
+    /// unchanged when no device is active, to avoid flapping during silence.
+    pub(crate) fn note_active_device(&self, playback: &spotuify_core::Playback) {
+        let Some(active_id) = playback.device.as_ref().and_then(|d| d.id.as_deref()) else {
+            return;
+        };
+        match self.own_device_id() {
+            Some(own) if own == active_id => self.we_are_active.store(true, Ordering::Release),
+            _ => self.we_are_active.store(false, Ordering::Release),
+        }
     }
 
     pub(crate) async fn connected_own_device(&self) -> Option<Device> {
@@ -1725,6 +1759,7 @@ struct PlayerEventForwarder {
     own_device_name: Arc<parking_lot::Mutex<Option<String>>>,
     own_device_volume: Arc<parking_lot::Mutex<Option<u8>>>,
     reconnect_in_flight: Arc<AtomicBool>,
+    we_are_active: Arc<AtomicBool>,
     embedded_sink_on_ready: bool,
 }
 
@@ -1793,6 +1828,17 @@ async fn forward_player_events(
                 | PlayerEvent::VolumeChanged { .. }
         )
         .then(|| ctx.playback_clock.snapshot());
+        // Our embedded device is producing audio → the user intends this
+        // device to be the active target. (Cleared by the Web API poll when a
+        // different device becomes active — see `note_active_device`.)
+        if matches!(
+            &event,
+            PlayerEvent::PlaybackStarted { .. }
+                | PlayerEvent::PlaybackResumed
+                | PlayerEvent::TrackChanged { .. }
+        ) {
+            ctx.we_are_active.store(true, Ordering::Release);
+        }
         let should_reconnect = matches!(
             &event,
             PlayerEvent::SessionDisconnected { .. } | PlayerEvent::Failed { .. }
@@ -1807,7 +1853,11 @@ async fn forward_player_events(
             &ctx.system_integration,
             daemon_event,
         );
-        if should_reconnect {
+        // Only auto-reconnect when the user still wants this device active.
+        // After a hand-off to another device, `we_are_active` is false, so a
+        // session drop leaves us idle instead of re-registering and letting
+        // librespot grab playback back. The next user transport re-registers.
+        if should_reconnect && ctx.we_are_active.load(Ordering::Acquire) {
             schedule_player_reconnect(ctx.player_tx.clone(), ctx.reconnect_in_flight.clone());
         }
     }
@@ -2005,6 +2055,9 @@ impl spotuify_sync::SyncContext for DaemonState {
         sampled_at_ms: i64,
         provider_timestamp_ms: Option<i64>,
     ) -> bool {
+        // Track active-device hand-off so a session drop after the user moves to
+        // another device doesn't trigger an auto-reconnect that steals playback.
+        self.note_active_device(playback);
         self.playback_clock.apply_web_api_poll(
             playback,
             captured_seq,

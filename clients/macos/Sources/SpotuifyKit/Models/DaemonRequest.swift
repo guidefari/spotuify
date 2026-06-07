@@ -8,6 +8,10 @@ public enum SearchSource: String, Sendable {
     case local, spotify, hybrid
 }
 
+public enum SearchSort: String, Sendable, CaseIterable {
+    case relevance, name, duration, artist
+}
+
 public enum RepeatMode: String, Sendable, CaseIterable {
     case off, context, track
 }
@@ -77,7 +81,9 @@ public enum DaemonRequest: Encodable, Sendable {
     case libraryList(limit: UInt32)
     case playbackCommand(PlaybackCommand)
     case deviceTransfer(device: String)
-    case search(query: String, scope: SearchScope, source: SearchSource, limit: UInt32)
+    case search(
+        query: String, scope: SearchScope, source: SearchSource, limit: UInt32,
+        kinds: [MediaKind]? = nil, sort: SearchSort? = nil)
     case searchStream(query: String, scope: SearchScope, source: SearchSource, version: UInt64)
     case searchPage(query: String, kind: MediaKind, offset: UInt32, version: UInt64)
     case queueAdd(uri: String)
@@ -88,6 +94,9 @@ public enum DaemonRequest: Encodable, Sendable {
     case albumTracks(album: String)
     case artistAlbums(artist: String)
     case followedArtists(limit: UInt32)
+    case artistFollow(artist: String)
+    case artistUnfollow(artist: String)
+    case listenSessions(limit: UInt32)
     case playlistTracks(playlist: String, wait: Bool)
     case playlistAddItems(playlist: String, uris: [String])
     case librarySave(uri: String?, current: Bool)
@@ -132,12 +141,18 @@ public enum DaemonRequest: Encodable, Sendable {
         case .deviceTransfer(let device):
             try c.encode("device-transfer", forKey: AnyKey("cmd"))
             try c.encode(device, forKey: AnyKey("device"))
-        case .search(let query, let scope, let source, let limit):
+        case .search(let query, let scope, let source, let limit, let kinds, let sort):
             try c.encode("search", forKey: AnyKey("cmd"))
             try c.encode(query, forKey: AnyKey("query"))
             try c.encode(scope.rawValue, forKey: AnyKey("scope"))
             try c.encode(source.rawValue, forKey: AnyKey("source"))
             try c.encode(limit, forKey: AnyKey("limit"))
+            if let kinds {
+                try c.encode(kinds.map(\.rawValue), forKey: AnyKey("kinds"))
+            }
+            if let sort {
+                try c.encode(sort.rawValue, forKey: AnyKey("sort"))
+            }
         case .searchStream(let query, let scope, let source, let version):
             try c.encode("search-stream", forKey: AnyKey("cmd"))
             try c.encode(query, forKey: AnyKey("query"))
@@ -176,6 +191,15 @@ public enum DaemonRequest: Encodable, Sendable {
             try c.encode(artist, forKey: AnyKey("artist"))
         case .followedArtists(let limit):
             try c.encode("followed-artists", forKey: AnyKey("cmd"))
+            try c.encode(limit, forKey: AnyKey("limit"))
+        case .artistFollow(let artist):
+            try c.encode("artist-follow", forKey: AnyKey("cmd"))
+            try c.encode(artist, forKey: AnyKey("artist"))
+        case .artistUnfollow(let artist):
+            try c.encode("artist-unfollow", forKey: AnyKey("cmd"))
+            try c.encode(artist, forKey: AnyKey("artist"))
+        case .listenSessions(let limit):
+            try c.encode("listen-sessions", forKey: AnyKey("cmd"))
             try c.encode(limit, forKey: AnyKey("limit"))
         case .playlistTracks(let playlist, let wait):
             try c.encode("playlist-tracks", forKey: AnyKey("cmd"))

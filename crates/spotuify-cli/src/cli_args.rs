@@ -142,6 +142,20 @@ pub enum ArtistCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Follow an artist.
+    Follow {
+        /// Artist ID or URI.
+        artist: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Unfollow an artist.
+    Unfollow {
+        /// Artist ID or URI.
+        artist: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 /// Spotify's per-artist album grouping (`album_group`).

@@ -49,7 +49,7 @@ use spotuify_core::{
 /// listening reminders + notifications; v2 added `saved-tracks`/`show-episodes`/
 /// `queue-add-many` + enriched `MediaItem`. Clients gate their UI on
 /// `protocol_version >= IPC_PROTOCOL_VERSION`.
-pub const IPC_PROTOCOL_VERSION: u32 = 4;
+pub const IPC_PROTOCOL_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcMessage {
@@ -100,6 +100,15 @@ pub enum Request {
         scope: SearchScopeData,
         source: SearchSourceData,
         limit: u32,
+        /// Explicit set of kinds to return, overriding `scope` when present.
+        /// Lets clients filter to arbitrary subsets ("podcasts only", "tracks
+        /// + artists"). `None` falls back to the kinds implied by `scope`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kinds: Option<Vec<MediaKind>>,
+        /// Result ordering applied by the daemon after fetch. `None` keeps
+        /// Spotify's relevance order.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sort: Option<SearchSortData>,
     },
     /// Streaming, daemon-orchestrated search. Daemon acks immediately
     /// with `ResponseData::SearchStarted` and then publishes
@@ -189,6 +198,21 @@ pub enum Request {
     /// List the artists the user follows (cache-backed; the discography
     /// browser's entry point).
     FollowedArtists {
+        limit: u32,
+    },
+    /// Follow an artist (`PUT /me/following?type=artist`). Optimistic
+    /// `LibraryChanged`; marks the artist `followed=1` in the cache.
+    ArtistFollow {
+        artist: String,
+    },
+    /// Unfollow an artist (`DELETE /me/following?type=artist`).
+    ArtistUnfollow {
+        artist: String,
+    },
+    /// Listening history grouped into sessions (gap-based), merging the local
+    /// `listen_facts` with Spotify recently-played. Powers the history page's
+    /// session-albums and chronological views.
+    ListenSessions {
         limit: u32,
     },
     /// Fetch the track listing of a given album.
@@ -482,6 +506,9 @@ impl Request {
             | Self::PlaylistTracks { .. }
             | Self::ArtistAlbums { .. }
             | Self::FollowedArtists { .. }
+            | Self::ArtistFollow { .. }
+            | Self::ArtistUnfollow { .. }
+            | Self::ListenSessions { .. }
             | Self::AlbumTracks { .. }
             | Self::PlaylistAddItems { .. }
             | Self::PlaylistRemoveItems { .. }
@@ -537,6 +564,9 @@ impl Request {
             Self::PlaylistTracks { .. } => "playlist-tracks",
             Self::ArtistAlbums { .. } => "artist-albums",
             Self::FollowedArtists { .. } => "followed-artists",
+            Self::ArtistFollow { .. } => "artist-follow",
+            Self::ArtistUnfollow { .. } => "artist-unfollow",
+            Self::ListenSessions { .. } => "listen-sessions",
             Self::AlbumTracks { .. } => "album-tracks",
             Self::PlaylistAddItems { .. } => "playlist-add-items",
             Self::PlaylistRemoveItems { .. } => "playlist-remove-items",
@@ -651,6 +681,28 @@ impl SearchScopeData {
             Self::Album => "album",
             Self::Artist => "artist",
             Self::Playlist => "playlist",
+        }
+    }
+}
+
+/// How the daemon orders search results after fetch. Applied across the merged
+/// (multi-kind) result set; `Relevance` preserves Spotify's own ordering.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchSortData {
+    Relevance,
+    Name,
+    Duration,
+    Artist,
+}
+
+impl SearchSortData {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Relevance => "relevance",
+            Self::Name => "name",
+            Self::Duration => "duration",
+            Self::Artist => "artist",
         }
     }
 }
@@ -776,6 +828,21 @@ impl IpcErrorKind {
     }
 }
 
+/// One listening session: a run of consecutively-played tracks bounded by a
+/// gap larger than the sessionization threshold. `tracks` are newest-first
+/// within the session; `context_label` is the dominant context (album/playlist
+/// name) when one stands out, for the session-albums view.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ListenSession {
+    pub session_id: String,
+    pub started_at_ms: i64,
+    pub ended_at_ms: i64,
+    pub track_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_label: Option<String>,
+    pub tracks: Vec<MediaItem>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 #[allow(clippy::large_enum_variant)]
@@ -837,6 +904,9 @@ pub enum ResponseData {
     },
     MediaItems {
         items: Vec<MediaItem>,
+    },
+    ListenSessions {
+        sessions: Vec<ListenSession>,
     },
     Logs {
         lines: Vec<String>,
@@ -1428,6 +1498,8 @@ mod request_category_tests {
                 scope: SearchScopeData::All,
                 source: SearchSourceData::Hybrid,
                 limit: 10,
+                kinds: None,
+                sort: None,
             }
             .category(),
             IpcCategory::CoreMusic
@@ -1962,6 +2034,8 @@ mod tests {
                 scope: super::SearchScopeData::Track,
                 source: super::SearchSourceData::Hybrid,
                 limit: 10,
+                kinds: None,
+                sort: None,
             }),
         })
         .unwrap();
@@ -2011,6 +2085,19 @@ mod tests {
                 "queue-add-many",
             ),
             (Request::FollowedArtists { limit: 200 }, "followed-artists"),
+            (
+                Request::ArtistFollow {
+                    artist: "spotify:artist:abc".to_string(),
+                },
+                "artist-follow",
+            ),
+            (
+                Request::ArtistUnfollow {
+                    artist: "spotify:artist:abc".to_string(),
+                },
+                "artist-unfollow",
+            ),
+            (Request::ListenSessions { limit: 50 }, "listen-sessions"),
         ] {
             assert_eq!(request.kind_label(), tag);
             assert_eq!(request.category(), IpcCategory::CoreMusic);

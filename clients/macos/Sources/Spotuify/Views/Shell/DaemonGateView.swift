@@ -149,39 +149,60 @@ struct DaemonGateView: View {
     }
 
     private enum GateAction {
-        case start, updateRestart
+        case install, start, updateRestart
         var title: String {
             switch self {
+            case .install: "Install spotuify"
             case .start: "Start spotuify"
             case .updateRestart: "Update & Restart"
             }
         }
         var icon: String {
             switch self {
+            case .install: "arrow.down.circle.fill"
             case .start: "play.fill"
             case .updateRestart: "arrow.down.circle"
             }
         }
     }
 
-    /// A one-click action for the cases we can drive automatically.
+    /// A one-click action for the cases we can drive automatically. When the
+    /// daemon binary is missing we offer a one-click Homebrew install (falling
+    /// back to the manual commands if Homebrew isn't present).
     private var primaryAction: GateAction? {
         switch readiness {
-        case .missing(let installed): installed ? .start : nil
-        case .incompatible: .updateRestart
-        default: nil
+        case .missing(let installed):
+            if installed { return .start }
+            return DaemonControl.homebrewAvailable ? .install : nil
+        case .incompatible: return .updateRestart
+        default: return nil
         }
     }
 
     private func perform(_ action: GateAction) {
         actionError = nil
         working = true
-        workingLabel = action == .start
-            ? "Starting spotuify…"
-            : "Updating spotuify… (this can take a minute)"
+        workingLabel = {
+            switch action {
+            case .install: "Installing spotuify via Homebrew… (downloads, ~a minute)"
+            case .start: "Starting spotuify…"
+            case .updateRestart: "Updating spotuify… (this can take a minute)"
+            }
+        }()
         Task {
             defer { working = false }
             switch action {
+            case .install:
+                let result = await DaemonControl.installViaBrew(socketPath: model.socketPath)
+                if result.ok {
+                    model.forceReconnect()
+                } else {
+                    actionError = "Install didn’t finish — opening Terminal so you can run it and watch the output."
+                    TerminalLauncher.run([
+                        "brew install planetaryescape/spotuify/spotuify",
+                        "spotuify daemon start",
+                    ])
+                }
             case .start:
                 if await DaemonControl.startDaemon(socketPath: model.socketPath) {
                     model.forceReconnect()

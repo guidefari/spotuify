@@ -103,6 +103,21 @@ cargo install --git https://github.com/planetaryescape/spotuify --locked `
 spotuify.exe --help
 ```
 
+## macOS app (.dmg)
+
+Prefer a native window over the terminal? Download the SwiftUI menubar and player app. It is a **client of the same local daemon** the CLI drives, so install the CLI too (Homebrew above) and run `spotuify daemon start` first.
+
+**[Download for macOS (.dmg)](https://github.com/planetaryescape/spotuify/releases/latest)**: open the latest release and grab `Spotuify-<version>.dmg`.
+
+The DMG is an **unsigned build** (no Apple Developer ID, not notarized). On first launch macOS Gatekeeper will block it, so **right-click the app and choose Open** (then confirm) the first time. After that it launches normally. To install, open the DMG and drag `Spotuify.app` to `Applications`.
+
+To download a specific version directly, the asset URL is versioned:
+
+```bash
+VERSION="0.1.44"
+curl -fsSLO "https://github.com/planetaryescape/spotuify/releases/download/v${VERSION}/Spotuify-${VERSION}.dmg"
+```
+
 ## Configure Spotify
 
 `spotuify` is BYO Spotify app GA: the supported GA setup is for users who can create their own Spotify Developer app. It is not broad consumer no-developer setup yet; that would require a reviewed/shared Spotify app or a product decision to make first-party/keymaster auth the default.

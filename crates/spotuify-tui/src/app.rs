@@ -26,8 +26,8 @@ use spotuify_cli::actions::{CommandKind, CommandResult};
 use spotuify_core::{Notification, Recurrence, Reminder, SyncedLyrics};
 use spotuify_protocol::ipc_client::IpcClient;
 use spotuify_protocol::{
-    CacheStatus, DaemonEvent, DoctorReport, NotificationAction, PlaybackCommand, Request, Response,
-    ResponseData, SearchScopeData,
+    CacheStatus, DaemonEvent, DoctorReport, ListenSession, NotificationAction, PlaybackCommand,
+    Request, Response, ResponseData, SearchScopeData, SearchSortData,
 };
 use spotuify_spotify::client::{Device, MediaItem, MediaKind, Playback, Playlist, Queue};
 use spotuify_spotify::config::Config;
@@ -50,6 +50,7 @@ pub enum Screen {
     Library,
     Playlists,
     Queue,
+    History,
     Devices,
     Diagnostics,
     Lyrics,
@@ -72,12 +73,13 @@ pub enum FullscreenPanel {
 }
 
 impl Screen {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Player,
         Self::Search,
         Self::Library,
         Self::Playlists,
         Self::Queue,
+        Self::History,
         Self::Devices,
         Self::Diagnostics,
         Self::Lyrics,
@@ -91,10 +93,29 @@ impl Screen {
             Self::Library => "Library",
             Self::Playlists => "Playlists",
             Self::Queue => "Queue",
+            Self::History => "History",
             Self::Devices => "Devices",
             Self::Diagnostics => "Diagnostics",
             Self::Lyrics => "Lyrics",
             Self::Notifications => "Notifications",
+        }
+    }
+
+    /// The number key that jumps to this screen (History is `0`, since 1–9 are
+    /// taken). Used by the tab bar so the chip matches the real keybinding
+    /// rather than the screen's position in `ALL`.
+    pub fn key_label(self) -> &'static str {
+        match self {
+            Self::Player => "1",
+            Self::Search => "2",
+            Self::Library => "3",
+            Self::Playlists => "4",
+            Self::Queue => "5",
+            Self::Devices => "6",
+            Self::Diagnostics => "7",
+            Self::Lyrics => "8",
+            Self::Notifications => "9",
+            Self::History => "0",
         }
     }
 
@@ -107,6 +128,9 @@ impl Screen {
             Self::Playlists if playlist_open => ActionContext::PlaylistTracks,
             Self::Playlists => ActionContext::Playlists,
             Self::Queue => ActionContext::Queue,
+            // History is a track list; reuse the Library hint set (play / queue
+            // / like / go-to all apply).
+            Self::History => ActionContext::Library,
             Self::Devices => ActionContext::Devices,
             Self::Diagnostics => ActionContext::Diagnostics,
             Self::Lyrics => ActionContext::Lyrics,
@@ -291,6 +315,14 @@ pub struct App {
     pub notifications: Vec<Notification>,
     /// Scheduled reminders, shown on the Notifications screen below the inbox.
     pub reminders: Vec<Reminder>,
+    /// Listening history sessions (newest first), shown on the History screen.
+    pub history_sessions: Vec<ListenSession>,
+    pub history_loading: bool,
+    pub history_error: Option<String>,
+    /// Search-results view refinement (client-side, like the macOS list sort):
+    /// ordering + an optional single-kind filter applied in `visible_items`.
+    pub search_sort: SearchSortData,
+    pub search_kind_filter: Option<MediaKind>,
     pub error: Option<String>,
     pub last_progress_tick: Instant,
     /// Set when the user just issued a track-changing command
@@ -428,6 +460,12 @@ pub struct ArtistViewState {
     /// When set, only show albums already in the library (saved). Toggled
     /// with `L`; a pure client-side filter over the daemon-tagged list.
     pub library_only: bool,
+    /// Whether the user follows this artist. Seeded from the opening item's
+    /// `in_library` flag (None = unknown); flipped optimistically on F.
+    pub is_followed: Option<bool>,
+    /// When the view is opened by navigating from a track to its album, the
+    /// album to auto-select once the discography loads (else the first album).
+    pub pending_album_uri: Option<String>,
 }
 
 impl ArtistViewState {
@@ -629,6 +667,10 @@ enum AsyncResult {
     },
     Command(Box<std::result::Result<CommandResult, String>>),
     DaemonEvent(DaemonEvent),
+    /// Listen-history sessions for the History screen.
+    ListenHistory {
+        result: std::result::Result<Vec<ListenSession>, String>,
+    },
     /// Cover-art fetch result. URL is the version — `apply_async_result`
     /// accepts iff `self.current_art_url == Some(url)`. Stale fetches
     /// (track advanced before our fetch completed) self-discard.
@@ -726,6 +768,11 @@ impl App {
             toast: None,
             notifications: Vec::new(),
             reminders: Vec::new(),
+            history_sessions: Vec::new(),
+            history_loading: false,
+            history_error: None,
+            search_sort: SearchSortData::Relevance,
+            search_kind_filter: None,
             error: None,
             last_progress_tick: Instant::now(),
             awaiting_track_change_until: None,
@@ -833,7 +880,31 @@ impl App {
             Screen::Player => self.home_items(),
             Screen::Queue if self.queue.session_active => self.queue.items.clone(),
             Screen::Queue => Vec::new(),
-            Screen::Search => self.search_results.clone(),
+            // History flattens its sessions (newest first) into a track list so
+            // the standard selection / play / queue / go-to actions just work.
+            Screen::History => self
+                .history_sessions
+                .iter()
+                .flat_map(|session| session.tracks.iter().cloned())
+                .collect(),
+            Screen::Search => {
+                // Client-side view refinement (the macOS search uses the
+                // daemon's Request::Search sort/kinds; the TUI streams into
+                // per-kind panes, so we refine the streamed set for display).
+                let mut results = self.search_results.clone();
+                if let Some(kind) = self.search_kind_filter.as_ref() {
+                    results.retain(|item| &item.kind == kind);
+                }
+                match self.search_sort {
+                    SearchSortData::Relevance => {}
+                    SearchSortData::Name => results.sort_by_key(|item| item.name.to_lowercase()),
+                    SearchSortData::Duration => results.sort_by_key(|item| item.duration_ms),
+                    SearchSortData::Artist => {
+                        results.sort_by_key(|item| item.subtitle.to_lowercase())
+                    }
+                }
+                results
+            }
             Screen::Library => self.library_items.clone(),
             Screen::Playlists if self.selected_playlist_id.is_some() => {
                 self.playlist_tracks.clone()
@@ -844,6 +915,38 @@ impl App {
             .into_iter()
             .filter(|item| matches_filter(&self.list_filter_query, media_item_filter_text(item)))
             .collect()
+    }
+
+    /// Cycle the search-results sort (client-side display order). Resets the
+    /// cursor so the user lands at the top of the re-ordered list.
+    pub(crate) fn cycle_search_sort(&mut self) {
+        self.search_sort = match self.search_sort {
+            SearchSortData::Relevance => SearchSortData::Name,
+            SearchSortData::Name => SearchSortData::Duration,
+            SearchSortData::Duration => SearchSortData::Artist,
+            SearchSortData::Artist => SearchSortData::Relevance,
+        };
+        self.selected = 0;
+        self.toast = Some(format!("Sort: {}", search_sort_label(self.search_sort)));
+    }
+
+    /// Cycle the search type filter through All → each kind → All.
+    pub(crate) fn cycle_search_kind_filter(&mut self) {
+        self.search_kind_filter = match &self.search_kind_filter {
+            None => Some(MediaKind::Track),
+            Some(MediaKind::Track) => Some(MediaKind::Artist),
+            Some(MediaKind::Artist) => Some(MediaKind::Album),
+            Some(MediaKind::Album) => Some(MediaKind::Playlist),
+            Some(MediaKind::Playlist) => Some(MediaKind::Show),
+            Some(MediaKind::Show) => Some(MediaKind::Episode),
+            _ => None,
+        };
+        self.selected = 0;
+        let label = self
+            .search_kind_filter
+            .as_ref()
+            .map_or("All", |kind| kind.label());
+        self.toast = Some(format!("Filter: {label}"));
     }
 
     pub(crate) fn home_items(&self) -> Vec<MediaItem> {
@@ -1053,7 +1156,9 @@ impl App {
             Screen::Player => self.visible_items().len(),
             Screen::Lyrics => 0,
             Screen::Diagnostics => self.filtered_diagnostics_logs().len(),
-            Screen::Search | Screen::Library | Screen::Queue => self.visible_items().len(),
+            Screen::Search | Screen::Library | Screen::Queue | Screen::History => {
+                self.visible_items().len()
+            }
             Screen::Playlists if self.selected_playlist_id.is_some() => self.visible_items().len(),
             Screen::Playlists => self.filtered_playlists().len(),
             Screen::Devices => self.filtered_devices().len(),
@@ -1506,9 +1611,20 @@ impl App {
                     match result {
                         Ok(items) => {
                             view.albums = items;
-                            view.album_selected = 0;
                             view.error = None;
-                            auto_load = view.visible_albums().first().map(|a| a.uri.clone());
+                            // If we arrived here by navigating to a specific
+                            // album, select it; otherwise the first album.
+                            let target = view.pending_album_uri.take();
+                            let (idx, uri) = {
+                                let visible = view.visible_albums();
+                                let idx = target
+                                    .as_deref()
+                                    .and_then(|t| visible.iter().position(|a| a.uri == t))
+                                    .unwrap_or(0);
+                                (idx, visible.get(idx).map(|a| a.uri.clone()))
+                            };
+                            view.album_selected = idx;
+                            auto_load = uri;
                         }
                         Err(err) => view.error = Some(err),
                     }
@@ -1537,6 +1653,20 @@ impl App {
                         }
                         Err(err) => view.error = Some(err),
                     }
+                }
+            }
+            AsyncResult::ListenHistory { result } => {
+                self.history_loading = false;
+                match result {
+                    Ok(sessions) => {
+                        self.history_sessions = sessions;
+                        self.history_error = None;
+                        if self.screen == Screen::History {
+                            self.selected = 0;
+                            self.clamp_selection();
+                        }
+                    }
+                    Err(err) => self.history_error = Some(err),
                 }
             }
             AsyncResult::DaemonEvent(event) => self.apply_daemon_event(event, async_tx),
@@ -3124,6 +3254,8 @@ fn mouse_row_selection(app: &App, area: Rect, column: u16, row: u16) -> Option<u
         Screen::Search => mouse_search_selection(app, area, column, row),
         Screen::Library => list_index_from_row(area, 3, row, app.visible_items().len(), 1),
         Screen::Queue => list_index_from_row(area, 6, row, app.visible_items().len(), 1),
+        // Variable-height rows (session headers); keyboard-only selection.
+        Screen::History => None,
         Screen::Playlists if app.selected_playlist_id.is_some() => {
             list_index_from_row(area, 3, row, app.visible_items().len(), 1)
         }
@@ -3516,6 +3648,30 @@ fn handle_artist_view_key(
             }
             app.toast = Some(format!("Showing {mode} releases"));
         }
+        (KeyCode::Char('F'), _) => {
+            // Toggle follow. Fire-and-forget; the daemon emits LibraryChanged
+            // and the toast + optimistic state flip give instant feedback.
+            let uri = view.artist_uri.clone();
+            let name = view.artist_name.clone();
+            let was_following = view.is_followed == Some(true);
+            view.is_followed = Some(!was_following);
+            let async_tx = async_tx.clone();
+            tokio::spawn(async move {
+                let request = if was_following {
+                    Request::ArtistUnfollow { artist: uri }
+                } else {
+                    Request::ArtistFollow { artist: uri }
+                };
+                if request_data(request).await.is_err() {
+                    let _ = async_tx;
+                }
+            });
+            app.toast = Some(if was_following {
+                format!("Unfollowed {name}")
+            } else {
+                format!("Followed {name}")
+            });
+        }
         (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => match view.focus {
             ArtistViewSide::Albums => {
                 let visible = view.visible_albums();
@@ -3852,6 +4008,15 @@ fn handle_palette_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
     }
 }
 
+fn search_sort_label(sort: SearchSortData) -> &'static str {
+    match sort {
+        SearchSortData::Relevance => "Relevance",
+        SearchSortData::Name => "Name",
+        SearchSortData::Duration => "Duration",
+        SearchSortData::Artist => "Artist",
+    }
+}
+
 fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
     if app.pending_g {
         app.pending_g = false;
@@ -3912,6 +4077,7 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         (KeyCode::Char('7'), KeyModifiers::NONE) => Some(TuiAction::OpenDiagnostics),
         (KeyCode::Char('8'), KeyModifiers::NONE) => Some(TuiAction::OpenLyrics),
         (KeyCode::Char('9'), KeyModifiers::NONE) => Some(TuiAction::OpenNotifications),
+        (KeyCode::Char('0'), KeyModifiers::NONE) => Some(TuiAction::OpenHistory),
         (KeyCode::Char('Q'), _) => Some(TuiAction::ToggleQueueRail),
         (KeyCode::Char('L'), _) => Some(TuiAction::ToggleLyricsRail),
         (KeyCode::Char('H'), _) => Some(TuiAction::ToggleHintsRail),
@@ -3975,7 +4141,19 @@ fn action_from_key(app: &mut App, key: KeyEvent) -> Option<TuiAction> {
         (KeyCode::Char('a'), KeyModifiers::NONE) | (KeyCode::Char('A'), _) => {
             Some(TuiAction::AddSelectionToPlaylist)
         }
+        // Search-screen result refinements (client-side): cycle sort / type
+        // filter. Only when results are focused — typing handles letters first.
+        (KeyCode::Char('S'), _) if app.screen == Screen::Search => {
+            app.cycle_search_sort();
+            None
+        }
+        (KeyCode::Char('T'), _) if app.screen == Screen::Search => {
+            app.cycle_search_kind_filter();
+            None
+        }
         (KeyCode::Char('l'), KeyModifiers::NONE) => Some(TuiAction::LikeSelection),
+        (KeyCode::Char('o'), KeyModifiers::NONE) => Some(TuiAction::OpenSelectedArtist),
+        (KeyCode::Char('O'), _) => Some(TuiAction::OpenSelectedAlbum),
         (KeyCode::Char('R'), _) => Some(TuiAction::RemindMe),
         (KeyCode::Char('U'), _) => Some(TuiAction::RefreshMedia),
         (KeyCode::Char('u'), KeyModifiers::NONE) => {
@@ -4029,6 +4207,12 @@ fn apply_tui_action(
         TuiAction::OpenNotifications => {
             switch_screen(app, Screen::Notifications);
             spawn_load_reminders(async_tx);
+        }
+        TuiAction::OpenHistory => {
+            switch_screen(app, Screen::History);
+            app.history_loading = true;
+            app.history_error = None;
+            spawn_load_history(async_tx);
         }
         TuiAction::MoveDown => {
             app.move_down();
@@ -4130,6 +4314,8 @@ fn apply_tui_action(
             );
         }
         TuiAction::OpenSelected => open_playlist(app, async_tx),
+        TuiAction::OpenSelectedArtist => open_selected_artist(app, async_tx),
+        TuiAction::OpenSelectedAlbum => open_selected_album(app, async_tx),
         TuiAction::PlaySelected => activate_selected(app, async_tx),
         TuiAction::QueueSelection => queue_selection(app, async_tx),
         TuiAction::LikeSelection => like_selection(app, async_tx),
@@ -4483,7 +4669,7 @@ fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
                 // user picks a specific album or track from inside
                 // the view.
                 if matches!(item.kind, MediaKind::Artist) {
-                    open_artist_view(app, async_tx, item);
+                    open_artist_view(app, async_tx, item, None);
                     return;
                 }
                 let item_name = item.name.clone();
@@ -4499,10 +4685,61 @@ fn activate_selected(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult
     }
 }
 
+/// Navigate from the selected item to its primary artist (the TUI mirror of the
+/// macOS click-through). An artist row opens itself; anything else uses its
+/// first artist ref.
+fn open_selected_artist(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    let Some(item) = app.selected_item() else {
+        return;
+    };
+    if matches!(item.kind, MediaKind::Artist) {
+        open_artist_view(app, async_tx, item, None);
+        return;
+    }
+    match item.artists.first() {
+        Some(artist) if !artist.uri.is_empty() => {
+            let synthetic = MediaItem {
+                uri: artist.uri.clone(),
+                name: artist.name.clone(),
+                kind: MediaKind::Artist,
+                ..Default::default()
+            };
+            open_artist_view(app, async_tx, synthetic, None);
+        }
+        _ => app.toast = Some("No artist link for this item".to_string()),
+    }
+}
+
+/// Navigate from the selected track/album to its album. The TUI has no
+/// standalone album page, so this opens the artist view focused on that album
+/// (its discography includes appears-on, so the album is present).
+fn open_selected_album(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    let Some(item) = app.selected_item() else {
+        return;
+    };
+    let (album_uri, artist) = match item.kind {
+        MediaKind::Album => (Some(item.uri.clone()), item.artists.first().cloned()),
+        _ => (item.album_uri.clone(), item.artists.first().cloned()),
+    };
+    match (album_uri, artist) {
+        (Some(album_uri), Some(artist)) if !album_uri.is_empty() && !artist.uri.is_empty() => {
+            let synthetic = MediaItem {
+                uri: artist.uri.clone(),
+                name: artist.name.clone(),
+                kind: MediaKind::Artist,
+                ..Default::default()
+            };
+            open_artist_view(app, async_tx, synthetic, Some(album_uri));
+        }
+        _ => app.toast = Some("No album link for this item".to_string()),
+    }
+}
+
 fn open_artist_view(
     app: &mut App,
     async_tx: &mpsc::UnboundedSender<AsyncResult>,
     artist: MediaItem,
+    focus_album: Option<String>,
 ) {
     app.artist_view = Some(ArtistViewState {
         artist_uri: artist.uri.clone(),
@@ -4511,11 +4748,18 @@ fn open_artist_view(
         album_selected: 0,
         album_tracks: Vec::new(),
         track_selected: 0,
-        focus: ArtistViewSide::Albums,
+        // Jump straight to the Tracks pane when navigating to a specific album.
+        focus: if focus_album.is_some() {
+            ArtistViewSide::Tracks
+        } else {
+            ArtistViewSide::Albums
+        },
         loading_albums: true,
         loading_tracks: false,
         error: None,
         library_only: false,
+        is_followed: artist.in_library,
+        pending_album_uri: focus_album,
     });
     let async_tx = async_tx.clone();
     let artist_uri = artist.uri;
@@ -5084,6 +5328,24 @@ fn command_then_refresh_transport(
 
 /// Fetch reminder schedules + inbox notifications and deliver them via
 /// `AsyncResult::RemindersLoaded`. Fire-and-forget; failures yield empty lists.
+fn spawn_load_history(async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    // See `spawn_load_reminders`: tests apply paths without a Tokio runtime.
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let async_tx = async_tx.clone();
+    tokio::spawn(async move {
+        let result = request_data(Request::ListenSessions { limit: 50 }).await;
+        let _ = async_tx.send(AsyncResult::ListenHistory {
+            result: match result {
+                Ok(ResponseData::ListenSessions { sessions }) => Ok(sessions),
+                Ok(_) => Err("unexpected listen-sessions response".to_string()),
+                Err(err) => Err(short_error(err)),
+            },
+        });
+    });
+}
+
 fn spawn_load_reminders(async_tx: &mpsc::UnboundedSender<AsyncResult>) {
     // Tests drive apply paths synchronously without a Tokio runtime; skip the
     // background fetch there rather than panic on `tokio::spawn`.
@@ -5362,6 +5624,7 @@ fn screen_action(screen: Screen) -> TuiAction {
         Screen::Library => TuiAction::OpenLibrary,
         Screen::Playlists => TuiAction::OpenPlaylists,
         Screen::Queue => TuiAction::OpenQueue,
+        Screen::History => TuiAction::OpenHistory,
         Screen::Devices => TuiAction::OpenDevices,
         Screen::Diagnostics => TuiAction::OpenDiagnostics,
         Screen::Lyrics => TuiAction::OpenLyrics,
@@ -5574,6 +5837,11 @@ mod tests {
             toast: None,
             notifications: Vec::new(),
             reminders: Vec::new(),
+            history_sessions: Vec::new(),
+            history_loading: false,
+            history_error: None,
+            search_sort: SearchSortData::Relevance,
+            search_kind_filter: None,
             error: None,
             last_progress_tick: Instant::now(),
             awaiting_track_change_until: None,

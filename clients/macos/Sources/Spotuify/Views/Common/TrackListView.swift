@@ -11,17 +11,37 @@ enum TrackSort: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-/// A reusable filterable + sortable track/episode list. Used by Liked Songs,
-/// album/playlist detail, and podcast episodes. The header (Play/Shuffle/Queue
+/// A reusable filterable + sortable track/episode collection. Used by Liked
+/// Songs, album/playlist detail, and podcast episodes. Renders as a list of
+/// `MediaRow`s or a grid of `TrackCard`s via the shared `LayoutToggle` (the
+/// same switch every collection page uses). The header (Play/Shuffle/Queue
 /// actions) is supplied by the caller.
 struct TrackListView<Header: View>: View {
     let tracks: [MediaItem]
-    var detailed = true
-    var sortOptions: [TrackSort] = TrackSort.allCases
-    @ViewBuilder var header: () -> Header
+    var detailed: Bool
+    var sortOptions: [TrackSort]
+    let header: () -> Header
 
     @State private var filter = ""
     @State private var sort: TrackSort = .original
+    @CollectionLayoutStorage private var layout: CollectionLayout
+
+    init(
+        tracks: [MediaItem],
+        detailed: Bool = true,
+        sortOptions: [TrackSort] = TrackSort.allCases,
+        storageKey: String = "trackListLayout",
+        @ViewBuilder header: @escaping () -> Header
+    ) {
+        self.tracks = tracks
+        self.detailed = detailed
+        self.sortOptions = sortOptions
+        self.header = header
+        // Tracks default to a list; the grid (cards) is opt-in per surface.
+        _layout = CollectionLayoutStorage(storageKey, default: .list)
+    }
+
+    private let gridColumns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 16)]
 
     private var visible: [MediaItem] {
         var result = tracks
@@ -56,6 +76,7 @@ struct TrackListView<Header: View>: View {
                 }
                 .glassField()
                 Spacer()
+                LayoutToggle(layout: $layout)
                 Picker("Sort", selection: $sort) {
                     ForEach(sortOptions) { Text($0.rawValue).tag($0) }
                 }
@@ -67,25 +88,91 @@ struct TrackListView<Header: View>: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 8)
             Divider()
-            if visible.isEmpty {
-                ContentUnavailableView("Nothing here", systemImage: "music.note",
-                    description: Text(filter.isEmpty ? "No items." : "No matches for \u{201c}\(filter)\u{201d}."))
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(Array(visible.enumerated()), id: \.offset) { _, item in
-                            MediaRow(item: item, detailed: detailed)
-                        }
+            content
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if visible.isEmpty {
+            ContentUnavailableView("Nothing here", systemImage: "music.note",
+                description: Text(filter.isEmpty ? "No items." : "No matches for \u{201c}\(filter)\u{201d}."))
+        } else if layout == .grid {
+            ScrollView {
+                LazyVGrid(columns: gridColumns, spacing: 16) {
+                    ForEach(Array(visible.enumerated()), id: \.offset) { _, item in
+                        TrackCard(item: item)
                     }
-                    .padding(10)
                 }
+                .padding(16)
+            }
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(Array(visible.enumerated()), id: \.offset) { _, item in
+                        MediaRow(item: item, detailed: detailed)
+                    }
+                }
+                .padding(10)
             }
         }
     }
 }
 
 extension TrackListView where Header == EmptyView {
-    init(tracks: [MediaItem], detailed: Bool = true, sortOptions: [TrackSort] = TrackSort.allCases) {
-        self.init(tracks: tracks, detailed: detailed, sortOptions: sortOptions, header: { EmptyView() })
+    init(
+        tracks: [MediaItem],
+        detailed: Bool = true,
+        sortOptions: [TrackSort] = TrackSort.allCases,
+        storageKey: String = "trackListLayout"
+    ) {
+        self.init(
+            tracks: tracks, detailed: detailed, sortOptions: sortOptions,
+            storageKey: storageKey, header: { EmptyView() })
+    }
+}
+
+/// Big-art card for a track/episode in grid mode: tap to play, hover lifts the
+/// cover and reveals a play badge, right-click for the shared action menu. The
+/// track-list counterpart to `ArtworkTile` (which navigates).
+struct TrackCard: View {
+    @Environment(AppModel.self) private var model
+    let item: MediaItem
+    @State private var hovering = false
+    @State private var showReminderPicker = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ZStack(alignment: .bottomTrailing) {
+                AsyncCoverImage(url: item.imageURL, cornerRadius: Theme.tileCornerRadius)
+                    .aspectRatio(1, contentMode: .fit)
+                    .shadow(color: .black.opacity(hovering ? 0.4 : 0.22),
+                            radius: hovering ? 18 : 8, y: hovering ? 10 : 4)
+                Image(systemName: "play.circle.fill")
+                    .font(.largeTitle)
+                    .foregroundStyle(.white, .tint)
+                    .padding(8)
+                    .shadow(radius: 4)
+                    .opacity(hovering ? 1 : 0)
+            }
+            .scaleEffect(hovering ? 1.03 : 1)
+            Text(item.name)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+            if !item.subtitle.isEmpty {
+                Text(item.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .padding(6)
+        .contentShape(Rectangle())
+        .onTapGesture { model.play(uri: item.uri) }
+        .onHover { hovering = $0 }
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hovering)
+        .contextMenu {
+            MediaItemMenu(item: item, onRemind: { showReminderPicker = true })
+        }
+        .sheet(isPresented: $showReminderPicker) {
+            ReminderPickerView(item: item)
+        }
     }
 }

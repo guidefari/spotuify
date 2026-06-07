@@ -39,30 +39,42 @@ struct LyricsView: View {
 
     private func lyricsScroll(_ lyrics: SyncedLyrics) -> some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                VStack(spacing: 18) {
+            ScrollView(showsIndicators: false) {
+                // Apple-Music feel: big bold active line, surrounding lines
+                // dimmed; left-aligned over the dark now-playing backdrop.
+                VStack(alignment: .leading, spacing: 16) {
                     // Top spacer lets the first line scroll to center.
-                    Color.clear.frame(height: 220).id("lyrics-top")
+                    Color.clear.frame(height: 200).id("lyrics-top")
                     ForEach(Array(lyrics.lines.enumerated()), id: \.offset) { index, line in
+                        let isActive = index == activeIndex
                         Text(line.text.isEmpty ? "\u{266A}" : line.text)
-                            .font(.system(size: index == activeIndex ? 26 : 19,
-                                          weight: index == activeIndex ? .bold : .medium))
-                            .foregroundStyle(index == activeIndex
-                                ? AnyShapeStyle(.primary)
-                                : AnyShapeStyle(.secondary.opacity(0.5)))
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: .infinity)
+                            .font(.system(size: isActive ? 30 : 23,
+                                          weight: isActive ? .bold : .semibold))
+                            .foregroundStyle(isActive ? .white : .white.opacity(0.38))
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .environment(\.layoutDirection, line.isRtl ? .rightToLeft : .leftToRight)
                             .id(index)
                             .contentShape(Rectangle())
                             .onTapGesture { model.seek(toMs: line.startMs) }
-                            .animation(.easeInOut(duration: 0.2), value: activeIndex)
+                            .animation(.easeInOut(duration: 0.25), value: activeIndex)
                     }
-                    Color.clear.frame(height: 220).id("lyrics-bottom")
+                    Color.clear.frame(height: 200).id("lyrics-bottom")
                 }
-                .padding(.horizontal, 40)
-                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            // Soft fade at top/bottom edges, like Apple Music.
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .black, location: 0.12),
+                        .init(color: .black, location: 0.88),
+                        .init(color: .clear, location: 1),
+                    ],
+                    startPoint: .top, endPoint: .bottom))
             .onChange(of: activeIndex) { _, index in
                 guard let index else { return }
                 withAnimation(.easeInOut(duration: 0.35)) {

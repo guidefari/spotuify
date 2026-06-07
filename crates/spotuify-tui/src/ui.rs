@@ -106,9 +106,14 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     let modal_area = centered_rect(88, 80, area);
     frame.render_widget(Clear, modal_area);
+    let follow_hint = if view.is_followed == Some(true) {
+        "Following ✓ · F unfollow"
+    } else {
+        "F follow"
+    };
     let outer = focused_card_block(&format!(
-        "Artist · {}  ·  Tab swap pane  ·  Enter play  ·  L library/all  ·  Esc close",
-        view.artist_name
+        "Artist · {}  ·  {}  ·  Tab swap pane  ·  Enter play  ·  L library/all  ·  Esc close",
+        view.artist_name, follow_hint
     ));
     let inner = outer.inner(modal_area);
     frame.render_widget(outer, modal_area);
@@ -1703,7 +1708,7 @@ fn render_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 Style::default().fg(MUTED)
             };
             Line::from(vec![
-                Span::styled(format!(" {} ", index + 1), key_chip_bg),
+                Span::styled(format!(" {} ", screen.key_label()), key_chip_bg),
                 Span::styled(format!(" {} ", screen.label()), label_style),
             ])
         })
@@ -1745,11 +1750,102 @@ fn render_screen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         Screen::Library => render_library(frame, app, area),
         Screen::Playlists => render_playlists(frame, app, area),
         Screen::Queue => render_queue(frame, app, area),
+        Screen::History => render_history(frame, app, area),
         Screen::Devices => render_devices(frame, app, area),
         Screen::Diagnostics => render_diagnostics(frame, app, area),
         Screen::Lyrics => render_lyrics(frame, app, area),
         Screen::Notifications => render_notifications(frame, app, area),
     }
+}
+
+/// Listening history: sessions (newest first) flattened into a track list, with
+/// a dim session header on each session's first row. Selection indexes the flat
+/// track list (matching `App::visible_items` on the History screen), so Enter /
+/// e / o / O work through the standard item-action path.
+fn render_history(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    use crate::widgets::style::card_block;
+    let total_tracks: usize = app.history_sessions.iter().map(|s| s.tracks.len()).sum();
+    let session_count = app.history_sessions.len();
+    let block = card_block(&format!(
+        "History · {session_count} session{} · {total_tracks} tracks  ·  Enter play · e queue · o artist · O album",
+        if session_count == 1 { "" } else { "s" }
+    ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.history_loading && app.history_sessions.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  Loading history…",
+                Style::default().fg(MUTED),
+            )))
+            .style(Style::default().bg(PANEL)),
+            inner,
+        );
+        return;
+    }
+    if let Some(err) = &app.history_error {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("  {err}"),
+                Style::default().fg(RED),
+            )))
+            .style(Style::default().bg(PANEL)),
+            inner,
+        );
+        return;
+    }
+    if total_tracks == 0 {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  No listening history yet. Tracks you play show up here.",
+                Style::default().fg(MUTED),
+            )))
+            .style(Style::default().bg(PANEL)),
+            inner,
+        );
+        return;
+    }
+
+    let highlight = Style::default()
+        .fg(BG)
+        .bg(GREEN)
+        .add_modifier(Modifier::BOLD);
+    let mut items: Vec<ListItem<'_>> = Vec::with_capacity(total_tracks);
+    for session in &app.history_sessions {
+        for (i, track) in session.tracks.iter().enumerate() {
+            let track_line = Line::from(vec![
+                Span::styled(
+                    track.name.clone(),
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(track.subtitle.clone(), Style::default().fg(MUTED)),
+            ]);
+            if i == 0 {
+                let label = session
+                    .context_label
+                    .clone()
+                    .unwrap_or_else(|| "Mixed session".to_string());
+                let header = Line::from(Span::styled(
+                    format!("— {label} · {}", fmt_reminder_when(session.started_at_ms)),
+                    Style::default().fg(GREEN),
+                ));
+                items.push(ListItem::new(vec![header, track_line]));
+            } else {
+                items.push(ListItem::new(track_line));
+            }
+        }
+    }
+    let mut state = ListState::default();
+    if app.selected < total_tracks {
+        state.select(Some(app.selected));
+    }
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(highlight),
+        inner,
+        &mut state,
+    );
 }
 
 fn render_right_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -2401,10 +2497,20 @@ fn render_search(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(1)])
         .split(area);
+    let sort_label = match app.search_sort {
+        spotuify_protocol::SearchSortData::Relevance => "Relevance",
+        spotuify_protocol::SearchSortData::Name => "Name",
+        spotuify_protocol::SearchSortData::Duration => "Duration",
+        spotuify_protocol::SearchSortData::Artist => "Artist",
+    };
+    let filter_label = app
+        .search_kind_filter
+        .as_ref()
+        .map_or("All", |kind| kind.label());
     let prompt = if app.search_input_active {
-        "typing global search"
+        format!("typing global search  ·  S sort: {sort_label}  ·  T type: {filter_label}")
     } else {
-        "press / to search tracks, episodes, albums, playlists"
+        format!("/ search  ·  S sort: {sort_label}  ·  T type: {filter_label}")
     };
     let input_style = if app.search_input_active {
         Style::default().fg(TEXT).bg(Color::Rgb(24, 34, 29))
@@ -4747,6 +4853,11 @@ mod tests {
             toast: None,
             notifications: Vec::new(),
             reminders: Vec::new(),
+            history_sessions: Vec::new(),
+            history_loading: false,
+            history_error: None,
+            search_sort: spotuify_protocol::SearchSortData::Relevance,
+            search_kind_filter: None,
             error: None,
             last_progress_tick: Instant::now(),
             awaiting_track_change_until: None,

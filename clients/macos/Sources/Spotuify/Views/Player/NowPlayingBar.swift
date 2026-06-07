@@ -6,8 +6,14 @@ import SpotuifyKit
 struct NowPlayingBar: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
+    @AppStorage("globalSidePanel") private var globalPanelRaw = GlobalPanel.none.rawValue
 
     private var item: MediaItem? { model.player.currentItem }
+    private var globalPanel: GlobalPanel { GlobalPanel(rawValue: globalPanelRaw) ?? .none }
+
+    private func togglePanel(_ target: GlobalPanel) {
+        globalPanelRaw = (globalPanel == target ? GlobalPanel.none : target).rawValue
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,7 +30,8 @@ struct NowPlayingBar: View {
                 trailing
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 20)
         }
         .frame(height: Theme.nowPlayingBarHeight)
         .background {
@@ -57,7 +64,7 @@ struct NowPlayingBar: View {
                     .lineLimit(1)
             }
         }
-        .frame(width: 240, alignment: .leading)
+        .frame(width: 300, alignment: .leading)
     }
 
     private var controls: some View {
@@ -78,11 +85,17 @@ struct NowPlayingBar: View {
 
     private var trailing: some View {
         HStack(spacing: 10) {
+            TransportButton(systemName: "quote.bubble", size: 13) { togglePanel(.lyrics) }
+                .foregroundStyle(globalPanel == .lyrics ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .help("Lyrics")
+            TransportButton(systemName: "list.bullet", size: 13) { togglePanel(.queue) }
+                .foregroundStyle(globalPanel == .queue ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .help("Up next")
             Text("\(Theme.timeString(model.player.displayProgressMs)) / \(Theme.timeString(model.player.durationMs))")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
             VolumeControl().frame(width: 96)
         }
-        .frame(width: 240, alignment: .trailing)
+        .frame(width: 300, alignment: .trailing)
     }
 }

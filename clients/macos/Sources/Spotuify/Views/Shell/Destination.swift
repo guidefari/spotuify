@@ -3,13 +3,14 @@ import SwiftUI
 /// Sidebar destinations.
 enum Destination: String, CaseIterable, Identifiable {
     case nowPlaying
+    case queue
     case search
     case likedSongs
     case albums
     case artists
     case podcasts
     case playlists
-    case queue
+    case history
     case notifications
     case devices
 
@@ -25,6 +26,7 @@ enum Destination: String, CaseIterable, Identifiable {
         case .podcasts: "Podcasts"
         case .playlists: "Playlists"
         case .queue: "Queue"
+        case .history: "History"
         case .notifications: "Notifications"
         case .devices: "Devices"
         }
@@ -40,6 +42,7 @@ enum Destination: String, CaseIterable, Identifiable {
         case .podcasts: "mic.fill"
         case .playlists: "music.note.list"
         case .queue: "list.bullet"
+        case .history: "clock.arrow.circlepath"
         case .notifications: "bell.fill"
         case .devices: "hifispeaker.2.fill"
         }

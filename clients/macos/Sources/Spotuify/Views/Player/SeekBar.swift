@@ -19,18 +19,25 @@ struct SeekBar: View {
     var body: some View {
         GeometryReader { geo in
             let width = geo.size.width
+            // Apple-Music-style affordance: the bar thickens on hover/drag so
+            // it's easier to grab, and the scrubber knob fades + scales in.
+            let active = hovering || dragFraction != nil
+            let barHeight = active ? height + 4 : height
+            let knob = barHeight + 8
             ZStack(alignment: .leading) {
-                Capsule().fill(.primary.opacity(0.15))
+                Capsule().fill(.primary.opacity(0.15)).frame(height: barHeight)
                 Capsule().fill(.tint)
-                    .frame(width: max(0, min(1, shownFraction)) * width)
+                    .frame(width: max(0, min(1, shownFraction)) * width, height: barHeight)
                 Circle()
                     .fill(.white)
-                    .frame(width: height + 6, height: height + 6)
-                    .shadow(radius: 1, y: 0.5)
-                    .offset(x: max(0, min(1, shownFraction)) * width - (height + 6) / 2)
-                    .opacity(hovering || dragFraction != nil ? 1 : 0)
+                    .frame(width: knob, height: knob)
+                    .shadow(radius: 2, y: 0.5)
+                    .offset(x: max(0, min(1, shownFraction)) * width - knob / 2)
+                    .opacity(active ? 1 : 0)
+                    .scaleEffect(active ? 1 : 0.5)
             }
-            .frame(height: height)
+            .frame(height: max(barHeight, height), alignment: .center)
+            .frame(maxHeight: .infinity, alignment: .center)
             .contentShape(Rectangle().inset(by: -8))
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -45,7 +52,8 @@ struct SeekBar: View {
             )
             .onHover { hovering = $0 }
         }
-        .frame(height: height + 6)
-        .animation(.easeOut(duration: 0.12), value: hovering)
+        .frame(height: height + 10)
+        .animation(.spring(response: 0.28, dampingFraction: 0.72), value: hovering)
+        .animation(.spring(response: 0.28, dampingFraction: 0.72), value: dragFraction != nil)
     }
 }

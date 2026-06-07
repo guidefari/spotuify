@@ -8,7 +8,7 @@ enum Theme {
     static let artCornerRadius: CGFloat = 14
     static let tileCornerRadius: CGFloat = 12
     static let sidebarWidth: CGFloat = 212
-    static let nowPlayingBarHeight: CGFloat = 76
+    static let nowPlayingBarHeight: CGFloat = 92
 
     static func timeString(_ ms: UInt64) -> String {
         let totalSeconds = Int(ms / 1000)

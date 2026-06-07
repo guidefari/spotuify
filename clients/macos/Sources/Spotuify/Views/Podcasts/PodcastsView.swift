@@ -5,29 +5,22 @@ import SpotuifyKit
 struct PodcastsView: View {
     @Environment(AppModel.self) private var model
 
-    private let columns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 16)]
-
     var body: some View {
         NavigationStack {
-            Group {
+            VStack(alignment: .leading, spacing: 0) {
+                EditorialPageHeader("Podcasts")
+                Divider()
                 if model.library.loadingShows && model.library.savedShows.isEmpty {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if model.library.savedShows.isEmpty {
                     ContentUnavailableView("No podcasts", systemImage: "mic",
                         description: Text("Shows you follow on Spotify appear here."))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 16) {
-                            ForEach(model.library.savedShows) { show in
-                                NavigationLink(value: show) { ArtworkTile(item: show) }
-                                    .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(16)
-                    }
+                    CollectionView(items: model.library.savedShows, storageKey: "podcastsLayout")
                 }
             }
-            .navigationTitle("Podcasts")
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .mediaDetailDestinations()
         }
         .background(.background)

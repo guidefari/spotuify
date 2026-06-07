@@ -8,7 +8,10 @@ struct SpotuifyApp: App {
     @State private var theme = ArtworkTheme()
 
     var body: some Scene {
-        WindowGroup("Spotuify", id: "player") {
+        // `Window` (not `WindowGroup`) so there is exactly one player window —
+        // re-invoking `openWindow(id: "player")` focuses the existing one
+        // instead of spawning a new window each time.
+        Window("Spotuify", id: "player") {
             RootView()
                 .environment(model)
                 .environment(theme)
@@ -29,7 +32,8 @@ struct SpotuifyApp: App {
             }
         }
 
-        WindowGroup(id: "mini-player") {
+        // Single floating HUD window — likewise reused, never duplicated.
+        Window("Mini Player", id: "mini-player") {
             MiniPlayerView()
                 .environment(model)
                 .environment(theme)

@@ -137,6 +137,47 @@ public final class AppModel {
         playAll(uris: uris.shuffled())
     }
 
+    /// Follow an artist. The daemon emits a `LibraryChanged` event that refreshes
+    /// the Followed-Artists list.
+    public func followArtist(uri: String) {
+        Task { [weak self] in try? await self?.connection.request(.artistFollow(artist: uri)) }
+    }
+
+    /// Unfollow an artist.
+    public func unfollowArtist(uri: String) {
+        Task { [weak self] in try? await self?.connection.request(.artistUnfollow(artist: uri)) }
+    }
+
+    // MARK: Like / save
+
+    /// Save (like) a track/album/etc. by URI. The daemon emits `LibraryChanged`.
+    public func like(uri: String) {
+        Task { [weak self] in
+            try? await self?.connection.request(.librarySave(uri: uri, current: false))
+        }
+    }
+
+    /// Remove a saved (liked) item by URI.
+    public func unlike(uri: String) {
+        Task { [weak self] in try? await self?.connection.request(.libraryUnsave(uri: uri)) }
+    }
+
+    /// Toggle like for a media item based on its known `inLibrary` state
+    /// (defaults to liking when unknown).
+    public func toggleLike(_ item: MediaItem) {
+        if item.inLibrary == true {
+            unlike(uri: item.uri)
+        } else {
+            like(uri: item.uri)
+        }
+    }
+
+    /// Like the current now-playing track (no-op when nothing is playing).
+    public func likeCurrent() {
+        guard let item = player.currentItem else { return }
+        toggleLike(item)
+    }
+
     // MARK: Reminders
 
     /// Schedule a reminder. `anchorAtMs` is an absolute epoch (ms); the tz is the

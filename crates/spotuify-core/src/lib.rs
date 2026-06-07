@@ -259,6 +259,14 @@ impl std::fmt::Display for MediaKindParseError {
 
 impl std::error::Error for MediaKindParseError {}
 
+/// A named reference to an artist, carrying the URI so clients can navigate
+/// from a track/album straight to the artist without re-resolving by name.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct ArtistRef {
+    pub name: String,
+    pub uri: String,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct MediaItem {
     pub id: Option<String>,
@@ -304,6 +312,19 @@ pub struct MediaItem {
     /// can offer an "in library only" filter without a refetch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_library: Option<bool>,
+    /// Album URI for a track (`spotify:album:…`), so clients can navigate from
+    /// a track to its album. `None` for non-track items or when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_uri: Option<String>,
+    /// Contributing artists with their URIs, so clients can navigate from a
+    /// track/album to each artist. Empty when unknown (older cached rows).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artists: Vec<ArtistRef>,
+    /// Primary genre, when known. Spotify carries genres on the artist/album
+    /// rather than the track, so this is populated best-effort and flows live
+    /// from the provider (not persisted), like `album_group`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

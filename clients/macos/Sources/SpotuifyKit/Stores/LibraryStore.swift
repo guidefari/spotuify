@@ -12,12 +12,14 @@ public final class LibraryStore {
     public private(set) var savedAlbums: [MediaItem] = []
     public private(set) var savedShows: [MediaItem] = []
     public private(set) var followedArtists: [MediaItem] = []
+    public private(set) var historySessions: [ListenSession] = []
     public private(set) var playlistTracks: [String: [MediaItem]] = [:]
     public private(set) var loadingPlaylists = false
     public private(set) var loadingLiked = false
     public private(set) var loadingAlbums = false
     public private(set) var loadingShows = false
     public private(set) var loadingArtists = false
+    public private(set) var loadingHistory = false
     public private(set) var loadingTracksFor: String?
 
     private weak var model: AppModel?
@@ -94,6 +96,18 @@ public final class LibraryStore {
         if case .mediaItems(let items) = try? await model.request(
             .followedArtists(limit: 500), timeout: .seconds(20)) {
             followedArtists = items.filter { $0.kind == .artist }
+        }
+    }
+
+    /// Listening history grouped into sessions (merged local + recently-played).
+    public func loadHistory(force: Bool = false) async {
+        guard let model else { return }
+        if !force && !historySessions.isEmpty { return }
+        loadingHistory = true
+        defer { loadingHistory = false }
+        if case .listenSessions(let sessions) = try? await model.request(
+            .listenSessions(limit: 50), timeout: .seconds(20)) {
+            historySessions = sessions
         }
     }
 

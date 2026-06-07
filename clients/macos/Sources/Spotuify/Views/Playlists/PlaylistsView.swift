@@ -4,59 +4,39 @@ import SpotuifyKit
 struct PlaylistsView: View {
     @Environment(AppModel.self) private var model
 
+    /// Sidebar `Playlist`s as `MediaItem`s so they flow through the shared
+    /// grid/list `CollectionView` and open via `mediaDetailDestinations`.
+    private var items: [MediaItem] {
+        model.library.playlists.map { playlist in
+            MediaItem(
+                uri: "spotify:playlist:\(playlist.id)",
+                name: playlist.name,
+                subtitle: playlist.owner,
+                context: "\(playlist.tracksTotal) tracks",
+                imageURL: playlist.imageURL,
+                kind: .playlist)
+        }
+    }
+
     var body: some View {
         NavigationStack {
-            Group {
+            VStack(alignment: .leading, spacing: 0) {
+                EditorialPageHeader("Playlists")
+                Divider()
                 if model.library.loadingPlaylists && model.library.playlists.isEmpty {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if model.library.playlists.isEmpty {
                     ContentUnavailableView("No playlists", systemImage: "music.note.list")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: 2) {
-                            ForEach(model.library.playlists) { playlist in
-                                NavigationLink(value: playlist) {
-                                    PlaylistRow(playlist: playlist)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(10)
-                    }
+                    CollectionView(items: items, storageKey: "playlistsLayout")
                 }
             }
-            .navigationTitle("Playlists")
-            .navigationDestination(for: Playlist.self) { playlist in
-                PlaylistDetailView(playlist: playlist)
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .mediaDetailDestinations()
         }
         .background(.background)
         .task { await model.library.loadPlaylists() }
-    }
-}
-
-private struct PlaylistRow: View {
-    let playlist: Playlist
-    @State private var hovering = false
-
-    var body: some View {
-        HStack(spacing: 10) {
-            AsyncCoverImage(url: playlist.imageURL, cornerRadius: 6)
-                .frame(width: 44, height: 44)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(playlist.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
-                Text("\(playlist.tracksTotal) tracks · \(playlist.owner)")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Spacer()
-            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-        }
-        .padding(.vertical, 4).padding(.horizontal, 8)
-        .background {
-            RoundedRectangle(cornerRadius: 8).fill(hovering ? AnyShapeStyle(.primary.opacity(0.06)) : AnyShapeStyle(.clear))
-        }
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
     }
 }
 

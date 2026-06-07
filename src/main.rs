@@ -143,6 +143,9 @@ enum Command {
         /// 1-based search result index for --play.
         #[arg(long, default_value_t = 1)]
         index: usize,
+        /// Sort results (relevance keeps Spotify's order).
+        #[arg(long, value_enum, default_value = "relevance")]
+        sort: SearchSortArg,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -182,6 +185,19 @@ enum Command {
     },
     /// List the current user's playlists.
     Playlists {
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Listening history grouped into sessions (merges local plays + Spotify
+    /// recently-played). Use --flat for a chronological track list.
+    History {
+        /// Maximum number of sessions to return.
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+        /// Print a flat chronological track list instead of sessions.
+        #[arg(long)]
+        flat: bool,
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -599,6 +615,29 @@ impl From<SearchSource> for protocol::SearchSourceData {
             SearchSource::Local => Self::Local,
             SearchSource::Spotify => Self::Spotify,
             SearchSource::Hybrid => Self::Hybrid,
+        }
+    }
+}
+
+/// CLI flag for `--sort` on `search`. `Relevance` (default) keeps Spotify's own
+/// ordering; the daemon applies the others after fetch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum SearchSortArg {
+    Relevance,
+    Name,
+    Duration,
+    Artist,
+}
+
+impl SearchSortArg {
+    /// `None` for `Relevance` so the wire stays compact and the daemon skips
+    /// the sort entirely.
+    fn into_data(self) -> Option<protocol::SearchSortData> {
+        match self {
+            SearchSortArg::Relevance => None,
+            SearchSortArg::Name => Some(protocol::SearchSortData::Name),
+            SearchSortArg::Duration => Some(protocol::SearchSortData::Duration),
+            SearchSortArg::Artist => Some(protocol::SearchSortData::Artist),
         }
     }
 }
@@ -1060,6 +1099,7 @@ async fn run() -> Result<()> {
             pages,
             play,
             index,
+            sort,
             format,
         }) => {
             commands::ipc_search(
@@ -1070,10 +1110,16 @@ async fn run() -> Result<()> {
                 pages,
                 play,
                 index,
+                sort.into_data(),
                 format,
             )
             .await
         }
+        Some(Command::History {
+            limit,
+            flat,
+            format,
+        }) => commands::ipc_history(limit, flat, format).await,
         Some(Command::SearchPage {
             query,
             kind,

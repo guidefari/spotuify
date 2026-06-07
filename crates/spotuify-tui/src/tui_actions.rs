@@ -8,6 +8,7 @@ pub enum TuiAction {
     OpenLibrary,
     OpenPlaylists,
     OpenQueue,
+    OpenHistory,
     OpenDevices,
     OpenDevicePicker,
     OpenDiagnostics,
@@ -36,6 +37,10 @@ pub enum TuiAction {
     ToggleShuffle,
     CycleRepeat,
     OpenSelected,
+    /// Navigate from the selected item to its artist (track/album → artist).
+    OpenSelectedArtist,
+    /// Navigate from the selected item to its album (track → album).
+    OpenSelectedAlbum,
     PlaySelected,
     QueueSelection,
     LikeSelection,
@@ -509,6 +514,22 @@ pub fn default_actions() -> Vec<ActionSpec> {
             cli: Some("spotuify like URI"),
         },
         ActionSpec {
+            id: A::OpenSelectedArtist,
+            label: "Go To Artist",
+            shortcut: "o",
+            contexts: &[C::SearchResults, C::Library, C::PlaylistTracks, C::Queue],
+            category: "Navigate",
+            cli: Some("spotuify artist albums URI"),
+        },
+        ActionSpec {
+            id: A::OpenSelectedAlbum,
+            label: "Go To Album",
+            shortcut: "O",
+            contexts: &[C::SearchResults, C::Library, C::PlaylistTracks, C::Queue],
+            category: "Navigate",
+            cli: Some("spotuify album tracks URI"),
+        },
+        ActionSpec {
             id: A::RemindMe,
             label: "Remind Me",
             shortcut: "R",
@@ -662,6 +683,7 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         | TuiAction::OpenLibrary
         | TuiAction::OpenPlaylists
         | TuiAction::OpenQueue
+        | TuiAction::OpenHistory
         | TuiAction::OpenDevices
         | TuiAction::OpenDiagnostics
         | TuiAction::OpenLyrics
@@ -680,6 +702,8 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         | TuiAction::ToggleShuffle
         | TuiAction::CycleRepeat
         | TuiAction::OpenSelected
+        | TuiAction::OpenSelectedArtist
+        | TuiAction::OpenSelectedAlbum
         | TuiAction::PlaySelected
         | TuiAction::QueueSelection
         | TuiAction::LikeSelection

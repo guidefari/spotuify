@@ -1,33 +1,63 @@
 import SwiftUI
 import SpotuifyKit
 
-/// The menubar popover companion. Shares the same AppModel as the main window
-/// so they stay perfectly in sync. Enriched further in Phase 5.
+/// The menubar popover companion — now cover-art-first to match the main
+/// window: a palette-tinted header with the artwork as hero, the metadata over
+/// a scrim, and the transport below. Shares the same AppModel + ArtworkTheme as
+/// the main window so they stay perfectly in sync.
 struct MenuBarView: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
     @Environment(\.openWindow) private var openWindow
 
     private var item: MediaItem? { model.player.currentItem }
+    private var palette: ArtworkPalette { theme.palette }
 
     var body: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                AsyncCoverImage(url: item?.imageURL, cornerRadius: 8)
-                    .frame(width: 64, height: 64)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item?.name ?? "Nothing playing")
-                        .font(.displayTitle(18))
-                        .lineLimit(2).minimumScaleFactor(0.7)
-                    Text(item?.subtitle ?? "")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-            }
+        VStack(spacing: 0) {
+            header
+            controls
+        }
+        .frame(width: 320)
+        .task(id: item?.imageURL) { await theme.update(for: item?.imageURL) }
+    }
 
-            SeekBar(progress: model.player.progressFraction, onSeek: { model.seek(toFraction: $0) }, height: 4)
+    private var header: some View {
+        ZStack(alignment: .bottom) {
+            ZStack {
+                palette.background
+                AsyncCoverImage(url: item?.imageURL, cornerRadius: 0)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+                    .blur(radius: 28).opacity(0.5)
+                LinearGradient(
+                    colors: [.clear, palette.background.opacity(0.55), .black.opacity(0.85)],
+                    startPoint: .top, endPoint: .bottom)
+            }
+            VStack(spacing: 10) {
+                AsyncCoverImage(url: item?.imageURL, cornerRadius: 10)
+                    .frame(width: 132, height: 132)
+                    .shadow(color: palette.accent.opacity(0.45), radius: 18, y: 8)
+                    .shadow(color: .black.opacity(0.4), radius: 12, y: 6)
+                VStack(spacing: 2) {
+                    Text(item?.name ?? "Nothing playing")
+                        .font(.displayTitle(17)).foregroundStyle(.white)
+                        .lineLimit(1).minimumScaleFactor(0.7)
+                    Text(item?.subtitle ?? "")
+                        .font(.caption).foregroundStyle(.white.opacity(0.78)).lineLimit(1)
+                }
+            }
+            .padding(.top, 20).padding(.bottom, 14).padding(.horizontal, 14)
+        }
+        .frame(height: 224)
+        .clipped()
+    }
+
+    private var controls: some View {
+        VStack(spacing: 12) {
+            SeekBar(
+                progress: model.player.progressFraction,
+                onSeek: { model.seek(toFraction: $0) }, height: 5)
 
             GlassEffectContainer(spacing: 10) {
                 HStack(spacing: 18) {
@@ -45,7 +75,7 @@ struct MenuBarView: View {
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 9)
-                .glassEffect(.regular.tint(theme.accent.opacity(0.20)).interactive(), in: .capsule)
+                .glassEffect(.regular.tint(palette.accent.opacity(0.20)).interactive(), in: .capsule)
             }
 
             Divider()
@@ -63,6 +93,5 @@ struct MenuBarView: View {
             .font(.caption)
         }
         .padding(14)
-        .frame(width: 300)
     }
 }

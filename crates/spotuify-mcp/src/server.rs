@@ -93,6 +93,8 @@ async fn resolve_playlist_tracks(
                 // Agent plan resolution = catalog discovery.
                 source: SearchSourceData::Spotify,
                 limit: 50,
+                kinds: None,
+                sort: None,
             },
         )
         .await?
@@ -283,6 +285,7 @@ fn kind_label(data: &spotuify_protocol::ResponseData) -> &'static str {
         D::ClientSeed { .. } => "client_seed",
         D::Playlists { .. } => "playlists",
         D::MediaItems { .. } => "media_items",
+        D::ListenSessions { .. } => "listen_sessions",
         D::Logs { .. } => "logs",
         D::Mutation { .. } => "mutation",
         D::PlaylistCreate { .. } => "playlist_create",

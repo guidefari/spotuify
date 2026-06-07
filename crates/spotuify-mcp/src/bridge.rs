@@ -84,6 +84,8 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
                 scope,
                 source,
                 limit,
+                kinds: None,
+                sort: None,
             }))
         }
         "now_playing" => Ok(TranslatedCall::Request(R::PlaybackGet)),

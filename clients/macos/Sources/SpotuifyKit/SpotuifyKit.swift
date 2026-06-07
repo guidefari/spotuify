@@ -9,6 +9,8 @@ public enum SpotuifyKit {
     /// running daemon reporting `protocol_version >= ipcProtocolVersion`, so a
     /// stale daemon can't break the new features (v3 = listening reminders;
     /// v4 = artist discography browser — `followed-artists` + `album_group`/
-    /// `in_library` on `MediaItem`).
-    public static let ipcProtocolVersion = 4
+    /// `in_library` on `MediaItem`; v5 = follow/unfollow artists, listening
+    /// history sessions, search sort/multi-kind, and artist/album refs on
+    /// `MediaItem` for click-through navigation).
+    public static let ipcProtocolVersion = 5
 }

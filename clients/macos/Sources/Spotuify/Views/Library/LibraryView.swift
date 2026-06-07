@@ -8,32 +8,33 @@ struct LikedSongsView: View {
 
     var body: some View {
         let liked = model.library.likedSongs
-        Group {
-            if model.library.loadingLiked && liked.isEmpty {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if liked.isEmpty {
-                ContentUnavailableView("No liked songs", systemImage: "heart",
-                    description: Text("Songs you like on Spotify show up here."))
-            } else {
-                TrackListView(tracks: liked) {
-                    CollectionHeader(
-                        icon: "heart.fill",
-                        title: "Liked Songs",
-                        subtitle: "\(liked.count) songs",
-                        uris: liked.map(\.uri))
+        NavigationStack {
+            Group {
+                if model.library.loadingLiked && liked.isEmpty {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if liked.isEmpty {
+                    ContentUnavailableView("No liked songs", systemImage: "heart",
+                        description: Text("Songs you like on Spotify show up here."))
+                } else {
+                    TrackListView(tracks: liked, storageKey: "likedLayout") {
+                        CollectionHeader(
+                            icon: "heart.fill",
+                            title: "Liked Songs",
+                            subtitle: "\(liked.count) songs",
+                            uris: liked.map(\.uri))
+                    }
                 }
             }
+            .mediaDetailDestinations()
         }
         .background(.background)
         .task { await model.library.loadLiked() }
     }
 }
 
-/// Saved albums grid → album detail.
+/// Saved albums → album detail, as a card grid or list (toggle persisted).
 struct AlbumsView: View {
     @Environment(AppModel.self) private var model
-
-    private let columns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 16)]
 
     var body: some View {
         NavigationStack {
@@ -44,20 +45,12 @@ struct AlbumsView: View {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if model.library.savedAlbums.isEmpty {
                     ContentUnavailableView("No saved albums", systemImage: "square.stack")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 16) {
-                            ForEach(model.library.savedAlbums) { album in
-                                NavigationLink(value: album) {
-                                    ArtworkTile(item: album)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(16)
-                    }
+                    CollectionView(items: model.library.savedAlbums, storageKey: "albumsLayout")
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .mediaDetailDestinations()
         }
         .background(.background)
@@ -65,11 +58,9 @@ struct AlbumsView: View {
     }
 }
 
-/// Followed artists grid → artist discography (with the All / In-Library toggle).
+/// Followed artists → artist discography, as a card grid or list (toggle persisted).
 struct ArtistsView: View {
     @Environment(AppModel.self) private var model
-
-    private let columns = [GridItem(.adaptive(minimum: 140, maximum: 180), spacing: 16)]
 
     var body: some View {
         NavigationStack {
@@ -81,20 +72,14 @@ struct ArtistsView: View {
                 } else if model.library.followedArtists.isEmpty {
                     ContentUnavailableView("No followed artists", systemImage: "music.mic",
                         description: Text("Artists you follow on Spotify show up here."))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 16) {
-                            ForEach(model.library.followedArtists) { artist in
-                                NavigationLink(value: artist) {
-                                    ArtworkTile(item: artist)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(16)
-                    }
+                    CollectionView(
+                        items: model.library.followedArtists,
+                        storageKey: "artistsLayout", minTile: 150, maxTile: 190)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .mediaDetailDestinations()
         }
         .background(.background)
@@ -153,6 +138,9 @@ struct ArtworkTile: View {
                 .lineLimit(1)
             if !item.subtitle.isEmpty {
                 Text(item.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            if let meta = item.metaLine {
+                Text(meta).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
             }
         }
         .padding(6)

@@ -47,15 +47,26 @@ struct MediaRow: View {
                     }
                     Text(item.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
                 }
-                if !item.subtitle.isEmpty {
-                    Text(item.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
+                subtitleView
             }
             Spacer(minLength: 8)
             if detailed, let album = item.albumLabel {
-                Text(album)
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if let albumNav = item.albumNavItem {
+                    NavigationLink(value: albumNav) {
+                        Text(album).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
                     .frame(width: 160, alignment: .leading)
+                } else {
+                    Text(album)
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        .frame(width: 160, alignment: .leading)
+                }
+            }
+            if detailed, let genre = item.genre, !genre.isEmpty {
+                Text(genre)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .frame(width: 110, alignment: .leading)
             }
             if detailed, let added = relativeDate(item.addedAtMs) {
                 Text(added)
@@ -65,18 +76,31 @@ struct MediaRow: View {
             if item.explicit == true {
                 Image(systemName: "e.square.fill").font(.caption2).foregroundStyle(.tertiary)
             }
-            if hovering, item.kind.isQueueable {
-                Button { model.queueAdd(uri: item.uri) } label: {
-                    Image(systemName: "text.append")
-                }
-                .buttonStyle(.plain).help("Add to queue")
+            // Queue button always occupies its slot (opacity, not conditional
+            // insertion) so the album/duration columns don't jump on hover.
+            Button { model.queueAdd(uri: item.uri) } label: {
+                Image(systemName: "text.append")
             }
+            .buttonStyle(.plain).help("Add to queue")
+            .opacity(hovering && item.kind.isQueueable ? 1 : 0)
+            .allowsHitTesting(hovering && item.kind.isQueueable)
             Button { model.play(uri: item.uri) } label: {
                 Image(systemName: "play.circle.fill").font(.title3)
             }
             .buttonStyle(.plain)
             .opacity(hovering ? 1 : 0)
+            .allowsHitTesting(hovering)
             .help("Play")
+            Menu {
+                MediaItemMenu(item: item, onRemind: { showReminderPicker = true })
+            } label: {
+                Image(systemName: "ellipsis").font(.body)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .opacity(hovering ? 1 : 0.35)
+            .help("More actions")
             if item.durationMs > 0 {
                 Text(durationLabel)
                     .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
@@ -93,15 +117,32 @@ struct MediaRow: View {
         .onTapGesture(count: 2) { model.play(uri: item.uri) }
         .onHover { hovering = $0 }
         .contextMenu {
-            Button("Play") { model.play(uri: item.uri) }
-            if item.kind.isQueueable {
-                Button("Add to Queue") { model.queueAdd(uri: item.uri) }
-            }
-            Divider()
-            Button("Remind me…") { showReminderPicker = true }
+            MediaItemMenu(item: item, onRemind: { showReminderPicker = true })
         }
         .sheet(isPresented: $showReminderPicker) {
             ReminderPickerView(item: item)
+        }
+    }
+
+    /// Subtitle line: clickable artist links when the item carries navigable
+    /// artist refs, else the plain subtitle text.
+    @ViewBuilder
+    private var subtitleView: some View {
+        let artistItems = item.artistNavItems
+        if !artistItems.isEmpty {
+            HStack(spacing: 3) {
+                ForEach(Array(artistItems.enumerated()), id: \.element.id) { index, artist in
+                    if index > 0 {
+                        Text(",").font(.caption).foregroundStyle(.secondary)
+                    }
+                    NavigationLink(value: artist) {
+                        ArtistLinkLabel(name: artist.name).font(.caption).lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        } else if !item.subtitle.isEmpty {
+            Text(item.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
     }
 

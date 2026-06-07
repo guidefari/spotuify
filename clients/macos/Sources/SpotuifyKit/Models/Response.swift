@@ -66,6 +66,7 @@ public enum ResponseData: Decodable, Sendable {
     case searchStarted(query: String, version: UInt64)
     case playlists([Playlist])
     case mediaItems([MediaItem])
+    case listenSessions([ListenSession])
     case lyrics(SyncedLyrics?, offsetMs: Int64)
     case mutation(CommandReceipt)
     case ack(message: String)
@@ -80,7 +81,7 @@ public enum ResponseData: Decodable, Sendable {
         case playlists, lyrics, status
         case offsetMs = "offset_ms"
         case receipt, message, token
-        case reminders, notifications, reminder
+        case reminders, notifications, reminder, sessions
     }
 
     public init(from decoder: Decoder) throws {
@@ -109,6 +110,8 @@ public enum ResponseData: Decodable, Sendable {
             self = .playlists(try c.decode([Playlist].self, forKey: .playlists))
         case "media-items":
             self = .mediaItems(try c.decode([MediaItem].self, forKey: .items))
+        case "listen-sessions":
+            self = .listenSessions(try c.decode([ListenSession].self, forKey: .sessions))
         case "lyrics":
             self = .lyrics(
                 try c.decodeIfPresent(SyncedLyrics.self, forKey: .lyrics),

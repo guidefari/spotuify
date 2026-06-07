@@ -9,7 +9,7 @@ use spotuify_core::{
 };
 use spotuify_protocol::{
     DaemonEvent, IpcClient, OperationSource, PlaybackCommand, Request, Response, ResponseData,
-    SearchScopeData, SearchSourceData, SyncTargetData,
+    SearchScopeData, SearchSortData, SearchSourceData, SyncTargetData,
 };
 
 use crate::output::{self, OutputFormat};
@@ -38,6 +38,7 @@ pub async fn ipc_search(
     pages: u8,
     play: bool,
     index: usize,
+    sort: Option<SearchSortData>,
     format: OutputFormat,
 ) -> Result<()> {
     // pages > 1 uses the same streaming path as the TUI (Request::SearchStream
@@ -52,6 +53,8 @@ pub async fn ipc_search(
             scope,
             source,
             limit,
+            kinds: None,
+            sort,
         })
         .await?
         {
@@ -235,6 +238,8 @@ pub async fn ipc_resolve_tracks(from: &Path, format: OutputFormat) -> Result<()>
             // Plan resolution = catalog discovery, not library lookup.
             source: SearchSourceData::Spotify,
             limit: 50,
+            kinds: None,
+            sort: None,
         })
         .await?
         {
@@ -263,6 +268,7 @@ pub async fn ipc_play_query(
         1,
         true,
         1,
+        None,
         format,
     )
     .await
@@ -1042,6 +1048,22 @@ pub async fn ipc_album(command: crate::AlbumCommand) -> Result<()> {
     }
 }
 
+/// Listening history grouped into sessions (or flattened to a chronological
+/// track list with `--flat`). Merges local plays with Spotify recently-played.
+pub async fn ipc_history(limit: u32, flat: bool, format: OutputFormat) -> Result<()> {
+    match daemon_request(Request::ListenSessions { limit }).await? {
+        ResponseData::ListenSessions { sessions } => {
+            if flat {
+                let tracks: Vec<_> = sessions.into_iter().flat_map(|s| s.tracks).collect();
+                output::print_media_items(&tracks, format)
+            } else {
+                output::print_listen_sessions(&sessions, format)
+            }
+        }
+        _ => unexpected_response(),
+    }
+}
+
 pub async fn ipc_artist(command: crate::ArtistCommand) -> Result<()> {
     match command {
         crate::ArtistCommand::Albums {
@@ -1074,6 +1096,30 @@ pub async fn ipc_artist(command: crate::ArtistCommand) -> Result<()> {
                 _ => unexpected_response(),
             }
         }
+        crate::ArtistCommand::Follow { artist, format } => {
+            let data = daemon_request(Request::ArtistFollow {
+                artist: normalize_artist_uri(&artist),
+            })
+            .await?;
+            print_mutation(data, format)
+        }
+        crate::ArtistCommand::Unfollow { artist, format } => {
+            let data = daemon_request(Request::ArtistUnfollow {
+                artist: normalize_artist_uri(&artist),
+            })
+            .await?;
+            print_mutation(data, format)
+        }
+    }
+}
+
+/// Accept either a full `spotify:artist:…` URI or a bare artist ID; the follow
+/// endpoint routing needs a typed URI.
+fn normalize_artist_uri(artist: &str) -> String {
+    if artist.starts_with("spotify:") {
+        artist.to_string()
+    } else {
+        format!("spotify:artist:{artist}")
     }
 }
 
@@ -1265,6 +1311,8 @@ async fn ipc_queue_add(
                 scope: SearchScopeData::Track,
                 source: SearchSourceData::Spotify,
                 limit: 50,
+                kinds: None,
+                sort: None,
             })
             .await?
             {

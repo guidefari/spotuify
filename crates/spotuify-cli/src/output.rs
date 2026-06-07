@@ -9,8 +9,8 @@ use spotuify_core::{
     SyncedLyrics,
 };
 use spotuify_protocol::{
-    CacheStatus, CacheSyncSummary, PlaylistCreateReceipt, ReindexStats, ResponseData,
-    SystemDiagnostics,
+    CacheStatus, CacheSyncSummary, ListenSession, PlaylistCreateReceipt, ReindexStats,
+    ResponseData, SystemDiagnostics,
 };
 
 // Re-export OutputFormat so existing `crate::output::OutputFormat`
@@ -293,6 +293,66 @@ pub fn print_discography(items: &[MediaItem], format: OutputFormat) -> Result<()
         .filter(|item| item.in_library == Some(true))
         .count();
     writeln!(writer, "\n{} albums • {in_library} in library", items.len())?;
+    Ok(())
+}
+
+/// Print listening sessions. Machine formats serialize the full session
+/// objects (with their tracks); the table view shows one line per session with
+/// its time span, track count, and dominant context, indented tracks beneath.
+pub fn print_listen_sessions(sessions: &[ListenSession], format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => return print_json(sessions),
+        OutputFormat::Jsonl => {
+            for session in sessions {
+                print_json_line(session)?;
+            }
+            return Ok(());
+        }
+        OutputFormat::Ids => {
+            for session in sessions {
+                for track in &session.tracks {
+                    println!("{}", track.uri);
+                }
+            }
+            return Ok(());
+        }
+        OutputFormat::Csv => {
+            let mut writer = io::stdout();
+            writeln!(
+                writer,
+                "session_id,started_at_ms,ended_at_ms,track_count,context"
+            )?;
+            for s in sessions {
+                writeln!(
+                    writer,
+                    "{},{},{},{},{}",
+                    s.session_id,
+                    s.started_at_ms,
+                    s.ended_at_ms,
+                    s.track_count,
+                    s.context_label.as_deref().unwrap_or("")
+                )?;
+            }
+            return Ok(());
+        }
+        OutputFormat::Table => {}
+    }
+    let mut writer = io::stdout();
+    if sessions.is_empty() {
+        writeln!(writer, "No listening history yet.")?;
+        return Ok(());
+    }
+    for session in sessions {
+        let label = session.context_label.as_deref().unwrap_or("Mixed");
+        writeln!(
+            writer,
+            "\n{label} — {} track(s) [{} → {}]",
+            session.track_count, session.started_at_ms, session.ended_at_ms
+        )?;
+        for track in &session.tracks {
+            writeln!(writer, "  {}\t{}", track.name, track.subtitle)?;
+        }
+    }
     Ok(())
 }
 
@@ -1368,6 +1428,7 @@ pub fn print_response_data(
         D::SearchResults { items } | D::MediaItems { items } => {
             return print_media_items(items, format)
         }
+        D::ListenSessions { sessions } => return print_listen_sessions(sessions, format),
         D::SearchStarted { query, version } => {
             // Ack for streaming-search clients; CLI never uses
             // SearchStream/SearchPage today, but render something

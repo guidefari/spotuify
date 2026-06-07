@@ -21,7 +21,9 @@ use crate::rate_limit::{Priority, RateLimitedClient};
 
 // Re-export domain types from spotuify-core so existing call sites
 // (`crate::spotify::Playback`, etc.) keep working.
-pub use spotuify_core::{Device, MediaItem, MediaKind, Playback, Playlist, Queue, TrackId};
+pub use spotuify_core::{
+    ArtistRef, Device, MediaItem, MediaKind, Playback, Playlist, Queue, TrackId,
+};
 
 const API: &str = "https://api.spotify.com/v1";
 
@@ -668,7 +670,14 @@ impl SpotifyClient {
         offset: u64,
     ) -> SpotifyResult<SavedTracksPage> {
         if self.fake {
-            let all = vec![fake_track(), fake_second_track()];
+            // Stamp distinct save times so the "Date Added" sort is meaningful
+            // in the demo (the live path fills this from Spotify's `added_at`).
+            let day = 86_400_000;
+            let mut first = fake_track();
+            first.added_at_ms = Some(now_ms() as i64 - day);
+            let mut second = fake_second_track();
+            second.added_at_ms = Some(now_ms() as i64 - 9 * day);
+            let all = vec![first, second];
             let items = all
                 .into_iter()
                 .skip(offset as usize)
@@ -1353,6 +1362,18 @@ impl SpotifyClient {
         let (path, _id) = library_endpoint_for_uri(uri)?;
         self.empty(Method::DELETE, &path, None::<()>).await?;
         Ok(())
+    }
+
+    /// Follow an artist (`PUT /me/following?type=artist&ids={id}`). A thin,
+    /// self-documenting wrapper over the library-save routing, which already
+    /// maps `spotify:artist:…` URIs to the follow endpoint.
+    pub async fn follow_artist(&mut self, uri: &str) -> SpotifyResult<()> {
+        self.library_save_by_uri(uri).await
+    }
+
+    /// Unfollow an artist (`DELETE /me/following?type=artist&ids={id}`).
+    pub async fn unfollow_artist(&mut self, uri: &str) -> SpotifyResult<()> {
+        self.library_unsave_by_uri(uri).await
     }
 
     pub async fn image(&self, url: &str) -> SpotifyResult<Vec<u8>> {
@@ -2180,12 +2201,13 @@ struct RawTrack {
 
 impl RawTrack {
     fn into_media_item(self) -> MediaItem {
-        let artists = join_names(&self.artists);
+        let subtitle = join_names(&self.artists);
+        let artists = artist_refs(&self.artists);
         MediaItem {
             id: self.id,
             uri: self.uri,
             name: self.name,
-            subtitle: artists,
+            subtitle,
             context: self.album.name.clone(),
             duration_ms: self.duration_ms,
             image_url: image_url(&self.album.images),
@@ -2195,6 +2217,8 @@ impl RawTrack {
             explicit: self.explicit,
             is_playable: self.is_playable,
             album: Some(self.album.name),
+            album_uri: Some(self.album.uri),
+            artists,
             ..Default::default()
         }
     }
@@ -2214,11 +2238,13 @@ struct RawAlbumTrack {
 
 impl RawAlbumTrack {
     fn into_media_item(self) -> MediaItem {
+        let subtitle = join_names(&self.artists);
+        let artists = artist_refs(&self.artists);
         MediaItem {
             id: self.id,
             uri: self.uri,
             name: self.name,
-            subtitle: join_names(&self.artists),
+            subtitle,
             context: String::new(),
             duration_ms: self.duration_ms,
             image_url: None,
@@ -2227,6 +2253,7 @@ impl RawAlbumTrack {
             freshness: None,
             explicit: self.explicit,
             is_playable: self.is_playable,
+            artists,
             ..Default::default()
         }
     }
@@ -2344,13 +2371,14 @@ struct RawAlbum {
 
 impl RawAlbum {
     fn into_media_item(self) -> MediaItem {
-        let artists = join_names(&self.artists);
+        let subtitle = join_names(&self.artists);
+        let artists = artist_refs(&self.artists);
         let album_group = self.album_group.or(self.album_type);
         MediaItem {
             id: self.id,
             uri: self.uri,
             name: self.name,
-            subtitle: artists,
+            subtitle,
             context: self
                 .total_tracks
                 .map(|n| format!("{n} tracks"))
@@ -2364,6 +2392,7 @@ impl RawAlbum {
             is_playable: None,
             release_date: self.release_date.clone(),
             album_group,
+            artists,
             ..Default::default()
         }
     }
@@ -2457,6 +2486,10 @@ impl RawPlaylist {
 #[derive(Clone, Debug, Deserialize)]
 struct SimpleNamed {
     name: String,
+    /// Artist URI (`spotify:artist:…`); present on track/album artist objects,
+    /// used to build navigable `ArtistRef`s.
+    #[serde(default)]
+    uri: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2626,6 +2659,18 @@ fn join_names(items: &[SimpleNamed]) -> String {
         .join(", ")
 }
 
+/// Build navigable artist references from raw artist objects, preserving order.
+/// Artists missing a URI keep an empty `uri` (clients leave those non-clickable).
+fn artist_refs(items: &[SimpleNamed]) -> Vec<ArtistRef> {
+    items
+        .iter()
+        .map(|item| ArtistRef {
+            name: item.name.clone(),
+            uri: item.uri.clone().unwrap_or_default(),
+        })
+        .collect()
+}
+
 fn image_url(images: &[ImageRef]) -> Option<String> {
     images
         .iter()
@@ -2699,12 +2744,20 @@ fn fake_track() -> MediaItem {
         subtitle: "Luther Vandross".to_string(),
         context: "Never Too Much".to_string(),
         duration_ms: 221_000,
-        image_url: None,
+        // Stable, colourful demo art so the fake provider exercises the
+        // full-bleed cover + artwork-palette theming end to end.
+        image_url: Some("https://picsum.photos/seed/never-too-much/640".to_string()),
         kind: MediaKind::Track,
         source: Some("fake".to_string()),
         freshness: None,
         explicit: Some(false),
         is_playable: Some(true),
+        album_uri: Some("spotify:album:never-too-much-album".to_string()),
+        artists: vec![ArtistRef {
+            name: "Luther Vandross".to_string(),
+            uri: "spotify:artist:luther-vandross".to_string(),
+        }],
+        genre: Some("R&B/Soul".to_string()),
         ..Default::default()
     }
 }
@@ -2717,12 +2770,18 @@ fn fake_second_track() -> MediaItem {
         subtitle: "Chaka Khan".to_string(),
         context: "Rufus featuring Chaka Khan".to_string(),
         duration_ms: 199_000,
-        image_url: None,
+        image_url: Some("https://picsum.photos/seed/sweet-thing/640".to_string()),
         kind: MediaKind::Track,
         source: Some("fake".to_string()),
         freshness: None,
         explicit: Some(false),
         is_playable: Some(true),
+        album_uri: Some("spotify:album:rufusized".to_string()),
+        artists: vec![ArtistRef {
+            name: "Chaka Khan".to_string(),
+            uri: "spotify:artist:chaka-khan".to_string(),
+        }],
+        genre: Some("Funk".to_string()),
         ..Default::default()
     }
 }
@@ -2735,12 +2794,16 @@ fn fake_album() -> MediaItem {
         subtitle: "Luther Vandross".to_string(),
         context: "7 tracks".to_string(),
         duration_ms: 0,
-        image_url: None,
+        image_url: Some("https://picsum.photos/seed/never-too-much-album/640".to_string()),
         kind: MediaKind::Album,
         source: Some("fake".to_string()),
         freshness: None,
         explicit: None,
         is_playable: None,
+        artists: vec![ArtistRef {
+            name: "Luther Vandross".to_string(),
+            uri: "spotify:artist:luther-vandross".to_string(),
+        }],
         ..Default::default()
     }
 }
@@ -2753,7 +2816,7 @@ fn fake_artist() -> MediaItem {
         subtitle: "Artist".to_string(),
         context: "1000000 followers".to_string(),
         duration_ms: 0,
-        image_url: None,
+        image_url: Some("https://picsum.photos/seed/luther-artist/640".to_string()),
         kind: MediaKind::Artist,
         source: Some("fake".to_string()),
         freshness: None,
@@ -2771,7 +2834,7 @@ fn fake_playlist_media_item() -> MediaItem {
         subtitle: "Fake User".to_string(),
         context: "2 tracks".to_string(),
         duration_ms: 0,
-        image_url: None,
+        image_url: Some("https://picsum.photos/seed/quiet-storm/640".to_string()),
         kind: MediaKind::Playlist,
         source: Some("fake".to_string()),
         freshness: None,

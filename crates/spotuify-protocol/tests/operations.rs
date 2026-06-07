@@ -157,6 +157,8 @@ fn operation_kind_round_trips_every_variant_through_serde() {
         OperationKind::PlaylistReorder,
         OperationKind::LibrarySave,
         OperationKind::LibraryUnsave,
+        OperationKind::ArtistFollow,
+        OperationKind::ArtistUnfollow,
         OperationKind::Transfer,
         OperationKind::Like,
         OperationKind::Unlike,

@@ -5,7 +5,7 @@ use spotuify_core::{now_ms, search_performed_event, Playback};
 use spotuify_protocol::{
     CommandReceipt, DaemonEvent, Operation, OperationId, OperationKind, OperationSource,
     OperationStatus, PlaybackCommand, PlaylistCreateReceipt, ReceiptId, Request, Response,
-    ResponseData, SearchScopeData, SearchSourceData,
+    ResponseData, SearchScopeData, SearchSortData, SearchSourceData,
 };
 use spotuify_spotify::actions::{self, CommandKind};
 use spotuify_spotify::client::{MediaItem, MediaKind, SpotifyClient};
@@ -433,6 +433,14 @@ async fn dispatch(
                         Err(err) => return Err(err.into()),
                     };
                     state_for.viz_coordinator().set_playing(play);
+                    // User-driven hand-off: mark whether this device remains the
+                    // intended target so a later session drop doesn't auto-
+                    // reconnect and steal playback from the device we just
+                    // transferred to.
+                    let to_own_device = state_for
+                        .own_device_id()
+                        .is_some_and(|own| device_id.as_deref() == Some(own.as_str()));
+                    state_for.set_we_are_active(to_own_device);
                     // Phase 1: capture any playback/devices snapshot the
                     // Transfer ACK returned so subscribers don't need a
                     // re-fetch round-trip.
@@ -462,8 +470,11 @@ async fn dispatch(
             scope,
             source,
             limit,
+            kinds,
+            sort,
         } => Ok(ResponseData::SearchResults {
-            items: search_with_source(state.clone(), query, scope, source, limit).await?,
+            items: search_with_source(state.clone(), query, scope, source, limit, kinds, sort)
+                .await?,
         }),
         Request::SearchStream {
             query,
@@ -1449,6 +1460,81 @@ async fn dispatch(
             )
             .await
         }
+        Request::ArtistFollow { artist } => {
+            let state_for = state.clone();
+            let artist_for = artist.clone();
+            spawn_optimistic_mutation(
+                &state,
+                OperationKind::ArtistFollow,
+                operation_source,
+                vec![artist.clone()],
+                "artist-follow",
+                request_json.clone(),
+                None,
+                None,
+                mutation_lane,
+                move |_op_id| async move {
+                    let mut client = state_for.spotify_client().await?;
+                    client.follow_artist(&artist_for).await?;
+                    if let Err(err) = state_for
+                        .store()
+                        .set_artist_followed(&artist_for, true)
+                        .await
+                    {
+                        tracing::warn!(error = %err, "failed to mark artist followed in cache");
+                    }
+                    let message = format!("Followed {artist_for}");
+                    state_for.emit_event(DaemonEvent::LibraryChanged {
+                        action: "artist-follow".to_string(),
+                        uris: vec![artist_for.clone()],
+                    });
+                    emit_mutation_finished(&state_for, "artist-follow", &message);
+                    Ok(())
+                },
+            )
+            .await
+        }
+        Request::ArtistUnfollow { artist } => {
+            let state_for = state.clone();
+            let artist_for = artist.clone();
+            spawn_optimistic_mutation(
+                &state,
+                OperationKind::ArtistUnfollow,
+                operation_source,
+                vec![artist.clone()],
+                "artist-unfollow",
+                request_json.clone(),
+                None,
+                None,
+                mutation_lane,
+                move |_op_id| async move {
+                    let mut client = state_for.spotify_client().await?;
+                    client.unfollow_artist(&artist_for).await?;
+                    if let Err(err) = state_for
+                        .store()
+                        .set_artist_followed(&artist_for, false)
+                        .await
+                    {
+                        tracing::warn!(error = %err, "failed to clear artist followed in cache");
+                    }
+                    let message = format!("Unfollowed {artist_for}");
+                    state_for.emit_event(DaemonEvent::LibraryChanged {
+                        action: "artist-unfollow".to_string(),
+                        uris: vec![artist_for.clone()],
+                    });
+                    emit_mutation_finished(&state_for, "artist-unfollow", &message);
+                    Ok(())
+                },
+            )
+            .await
+        }
+        Request::ListenSessions { limit } => {
+            // Cache-backed; refresh recently-played in the background so the
+            // merged history picks up other-device plays next time.
+            let sessions = state.store().list_listen_sessions(limit).await?;
+            spawn_recent_refresh(state.clone());
+            Ok(ResponseData::ListenSessions { sessions })
+        }
         Request::LyricsGet {
             track_uri,
             force_refresh,
@@ -2143,6 +2229,8 @@ async fn search_with_source(
     scope: SearchScopeData,
     source: SearchSourceData,
     limit: u32,
+    kinds: Option<Vec<MediaKind>>,
+    sort: Option<SearchSortData>,
 ) -> anyhow::Result<Vec<MediaItem>> {
     if query.chars().count() > MAX_SEARCH_QUERY_CHARS {
         anyhow::bail!(
@@ -2151,26 +2239,58 @@ async fn search_with_source(
             MAX_SEARCH_QUERY_CHARS
         );
     }
-    match source {
-        SearchSourceData::Local => local_cached_search(&state, &query, scope, limit).await,
-        SearchSourceData::Spotify => spotify_search_and_cache(state, query, scope, limit).await,
+    // The caller may restrict to an explicit set of kinds (e.g. "podcasts only",
+    // "tracks + artists"); otherwise fall back to the kinds implied by `scope`.
+    let effective_kinds = kinds.clone().unwrap_or_else(|| scope_media_kinds(scope));
+    let mut items = match source {
+        SearchSourceData::Local => local_cached_search(&state, &query, scope, limit).await?,
+        SearchSourceData::Spotify => {
+            spotify_search_and_cache(state, query, scope, effective_kinds.clone(), limit).await?
+        }
         SearchSourceData::Hybrid => {
             let cached = local_cached_search(&state, &query, scope, limit).await?;
             if cached.is_empty() {
-                return spotify_search_and_cache(state, query, scope, limit).await;
+                spotify_search_and_cache(state, query, scope, effective_kinds.clone(), limit)
+                    .await?
+            } else {
+                let refresh_state = state.clone();
+                let refresh_query = query.clone();
+                let refresh_kinds = effective_kinds.clone();
+                state.spawn_background("spotify-search-refresh", async move {
+                    if let Err(err) = spotify_search_and_cache(
+                        refresh_state,
+                        refresh_query,
+                        scope,
+                        refresh_kinds,
+                        limit,
+                    )
+                    .await
+                    {
+                        tracing::debug!(error = %err, "background Spotify search refresh failed");
+                    }
+                });
+                cached
             }
-
-            let refresh_state = state.clone();
-            let refresh_query = query.clone();
-            state.spawn_background("spotify-search-refresh", async move {
-                if let Err(err) =
-                    spotify_search_and_cache(refresh_state, refresh_query, scope, limit).await
-                {
-                    tracing::debug!(error = %err, "background Spotify search refresh failed");
-                }
-            });
-            Ok(cached)
         }
+    };
+    // Post-filter to the requested kinds — covers the local/cached paths, which
+    // search by `scope` and may return kinds the explicit filter excludes.
+    if kinds.is_some() {
+        let allowed: std::collections::HashSet<MediaKind> = effective_kinds.into_iter().collect();
+        items.retain(|item| allowed.contains(&item.kind));
+    }
+    apply_search_sort(&mut items, sort);
+    Ok(items)
+}
+
+/// Order search results in place. `Relevance` (and `None`) preserves Spotify's
+/// own ordering; the others use a stable sort so ties keep relevance order.
+fn apply_search_sort(items: &mut [MediaItem], sort: Option<SearchSortData>) {
+    match sort {
+        None | Some(SearchSortData::Relevance) => {}
+        Some(SearchSortData::Name) => items.sort_by_key(|item| item.name.to_lowercase()),
+        Some(SearchSortData::Duration) => items.sort_by_key(|item| item.duration_ms),
+        Some(SearchSortData::Artist) => items.sort_by_key(|item| item.subtitle.to_lowercase()),
     }
 }
 
@@ -2199,10 +2319,10 @@ async fn spotify_search_and_cache(
     state: Arc<DaemonState>,
     query: String,
     scope: SearchScopeData,
+    kinds: Vec<MediaKind>,
     limit: u32,
 ) -> anyhow::Result<Vec<MediaItem>> {
     let client = state.spotify_client().await?;
-    let kinds = scope_media_kinds(scope);
     let started = Instant::now();
     let mut items = match tokio::time::timeout(
         SEARCH_REQUEST_TIMEOUT,
@@ -3302,6 +3422,25 @@ fn reject_if_auth_blocked(state: &DaemonState) -> anyhow::Result<()> {
 /// `persist_command_result` overrides whatever we predict via the
 /// clock's source-priority logic. Same pattern the embedded librespot
 /// `PlayerEvent` already uses for local mutations.
+/// The next track to optimistically show for a `Next`, taken from the cached
+/// queue — but only when the queue's `currently_playing` matches the track that
+/// is actually playing (`current_uri`). A mismatch means the cache is
+/// historical (a dead session), so we return `None` and skip the prediction
+/// rather than flash a stale title.
+fn optimistic_next_from_queue(
+    queue: &spotuify_core::Queue,
+    current_uri: &str,
+) -> Option<spotuify_core::MediaItem> {
+    let describes_current = queue
+        .currently_playing
+        .as_ref()
+        .is_some_and(|current| current.uri == current_uri);
+    if !describes_current {
+        return None;
+    }
+    queue.items.first().cloned()
+}
+
 async fn compute_optimistic_playback(
     state: &DaemonState,
     command: &PlaybackCommand,
@@ -3353,18 +3492,42 @@ async fn compute_optimistic_playback(
             predicted.sampled_at_ms = Some(now_ms);
         }
         PlaybackCommand::Next => {
-            // No live queue snapshot is held in memory yet, and the
-            // durable queue cache is historical by design. Skip the
-            // optimistic title change rather than risk showing a stale
-            // track from a dead Spotify session.
-            return None;
+            // Predict the next track from the cached queue, but only when the
+            // cache still describes the *current* track — otherwise the queue
+            // is historical (a dead session) and we'd show a stale title.
+            let current_uri = predicted.item.as_ref().map(|item| item.uri.clone())?;
+            let queue = state
+                .store()
+                .latest_queue(500)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let mut next = optimistic_next_from_queue(&queue, &current_uri)?;
+            // Fill artwork from the cache when the queue row lacks it, so the
+            // cover swaps instantly instead of waiting for reconciliation. No
+            // network call on this hot path — if still unknown, art fills when
+            // the authoritative event lands.
+            if next.image_url.is_none() {
+                if let Some(enriched) = lookup_known_media_item(state, &next.uri).await {
+                    next = enriched;
+                }
+            }
+            let was_audible = predicted.is_playing && playback_has_active_device(&predicted);
+            predicted.item = Some(next);
+            predicted.is_playing = was_audible;
+            predicted.progress_ms = 0;
+            predicted.sampled_at_ms = Some(now_ms);
         }
         PlaybackCommand::Previous => {
-            // No reliable predictor — `last_played` is recent-listening
-            // history, not the previous track in the current playback
-            // context. Skip optimistic emit; rely on the authoritative
-            // event when it lands.
-            return None;
+            // Restart-current: the always-safe optimistic move (Spotify itself
+            // restarts the track once you're past the first few seconds). It
+            // resets the progress bar to 0:00 instantly and never shows a wrong
+            // track; if Spotify actually steps back a track, the authoritative
+            // event reconciles via the clock's source priority.
+            predicted.item.as_ref()?;
+            predicted.progress_ms = 0;
+            predicted.sampled_at_ms = Some(now_ms);
         }
         PlaybackCommand::Seek { position_ms } => {
             predicted.item.as_ref()?;
@@ -4467,6 +4630,89 @@ mod queue_tests {
         assert_eq!(uris, vec!["spotify:track:second"]);
         assert!(queue.session_active);
         assert_eq!(queue.as_of_ms, 3);
+    }
+}
+
+#[cfg(test)]
+mod next_prediction_tests {
+    use super::{apply_search_sort, optimistic_next_from_queue};
+    use spotuify_core::{MediaItem, MediaKind, Queue};
+    use spotuify_protocol::SearchSortData;
+
+    fn item(uri: &str, name: &str, subtitle: &str, duration_ms: u64) -> MediaItem {
+        MediaItem {
+            uri: uri.to_string(),
+            name: name.to_string(),
+            subtitle: subtitle.to_string(),
+            duration_ms,
+            kind: MediaKind::Track,
+            ..Default::default()
+        }
+    }
+
+    fn queue(current: Option<&str>, items: &[&str]) -> Queue {
+        Queue {
+            currently_playing: current.map(|uri| item(uri, "Current", "A", 1000)),
+            items: items.iter().map(|uri| item(uri, uri, "A", 1000)).collect(),
+            session_active: true,
+            as_of_ms: 0,
+        }
+    }
+
+    #[test]
+    fn next_returns_first_queue_item_when_current_matches() {
+        let q = queue(
+            Some("spotify:track:cur"),
+            &["spotify:track:n1", "spotify:track:n2"],
+        );
+        let next = optimistic_next_from_queue(&q, "spotify:track:cur");
+        assert_eq!(next.map(|i| i.uri), Some("spotify:track:n1".to_string()));
+    }
+
+    #[test]
+    fn next_is_none_when_cached_current_is_stale() {
+        // Cached queue describes a different track than what's actually playing
+        // → the queue is historical, so we must not predict a wrong "next".
+        let q = queue(Some("spotify:track:other"), &["spotify:track:n1"]);
+        assert!(optimistic_next_from_queue(&q, "spotify:track:cur").is_none());
+    }
+
+    #[test]
+    fn next_is_none_when_queue_is_empty_or_session_unknown() {
+        let q = queue(Some("spotify:track:cur"), &[]);
+        assert!(optimistic_next_from_queue(&q, "spotify:track:cur").is_none());
+        let no_current = queue(None, &["spotify:track:n1"]);
+        assert!(optimistic_next_from_queue(&no_current, "spotify:track:cur").is_none());
+    }
+
+    #[test]
+    fn search_sort_relevance_preserves_order() {
+        let mut items = vec![item("u:b", "B", "Z", 300), item("u:a", "A", "Y", 100)];
+        apply_search_sort(&mut items, None);
+        assert_eq!(
+            items.iter().map(|i| i.uri.as_str()).collect::<Vec<_>>(),
+            ["u:b", "u:a"]
+        );
+        apply_search_sort(&mut items, Some(SearchSortData::Relevance));
+        assert_eq!(
+            items.iter().map(|i| i.uri.as_str()).collect::<Vec<_>>(),
+            ["u:b", "u:a"]
+        );
+    }
+
+    #[test]
+    fn search_sort_by_name_and_duration() {
+        let mut items = vec![
+            item("u:b", "Beta", "Z", 300),
+            item("u:a", "Alpha", "Y", 100),
+        ];
+        apply_search_sort(&mut items, Some(SearchSortData::Name));
+        assert_eq!(
+            items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
+            ["Alpha", "Beta"]
+        );
+        apply_search_sort(&mut items, Some(SearchSortData::Duration));
+        assert_eq!(items[0].duration_ms, 100);
     }
 }
 

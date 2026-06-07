@@ -15,6 +15,20 @@ public enum MediaKind: String, Codable, Sendable, Hashable {
     }
 }
 
+/// A named reference to an artist carrying its URI, so a track/album row can
+/// navigate straight to the artist. Mirrors `spotuify_core::ArtistRef`.
+public struct ArtistRef: Codable, Sendable, Hashable, Identifiable {
+    public let name: String
+    public let uri: String
+
+    public init(name: String, uri: String) {
+        self.name = name
+        self.uri = uri
+    }
+
+    public var id: String { uri }
+}
+
 public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
     public let spotifyID: String?
     public let uri: String
@@ -39,6 +53,15 @@ public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
     /// Whether this album is already in the user's library (tagged by the
     /// daemon for an artist's discography). `nil` when not applicable.
     public let inLibrary: Bool?
+    /// Album URI for a track, enabling navigation to the album. `nil` when
+    /// unknown (older cached rows / non-track items).
+    public let albumURI: String?
+    /// Contributing artists with URIs, enabling navigation to each artist.
+    /// Empty when unknown.
+    public let artists: [ArtistRef]
+    /// Primary genre, when known (Spotify carries it on the artist/album, so
+    /// it's populated best-effort). `nil` when unknown.
+    public let genre: String?
 
     public init(
         spotifyID: String? = nil,
@@ -59,7 +82,10 @@ public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
         fullyPlayed: Bool? = nil,
         releaseDate: String? = nil,
         albumGroup: String? = nil,
-        inLibrary: Bool? = nil
+        inLibrary: Bool? = nil,
+        albumURI: String? = nil,
+        artists: [ArtistRef] = [],
+        genre: String? = nil
     ) {
         self.spotifyID = spotifyID
         self.uri = uri
@@ -80,6 +106,9 @@ public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
         self.releaseDate = releaseDate
         self.albumGroup = albumGroup
         self.inLibrary = inLibrary
+        self.albumURI = albumURI
+        self.artists = artists
+        self.genre = genre
     }
 
     /// Stable identity for SwiftUI. The Spotify `id` is optional and not
@@ -97,6 +126,35 @@ public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
     public var isFullyPlayed: Bool { fullyPlayed == true }
     public var isInProgress: Bool { (resumePositionMs ?? 0) > 0 && !isFullyPlayed }
 
+    /// A secondary metadata line for collection rows/tiles (distinct from the
+    /// artist/owner `subtitle`): year + track count for albums, follower count
+    /// for artists, episode count for shows, track count for playlists. `nil`
+    /// when there's nothing extra to show.
+    public var metaLine: String? {
+        var parts: [String] = []
+        if kind == .album, let releaseDate, releaseDate.count >= 4 {
+            parts.append(String(releaseDate.prefix(4)))
+        }
+        if !context.isEmpty { parts.append(context) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Synthetic artist items (kind `.artist`) for click-through navigation
+    /// from a track/album row. Only artists carrying a URI are navigable.
+    public var artistNavItems: [MediaItem] {
+        artists.filter { !$0.uri.isEmpty }.map {
+            MediaItem(uri: $0.uri, name: $0.name, kind: .artist)
+        }
+    }
+
+    /// Synthetic album item (kind `.album`) for navigating from a track to its
+    /// album. `nil` when the album URI is unknown.
+    public var albumNavItem: MediaItem? {
+        guard let albumURI, !albumURI.isEmpty else { return nil }
+        return MediaItem(
+            uri: albumURI, name: albumLabel ?? "Album", imageURL: imageURL, kind: .album)
+    }
+
     enum CodingKeys: String, CodingKey {
         case spotifyID = "id"
         case uri, name, subtitle, context
@@ -111,6 +169,60 @@ public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
         case releaseDate = "release_date"
         case albumGroup = "album_group"
         case inLibrary = "in_library"
+        case albumURI = "album_uri"
+        case artists
+        case genre
+    }
+
+    // Custom decoder so the daemon's `skip_serializing_if`'d fields (notably
+    // `artists`, omitted when empty) decode to sensible defaults instead of
+    // failing. Encoding stays synthesized.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        spotifyID = try c.decodeIfPresent(String.self, forKey: .spotifyID)
+        uri = try c.decode(String.self, forKey: .uri)
+        name = try c.decode(String.self, forKey: .name)
+        subtitle = try c.decodeIfPresent(String.self, forKey: .subtitle) ?? ""
+        context = try c.decodeIfPresent(String.self, forKey: .context) ?? ""
+        durationMs = try c.decodeIfPresent(UInt64.self, forKey: .durationMs) ?? 0
+        imageURL = try c.decodeIfPresent(String.self, forKey: .imageURL)
+        kind = try c.decodeIfPresent(MediaKind.self, forKey: .kind) ?? .track
+        source = try c.decodeIfPresent(String.self, forKey: .source)
+        freshness = try c.decodeIfPresent(String.self, forKey: .freshness)
+        explicit = try c.decodeIfPresent(Bool.self, forKey: .explicit)
+        isPlayable = try c.decodeIfPresent(Bool.self, forKey: .isPlayable)
+        album = try c.decodeIfPresent(String.self, forKey: .album)
+        addedAtMs = try c.decodeIfPresent(Int64.self, forKey: .addedAtMs)
+        resumePositionMs = try c.decodeIfPresent(UInt64.self, forKey: .resumePositionMs)
+        fullyPlayed = try c.decodeIfPresent(Bool.self, forKey: .fullyPlayed)
+        releaseDate = try c.decodeIfPresent(String.self, forKey: .releaseDate)
+        albumGroup = try c.decodeIfPresent(String.self, forKey: .albumGroup)
+        inLibrary = try c.decodeIfPresent(Bool.self, forKey: .inLibrary)
+        albumURI = try c.decodeIfPresent(String.self, forKey: .albumURI)
+        artists = try c.decodeIfPresent([ArtistRef].self, forKey: .artists) ?? []
+        genre = try c.decodeIfPresent(String.self, forKey: .genre)
+    }
+}
+
+/// One listening session — a run of consecutively-played tracks. Mirrors
+/// `spotuify_protocol::ListenSession`.
+public struct ListenSession: Codable, Sendable, Hashable, Identifiable {
+    public let sessionID: String
+    public let startedAtMs: Int64
+    public let endedAtMs: Int64
+    public let trackCount: UInt32
+    public let contextLabel: String?
+    public let tracks: [MediaItem]
+
+    public var id: String { sessionID }
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case startedAtMs = "started_at_ms"
+        case endedAtMs = "ended_at_ms"
+        case trackCount = "track_count"
+        case contextLabel = "context_label"
+        case tracks
     }
 }
 

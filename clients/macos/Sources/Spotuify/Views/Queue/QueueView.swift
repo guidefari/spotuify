@@ -18,6 +18,13 @@ struct QueueView: View {
     }
 
     var body: some View {
+        NavigationStack {
+            queueContent.mediaDetailDestinations()
+        }
+        .background(.background)
+    }
+
+    private var queueContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             EditorialPageHeader(title: "Queue") {
                 Picker("View order", selection: $viewSort) {

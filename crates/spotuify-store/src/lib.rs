@@ -11,11 +11,13 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use sqlx::{Row, SqlitePool};
 
 use spotuify_core::{
-    Device, LyricLine, LyricsProvider, MediaItem, MediaKind, Notification, NotificationState,
-    Playback, Playlist, Queue, Recurrence, Reminder, ReminderState, SyncedLyrics,
+    ArtistRef, Device, LyricLine, LyricsProvider, MediaItem, MediaKind, Notification,
+    NotificationState, Playback, Playlist, Queue, Recurrence, Reminder, ReminderState,
+    SyncedLyrics,
 };
 use spotuify_protocol::{
-    CacheFreshnessStatus, CacheStatus, FreshnessCounts, SearchScopeData, SearchSourceData,
+    CacheFreshnessStatus, CacheStatus, FreshnessCounts, ListenSession, SearchScopeData,
+    SearchSourceData,
 };
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -26,6 +28,14 @@ const POOL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
 /// (pause/skip) can sneak in between a sync flush's chunks instead of
 /// waiting for a 500-row playlist refresh to finish.
 const BULK_CHUNK_ROWS: usize = 64;
+
+/// A gap larger than this between consecutive plays starts a new listening
+/// session (20 minutes — the de-facto standard in scrobbler/music-IR work).
+const SESSION_GAP_MS: i64 = 20 * 60 * 1000;
+
+/// Two plays of the same track within this window are treated as one event when
+/// merging the local `listen_facts` stream with Spotify recently-played.
+const DEDUP_TOLERANCE_MS: i64 = 60 * 1000;
 
 /// Cache schema version recognised by this binary.
 ///
@@ -52,7 +62,7 @@ const BULK_CHUNK_ROWS: usize = 64;
 /// - v13: media enrichment for cached media/library rows
 /// - v14: listening reminders
 /// - v15: typed retry-after seconds on sync_events
-pub const CACHE_VERSION: u32 = 15;
+pub const CACHE_VERSION: u32 = 16;
 
 const FRESHNESS_FRESH: &str = "fresh";
 
@@ -193,12 +203,19 @@ impl Store {
             let mut tx = pool.begin().await?;
             for item in chunk {
                 let item_source = item.source.as_deref().unwrap_or(source);
+                // Serialize navigable artist refs (name+uri) for click-through;
+                // `NULL` when none so older rows / non-track items stay clean.
+                let artists_json = if item.artists.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::to_string(&item.artists)?)
+                };
                 sqlx::query(
                     "INSERT INTO media_items (
                         uri, spotify_id, kind, name, subtitle, context, duration_ms,
                         image_url, source, fetched_at_ms, updated_at_ms,
-                        freshness_class, sync_generation
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        freshness_class, sync_generation, album_uri, artists_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(uri) DO UPDATE SET
                         spotify_id = excluded.spotify_id,
                         kind = excluded.kind,
@@ -211,7 +228,9 @@ impl Store {
                         fetched_at_ms = excluded.fetched_at_ms,
                         updated_at_ms = excluded.updated_at_ms,
                         freshness_class = excluded.freshness_class,
-                        sync_generation = excluded.sync_generation",
+                        sync_generation = excluded.sync_generation,
+                        album_uri = COALESCE(excluded.album_uri, media_items.album_uri),
+                        artists_json = COALESCE(excluded.artists_json, media_items.artists_json)",
                 )
                 .bind(&item.uri)
                 .bind(&item.id)
@@ -226,6 +245,8 @@ impl Store {
                 .bind(fetched_at_ms)
                 .bind(FRESHNESS_FRESH)
                 .bind(fetched_at_ms)
+                .bind(&item.album_uri)
+                .bind(artists_json)
                 .execute(&mut *tx)
                 .await?;
                 written += 1;
@@ -290,7 +311,7 @@ impl Store {
 
         let mut sql = String::from(
             "SELECT uri, spotify_id, kind, name, subtitle, context, duration_ms,
-                    image_url, source, liked, saved, updated_at_ms
+                    image_url, source, liked, saved, updated_at_ms, album_uri, artists_json
              FROM media_items WHERE ",
         );
         if scope != SearchScopeData::All {
@@ -324,7 +345,7 @@ impl Store {
         let placeholders = uris.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
         let sql = format!(
             "SELECT uri, spotify_id, kind, name, subtitle, context, duration_ms,
-                    image_url, source, liked, saved, updated_at_ms
+                    image_url, source, liked, saved, updated_at_ms, album_uri, artists_json
              FROM media_items WHERE uri IN ({placeholders})"
         );
         let mut statement = sqlx::query(&sql);
@@ -346,7 +367,8 @@ impl Store {
         }
         let rows = sqlx::query(
             "SELECT media_items.uri, spotify_id, media_items.kind, name, subtitle, context,
-                    duration_ms, image_url, source, liked, media_items.saved, updated_at_ms
+                    duration_ms, image_url, source, liked, media_items.saved, updated_at_ms,
+                    media_items.album_uri, media_items.artists_json
              FROM library_items
              JOIN media_items ON media_items.uri = library_items.item_uri
              WHERE library_items.saved = 1 OR library_items.followed = 1
@@ -368,7 +390,8 @@ impl Store {
         let rows = sqlx::query(
             "SELECT media_items.uri, spotify_id, media_items.kind, name, subtitle, context,
                     duration_ms, image_url, source, media_items.album,
-                    media_items.release_date, library_items.added_at_ms
+                    media_items.release_date, library_items.added_at_ms,
+                    media_items.album_uri, media_items.artists_json
              FROM library_items
              JOIN media_items ON media_items.uri = library_items.item_uri
              WHERE library_items.saved = 1 AND media_items.kind = 'track'
@@ -564,7 +587,8 @@ impl Store {
 
         let rows = sqlx::query(
             "SELECT media_items.uri, spotify_id, media_items.kind, name, subtitle, context,
-                    duration_ms, image_url, source, liked, media_items.saved, updated_at_ms
+                    duration_ms, image_url, source, liked, media_items.saved, updated_at_ms,
+                    media_items.album_uri, media_items.artists_json
              FROM queue_items
              JOIN media_items ON media_items.uri = queue_items.item_uri
              WHERE queue_items.snapshot_id = ?
@@ -633,7 +657,8 @@ impl Store {
         }
         let rows = sqlx::query(
             "SELECT media_items.uri, spotify_id, media_items.kind, name, subtitle, context,
-                    duration_ms, image_url, source, liked, media_items.saved, updated_at_ms
+                    duration_ms, image_url, source, liked, media_items.saved, updated_at_ms,
+                    media_items.album_uri, media_items.artists_json
              FROM playlist_items
              JOIN media_items ON media_items.uri = playlist_items.item_uri
              WHERE playlist_items.playlist_id = ?
@@ -653,7 +678,8 @@ impl Store {
         }
         let rows = sqlx::query(
             "SELECT media_items.uri, spotify_id, media_items.kind, name, subtitle, context,
-                    duration_ms, image_url, source, liked, media_items.saved, updated_at_ms
+                    duration_ms, image_url, source, liked, media_items.saved, updated_at_ms,
+                    media_items.album_uri, media_items.artists_json
              FROM recent_items
              JOIN media_items ON media_items.uri = recent_items.item_uri
              ORDER BY recent_items.played_at_ms DESC, recent_items.position ASC
@@ -663,6 +689,113 @@ impl Store {
         .fetch_all(&self.reader)
         .await?;
         rows.into_iter().map(row_to_media_item).collect()
+    }
+
+    /// Flip an artist's `followed` flag in the cache after a follow/unfollow
+    /// mutation, so the Followed-Artists list reflects it without waiting for
+    /// the next library sync. UPDATE-only: never creates an orphan
+    /// `library_items` row (a brand-new follow of an artist not yet cached is
+    /// picked up by the next `followed_artists` sync).
+    pub async fn set_artist_followed(&self, uri: &str, followed: bool) -> Result<()> {
+        sqlx::query(
+            "UPDATE library_items
+             SET followed = ?, fetched_at_ms = ?
+             WHERE item_uri = ?",
+        )
+        .bind(i64::from(followed))
+        .bind(now_ms())
+        .bind(uri)
+        .execute(&self.writer)
+        .await?;
+        Ok(())
+    }
+
+    /// Listening history grouped into sessions. Merges the local `listen_facts`
+    /// (plays driven through spotuify) with Spotify `recent_items` (plays from
+    /// any device), de-dups near-simultaneous duplicates, then splits the merged
+    /// stream wherever the gap between consecutive plays exceeds
+    /// [`SESSION_GAP_MS`]. Sessions are newest-first; tracks within a session are
+    /// newest-first. `limit` caps the number of sessions returned.
+    pub async fn list_listen_sessions(&self, limit: u32) -> Result<Vec<ListenSession>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        // Bound the scan: enough plays to fill `limit` sessions comfortably.
+        let scan = (limit as i64).saturating_mul(60).clamp(200, 5_000);
+        let mut plays: Vec<(String, i64)> = Vec::new();
+        let local = sqlx::query(
+            "SELECT track_uri, started_at_ms FROM listen_facts
+             ORDER BY started_at_ms DESC LIMIT ?",
+        )
+        .bind(scan)
+        .fetch_all(&self.reader)
+        .await?;
+        for row in local {
+            plays.push((row.get("track_uri"), row.get::<i64, _>("started_at_ms")));
+        }
+        let recent = sqlx::query(
+            "SELECT item_uri, played_at_ms FROM recent_items
+             ORDER BY played_at_ms DESC LIMIT ?",
+        )
+        .bind(scan)
+        .fetch_all(&self.reader)
+        .await?;
+        for row in recent {
+            plays.push((row.get("item_uri"), row.get::<i64, _>("played_at_ms")));
+        }
+        if plays.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Newest-first, then drop near-simultaneous duplicates of the same track
+        // that arrived from both sources (within DEDUP_TOLERANCE_MS).
+        plays.sort_by_key(|play| std::cmp::Reverse(play.1));
+        let mut deduped: Vec<(String, i64)> = Vec::with_capacity(plays.len());
+        for (uri, at) in plays {
+            if deduped
+                .iter()
+                .any(|(u, t)| u == &uri && (t - at).abs() <= DEDUP_TOLERANCE_MS)
+            {
+                continue;
+            }
+            deduped.push((uri, at));
+        }
+        // Split into sessions on gaps; `deduped` is newest-first, so a gap to the
+        // PREVIOUS (newer) play larger than the threshold starts a new session.
+        let mut sessions: Vec<Vec<(String, i64)>> = Vec::new();
+        for (uri, at) in deduped {
+            match sessions.last_mut() {
+                Some(current)
+                    if current
+                        .last()
+                        .is_some_and(|(_, prev)| prev - at <= SESSION_GAP_MS) =>
+                {
+                    current.push((uri, at));
+                }
+                _ => {
+                    if sessions.len() >= limit as usize {
+                        break;
+                    }
+                    sessions.push(vec![(uri, at)]);
+                }
+            }
+        }
+        // Resolve media items per session (newest-first) and assemble.
+        let mut out = Vec::with_capacity(sessions.len());
+        for plays in sessions {
+            let uris = plays.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>();
+            let items = self.media_items_by_uris(&uris).await?;
+            let started_at_ms = plays.iter().map(|(_, t)| *t).min().unwrap_or(0);
+            let ended_at_ms = plays.iter().map(|(_, t)| *t).max().unwrap_or(0);
+            out.push(ListenSession {
+                session_id: format!("session-{started_at_ms}"),
+                started_at_ms,
+                ended_at_ms,
+                track_count: items.len() as u32,
+                context_label: dominant_context(&items),
+                tracks: items,
+            });
+        }
+        Ok(out)
     }
 
     pub async fn saved_tracks_fingerprint(&self, limit: u32) -> Result<(u64, Vec<String>)> {
@@ -2159,6 +2292,32 @@ fn normalize_query(query: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// The album/context label of a media item for session grouping: prefer the
+/// album name, fall back to `context`, else `None`.
+fn session_label(item: &MediaItem) -> Option<&str> {
+    item.album
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or_else(|| Some(item.context.as_str()).filter(|s| !s.is_empty()))
+}
+
+/// The most common album/context label across a session's tracks, used as the
+/// session-albums view's title. `None` when nothing stands out (no items, or
+/// all blank). Ties resolve to the first-seen (newest) label.
+fn dominant_context(items: &[MediaItem]) -> Option<String> {
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for item in items {
+        if let Some(label) = session_label(item) {
+            *counts.entry(label).or_insert(0) += 1;
+        }
+    }
+    items
+        .iter()
+        .filter_map(session_label)
+        .max_by_key(|label| counts.get(label).copied().unwrap_or(0))
+        .map(str::to_string)
+}
+
 fn row_to_media_item(row: sqlx::sqlite::SqliteRow) -> Result<MediaItem> {
     Ok(MediaItem {
         id: row.get("spotify_id"),
@@ -2192,9 +2351,20 @@ fn row_to_media_item(row: sqlx::sqlite::SqliteRow) -> Result<MediaItem> {
             .ok()
             .flatten(),
         // Not persisted: `album_group` flows live from the provider for the
-        // discography view, and `in_library` is tagged by the daemon per query.
+        // discography view, `in_library` is tagged by the daemon per query, and
+        // `genre` flows live (Spotify carries it on artist/album, not track).
         album_group: None,
         in_library: None,
+        genre: None,
+        // Navigation refs — read resiliently; absent on SELECTs that don't
+        // project them and on rows written before migration v16.
+        album_uri: row.try_get::<Option<String>, _>("album_uri").ok().flatten(),
+        artists: row
+            .try_get::<Option<String>, _>("artists_json")
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str::<Vec<ArtistRef>>(&json).ok())
+            .unwrap_or_default(),
     })
 }
 
@@ -2891,6 +3061,19 @@ const MIGRATION_015_COLUMNS: &[ColumnMigration] = &[ColumnMigration {
     definition: "retry_after_secs INTEGER",
 }];
 
+const MIGRATION_016_COLUMNS: &[ColumnMigration] = &[
+    ColumnMigration {
+        table: "media_items",
+        name: "album_uri",
+        definition: "album_uri TEXT",
+    },
+    ColumnMigration {
+        table: "media_items",
+        name: "artists_json",
+        definition: "artists_json TEXT",
+    },
+];
+
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -2966,6 +3149,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 15,
         name: "sync_events_retry_after",
         kind: MigrationKind::AddColumns(MIGRATION_015_COLUMNS),
+    },
+    Migration {
+        version: 16,
+        name: "media_artist_album_refs",
+        kind: MigrationKind::AddColumns(MIGRATION_016_COLUMNS),
     },
 ];
 
@@ -3763,5 +3951,106 @@ mod tests {
             is_playable: None,
             ..Default::default()
         }
+    }
+
+    async fn insert_listen_fact(store: &Store, session: &str, uri: &str, at: i64) {
+        sqlx::query(
+            "INSERT INTO listen_facts
+                (session_id, track_uri, started_at_ms, ended_at_ms, duration_ms,
+                 elapsed_ms, audible_ms, completion_ratio, qualified,
+                 qualification_rule_version, created_at_ms)
+             VALUES (?, ?, ?, ?, 0, 0, 0, 0.0, 1, 1, ?)",
+        )
+        .bind(session)
+        .bind(uri)
+        .bind(at)
+        .bind(at)
+        .bind(at)
+        .execute(store.writer_for_test())
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn listen_sessions_split_on_gap_and_resolve_tracks() {
+        let store = Store::in_memory().await.unwrap();
+        let items = vec![
+            track("spotify:track:a", "A", "Artist"),
+            track("spotify:track:b", "B", "Artist"),
+            track("spotify:track:c", "C", "Artist"),
+        ];
+        store.upsert_media_items(&items, "spotify").await.unwrap();
+        let base = 1_700_000_000_000i64;
+        // a & b one minute apart → one session; c thirty minutes later → a new one.
+        insert_listen_fact(&store, "s1", "spotify:track:a", base).await;
+        insert_listen_fact(&store, "s1", "spotify:track:b", base + 60_000).await;
+        insert_listen_fact(&store, "s2", "spotify:track:c", base + 30 * 60_000).await;
+
+        let sessions = store.list_listen_sessions(10).await.unwrap();
+
+        assert_eq!(
+            sessions.len(),
+            2,
+            "a 30-min gap should split into two sessions"
+        );
+        // Newest-first: the lone later play, then the earlier pair.
+        assert_eq!(sessions[0].track_count, 1);
+        assert_eq!(sessions[0].tracks[0].uri, "spotify:track:c");
+        assert_eq!(sessions[1].track_count, 2);
+    }
+
+    #[tokio::test]
+    async fn listen_sessions_dedup_same_track_across_sources() {
+        let store = Store::in_memory().await.unwrap();
+        let items = vec![track("spotify:track:a", "A", "Artist")];
+        store.upsert_media_items(&items, "spotify").await.unwrap();
+        // Same track logged locally and in recent_items at ~the same moment
+        // (persist_recent_items stamps `now`, so the local fact must too) so the
+        // two land within the dedup tolerance.
+        insert_listen_fact(&store, "s1", "spotify:track:a", now_ms()).await;
+        store
+            .persist_recent_items(std::slice::from_ref(&items[0]))
+            .await
+            .unwrap();
+
+        let sessions = store.list_listen_sessions(10).await.unwrap();
+        let total: u32 = sessions.iter().map(|s| s.track_count).sum();
+        assert_eq!(
+            total, 1,
+            "near-simultaneous duplicate plays collapse to one"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_artist_followed_toggles_followed_flag() {
+        let store = Store::in_memory().await.unwrap();
+        let artist = MediaItem {
+            uri: "spotify:artist:x".to_string(),
+            name: "X".to_string(),
+            kind: MediaKind::Artist,
+            ..Default::default()
+        };
+        store
+            .persist_followed_artists(std::slice::from_ref(&artist))
+            .await
+            .unwrap();
+        assert_eq!(store.list_followed_artists(10).await.unwrap().len(), 1);
+
+        store
+            .set_artist_followed("spotify:artist:x", false)
+            .await
+            .unwrap();
+        assert!(store.list_followed_artists(10).await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn dominant_context_picks_most_common_album() {
+        let mk = |album: &str| MediaItem {
+            album: Some(album.to_string()),
+            ..Default::default()
+        };
+        let items = vec![mk("Album A"), mk("Album A"), mk("Album B")];
+        assert_eq!(dominant_context(&items).as_deref(), Some("Album A"));
+        assert_eq!(dominant_context(&[]), None);
     }
 }

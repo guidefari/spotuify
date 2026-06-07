@@ -33,7 +33,7 @@ struct DetailHeader: View {
                 .shadow(radius: 10, y: 5)
             VStack(alignment: .leading, spacing: 8) {
                 Text(item.name).font(.displayHero(34)).lineLimit(2).minimumScaleFactor(0.6)
-                Text(subtitle).foregroundStyle(.secondary)
+                subtitleView
                 HStack(spacing: 10) {
                     Button { play() } label: { Label("Play", systemImage: "play.fill") }
                         .buttonStyle(.borderedProminent).controlSize(.large)
@@ -47,6 +47,26 @@ struct DetailHeader: View {
             Spacer()
         }
         .padding(20)
+    }
+
+    /// Artist line: clickable links to each artist when the item carries artist
+    /// refs (e.g. an album → its artist), else the plain subtitle text.
+    @ViewBuilder
+    private var subtitleView: some View {
+        let artists = item.artistNavItems
+        if !artists.isEmpty {
+            HStack(spacing: 4) {
+                ForEach(Array(artists.enumerated()), id: \.element.id) { index, artist in
+                    if index > 0 { Text(",").foregroundStyle(.secondary) }
+                    NavigationLink(value: artist) {
+                        ArtistLinkLabel(name: artist.name)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        } else {
+            Text(subtitle).foregroundStyle(.secondary)
+        }
     }
 
     private func play() {
@@ -95,6 +115,12 @@ struct ArtistDetailView: View {
     @State private var albums: [MediaItem] = []
     @State private var loading = true
     @State private var libraryOnly = false
+    /// Optimistic follow state; nil = derive from the library.
+    @State private var followingOverride: Bool?
+
+    private var isFollowing: Bool {
+        followingOverride ?? model.library.followedArtists.contains { $0.uri == artist.uri }
+    }
 
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 16)]
 
@@ -141,6 +167,20 @@ struct ArtistDetailView: View {
                 artworkIsCircle: true)
             Divider()
             HStack {
+                Button {
+                    let nowFollowing = !isFollowing
+                    followingOverride = nowFollowing
+                    if nowFollowing {
+                        model.followArtist(uri: artist.uri)
+                    } else {
+                        model.unfollowArtist(uri: artist.uri)
+                    }
+                } label: {
+                    Label(isFollowing ? "Following" : "Follow",
+                          systemImage: isFollowing ? "checkmark" : "plus")
+                }
+                .buttonStyle(.bordered)
+                .tint(isFollowing ? .secondary : .accentColor)
                 Picker("Scope", selection: $libraryOnly) {
                     Text("All").tag(false)
                     Text("In Library").tag(true)

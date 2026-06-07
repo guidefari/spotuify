@@ -23,6 +23,29 @@ public enum DaemonControl {
         await DaemonLauncher.ensureRunning(socketPath: socketPath)
     }
 
+    /// Whether Homebrew is available — drives whether the gate can offer a
+    /// one-click install vs. fall back to manual instructions.
+    public static var homebrewAvailable: Bool { resolveBrew() != nil }
+
+    /// `brew install` the tap formula, then start the daemon. Best-effort:
+    /// returns combined output so the gate can fall back to Terminal on failure.
+    public static func installViaBrew(socketPath: String) async -> CommandResult {
+        guard let brew = resolveBrew() else {
+            return CommandResult(
+                ok: false,
+                output: "Homebrew isn’t installed. Install it from https://brew.sh, then retry.")
+        }
+        let install = await run(
+            brew, ["install", "planetaryescape/spotuify/spotuify"], timeout: 600)
+        guard install.ok else { return install }
+        let started = await DaemonLauncher.ensureRunning(
+            socketPath: socketPath, timeout: .seconds(15))
+        return CommandResult(
+            ok: started,
+            output: install.output
+                + (started ? "" : "\nInstalled, but the daemon didn’t start — try “spotuify daemon start”."))
+    }
+
     /// `brew upgrade` the tap formula, then restart the daemon. Best-effort:
     /// returns combined output so the caller can fall back to Terminal on failure.
     public static func updateViaBrew(socketPath: String) async -> CommandResult {
