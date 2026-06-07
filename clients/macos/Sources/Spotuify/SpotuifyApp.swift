@@ -18,6 +18,9 @@ struct SpotuifyApp: App {
                 .environment(theme)
                 .environment(navigator)
                 .task {
+                    // Self-contained install: drop the bundled daemon+CLI onto
+                    // the user's PATH so the backend is available everywhere.
+                    DaemonLauncher.installBundledCLIIfNeeded()
                     model.start()
                     SystemMediaController.shared.configure(model: model)
                     ReminderNotificationScheduler.shared.configure(model: model)

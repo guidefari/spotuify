@@ -147,11 +147,43 @@ mkdir -p "$export_dir"
 cp -R "$app_path" "$export_dir/Spotuify.app"
 app_path="$export_dir/Spotuify.app"
 
+# --- bundle the daemon+CLI binary (self-contained backend) --------------------
+# Embed the universal `spotuify` binary so installing the app installs the whole
+# backend (daemon + CLI). Source: $SPOTUIFY_BUNDLED_BIN if set, else build a
+# universal (arm64+x86_64) binary from the workspace.
+BUNDLED_BIN="${SPOTUIFY_BUNDLED_BIN:-}"
+if [[ -z "$BUNDLED_BIN" ]]; then
+  echo "==> Building universal spotuify binary (arm64 + x86_64)"
+  ( cd "$repo_root" \
+    && cargo build --release --bin spotuify --target aarch64-apple-darwin \
+    && cargo build --release --bin spotuify --target x86_64-apple-darwin )
+  BUNDLED_BIN="$macos_dir/build/spotuify-universal"
+  lipo -create \
+    "$repo_root/target/aarch64-apple-darwin/release/spotuify" \
+    "$repo_root/target/x86_64-apple-darwin/release/spotuify" \
+    -output "$BUNDLED_BIN"
+fi
+if [[ -f "$BUNDLED_BIN" ]]; then
+  echo "==> Bundling spotuify binary into app (Contents/Resources/spotuify)"
+  cp "$BUNDLED_BIN" "$app_path/Contents/Resources/spotuify"
+  chmod +x "$app_path/Contents/Resources/spotuify"
+else
+  echo "::warning:: no bundled spotuify binary; app will rely on PATH/Homebrew"
+fi
+
+# --- (re)sign -----------------------------------------------------------------
+# The binary was added after xcodebuild's signing, so sign it and re-seal the
+# whole bundle (its CodeResources must cover the new binary for notarization).
 if [[ -n "$SIGN_ID" ]]; then
-  echo "==> Verifying Developer ID signature"
+  if [[ -f "$app_path/Contents/Resources/spotuify" ]]; then
+    echo "==> Signing bundled binary"
+    codesign --force --options runtime --timestamp -s "$SIGN_ID" \
+      "$app_path/Contents/Resources/spotuify"
+  fi
+  echo "==> Re-sealing app bundle with Developer ID"
+  codesign --force --options runtime --timestamp -s "$SIGN_ID" "$app_path"
   codesign --verify --strict --verbose=2 "$app_path" 2>&1 | tail -3
 elif command -v codesign >/dev/null 2>&1; then
-  # No Developer ID: ad-hoc sign so the bundle is internally consistent.
   echo "==> Ad-hoc signing app bundle (unsigned distribution)"
   codesign --force --deep --sign - "$app_path" >/dev/null 2>&1 || \
     echo "    (ad-hoc sign skipped; bundle remains unsigned)"

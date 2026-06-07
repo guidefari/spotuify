@@ -5,6 +5,16 @@ import Darwin
 /// launched from Finder get a minimal PATH, so we probe known Homebrew/Cargo
 /// locations explicitly (and honor `SPOTUIFY_BIN`).
 public enum DaemonLauncher {
+    /// The `spotuify` daemon+CLI binary bundled inside the .app (placed at
+    /// Contents/Resources/spotuify by the DMG build), if present + executable.
+    /// This makes the app self-contained — no Homebrew/Cargo required.
+    public static func bundledBinaryPath() -> String? {
+        guard let url = Bundle.main.url(forResource: "spotuify", withExtension: nil) else {
+            return nil
+        }
+        return FileManager.default.isExecutableFile(atPath: url.path) ? url.path : nil
+    }
+
     public static func resolveBinary() -> String? {
         let env = ProcessInfo.processInfo.environment
         if let explicit = env["SPOTUIFY_BIN"], !explicit.isEmpty,
@@ -16,6 +26,7 @@ public enum DaemonLauncher {
             "/usr/local/bin/spotuify",
         ]
         if let home = env["HOME"] {
+            candidates.append("\(home)/.local/bin/spotuify")
             candidates.append("\(home)/.cargo/bin/spotuify")
         }
         if let pathVar = env["PATH"] {
@@ -23,7 +34,38 @@ public enum DaemonLauncher {
                 candidates.append("\(dir)/spotuify")
             }
         }
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+        if let found = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            return found
+        }
+        // Last resort: the binary bundled in the app itself.
+        return bundledBinaryPath()
+    }
+
+    /// Install the bundled `spotuify` binary to `~/.local/bin/spotuify` so the
+    /// daemon+CLI are available on the user's PATH (the DMG is the whole backend).
+    /// No-op when no bundled binary, or when a copy is already installed there.
+    @discardableResult
+    public static func installBundledCLIIfNeeded() -> Bool {
+        guard let bundled = bundledBinaryPath(),
+              let home = ProcessInfo.processInfo.environment["HOME"] else { return false }
+        let fm = FileManager.default
+        let binDir = "\(home)/.local/bin"
+        let dest = "\(binDir)/spotuify"
+        // Already installed + same size → assume current, skip.
+        if let destAttrs = try? fm.attributesOfItem(atPath: dest),
+           let srcAttrs = try? fm.attributesOfItem(atPath: bundled),
+           (destAttrs[.size] as? Int) == (srcAttrs[.size] as? Int) {
+            return true
+        }
+        do {
+            try fm.createDirectory(atPath: binDir, withIntermediateDirectories: true)
+            if fm.fileExists(atPath: dest) { try fm.removeItem(atPath: dest) }
+            try fm.copyItem(atPath: bundled, toPath: dest)
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dest)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Returns true once the socket accepts a connection. If it doesn't
