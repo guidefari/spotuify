@@ -613,6 +613,11 @@ impl DaemonState {
         self.we_are_active.store(active, Ordering::Release);
     }
 
+    /// Whether the user currently intends this device to be the playback target.
+    pub(crate) fn is_we_are_active(&self) -> bool {
+        self.we_are_active.load(Ordering::Acquire)
+    }
+
     /// The latest GitHub release observed by the update loop, if any.
     pub(crate) fn cached_release(&self) -> Option<crate::update::CachedRelease> {
         self.latest_release.lock().clone()

@@ -39,6 +39,22 @@ pub fn list_audio_outputs() -> Vec<String> {
     Vec::new()
 }
 
+/// The current system default output device name (cpal), or `None` if there is
+/// no default / enumeration isn't supported. Used by the daemon's "follow the
+/// system default output" watcher to detect when the user switches outputs.
+#[cfg(feature = "rodio-backend")]
+pub fn current_default_output_name() -> Option<String> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    cpal::default_host()
+        .default_output_device()
+        .and_then(|device| device.name().ok())
+}
+
+#[cfg(not(feature = "rodio-backend"))]
+pub fn current_default_output_name() -> Option<String> {
+    None
+}
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 

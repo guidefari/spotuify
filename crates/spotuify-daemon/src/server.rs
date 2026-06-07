@@ -141,6 +141,12 @@ pub async fn run_daemon() -> Result<()> {
     // Update-awareness: poll GitHub releases (startup + every 6h) so clients
     // can surface "a newer release exists". Opt out with SPOTUIFY_NO_UPDATE_CHECK.
     let update_task = spawn_update_loop(state.clone());
+    // macOS: follow the system default audio output (re-route playback when the
+    // user switches their Mac's output device, if no device is pinned).
+    #[cfg(target_os = "macos")]
+    let audio_follow_task = Some(spawn_audio_follow_loop(state.clone()));
+    #[cfg(not(target_os = "macos"))]
+    let audio_follow_task: Option<JoinHandle<()>> = None;
     // Listening reminders: fire due/overdue reminders, emit ReminderDue.
     let reminder_task = crate::reminders::spawn_reminder_loop(state.clone());
     let mut listener = IpcListener::bind(&socket_path)
@@ -218,6 +224,7 @@ pub async fn run_daemon() -> Result<()> {
             .chain(queue_warm_task)
             .chain(std::iter::once(retention_task))
             .chain(std::iter::once(update_task))
+            .chain(audio_follow_task)
             .chain(std::iter::once(reminder_task))
             .collect(),
         CONNECTION_DRAIN_TIMEOUT,
@@ -1452,6 +1459,63 @@ fn spawn_update_loop(state: Arc<DaemonState>) -> JoinHandle<()> {
         loop {
             tokio::select! {
                 _ = ticker.tick() => run_update_check_once(&state).await,
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow_and_update() {
+                        break;
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// macOS only — "follow the system default audio output" watcher.
+///
+/// When the user has NOT pinned a specific output device
+/// (`player.audio_output_device` unset = follow the system default) and changes
+/// their Mac's default output (Sound settings, Control Center, plugging in
+/// headphones), rebuild the embedded player so audio re-routes to the new
+/// device. Polls every 2s — cheap, no extra deps, ~2s latency. Gated on
+/// `we_are_active` so it never disrupts playback that's on another device, and
+/// it only reconnects on an actual default-device change (an intentional user
+/// action), keeping playback reliability intact.
+#[cfg(target_os = "macos")]
+fn spawn_audio_follow_loop(state: Arc<DaemonState>) -> JoinHandle<()> {
+    let bg_handle = state.bg_runtime_handle();
+    bg_handle.spawn(async move {
+        let mut shutdown_rx = state.shutdown_receiver();
+        let mut last = spotuify_player::current_default_output_name();
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
+        ticker.tick().await; // consume the immediate first tick
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    let following = Config::load()
+                        .ok()
+                        .map(|config| config.player.audio_output_device.is_none())
+                        .unwrap_or(false);
+                    let current = spotuify_player::current_default_output_name();
+                    if !following {
+                        // Pinned to a specific device — don't follow; keep the
+                        // baseline current so a later un-pin doesn't false-fire.
+                        last = current;
+                        continue;
+                    }
+                    if current != last {
+                        let new_default = current.clone();
+                        last = current;
+                        if new_default.is_some() && state.is_we_are_active() {
+                            tracing::info!(
+                                device = ?new_default,
+                                "system default output changed; re-routing embedded player"
+                            );
+                            let name = DaemonState::configured_device_name();
+                            if let Err(err) = state.reconnect_player(&name).await {
+                                tracing::warn!(error = %err, "audio-follow reconnect failed");
+                            }
+                        }
+                    }
+                }
                 changed = shutdown_rx.changed() => {
                     if changed.is_err() || *shutdown_rx.borrow_and_update() {
                         break;
