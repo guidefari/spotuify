@@ -46,6 +46,8 @@ struct AppShell: View {
         .animation(.easeInOut(duration: 0.25), value: globalPanel)
         .frame(minWidth: 880, minHeight: 620)
         .overlay(alignment: .top) { bannerView }
+        .overlay(alignment: .bottom) { toastView }
+        .animation(.spring(response: 0.35, dampingFraction: 0.82), value: model.toast)
         .tint(theme.accent)
         .environment(theme)
         .task(id: model.player.currentItem?.imageURL) {
@@ -96,6 +98,25 @@ struct AppShell: View {
             .padding(.top, 10)
             .shadow(radius: 6, y: 2)
             .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
+    /// Transient confirmation toast (e.g. "Added to queue"), floated above the
+    /// player bar so fire-and-forget actions get instant, visible feedback.
+    @ViewBuilder
+    private var toastView: some View {
+        if let toast = model.toast {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
+                Text(toast).font(.callout.weight(.medium))
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.thinMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.08)))
+            .shadow(color: .black.opacity(0.3), radius: 10, y: 3)
+            .padding(.bottom, 112)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 }

@@ -22,12 +22,15 @@ struct NowPlayingBar: View {
                 .padding(.horizontal, 14)
                 .padding(.top, 6)
 
-            HStack(spacing: 14) {
+            HStack(spacing: 12) {
                 trackCell
-                Spacer(minLength: 12)
+                    .layoutPriority(1)
+                Spacer(minLength: 8)
                 controls
-                Spacer(minLength: 12)
+                    .layoutPriority(3) // transport never compresses
+                Spacer(minLength: 8)
                 trailing
+                    .layoutPriority(2)
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
@@ -64,7 +67,7 @@ struct NowPlayingBar: View {
                     .lineLimit(1)
             }
         }
-        .frame(width: 300, alignment: .leading)
+        .frame(maxWidth: 280, alignment: .leading)
     }
 
     private var controls: some View {
@@ -94,8 +97,10 @@ struct NowPlayingBar: View {
             Text("\(Theme.timeString(model.player.displayProgressMs)) / \(Theme.timeString(model.player.durationMs))")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize()
             VolumeControl().frame(width: 96)
         }
-        .frame(width: 300, alignment: .trailing)
+        .frame(maxWidth: 300, alignment: .trailing)
     }
 }

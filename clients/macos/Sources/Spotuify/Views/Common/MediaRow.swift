@@ -29,6 +29,7 @@ struct MediaRow: View {
 
     @State private var hovering = false
     @State private var showReminderPicker = false
+    @State private var justQueued = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -78,11 +79,18 @@ struct MediaRow: View {
             }
             // Queue button always occupies its slot (opacity, not conditional
             // insertion) so the album/duration columns don't jump on hover.
-            Button { model.queueAdd(uri: item.uri) } label: {
-                Image(systemName: "text.append")
+            // Flashes a checkmark on tap for instant per-row feedback.
+            Button {
+                model.queueAdd(uri: item.uri)
+                justQueued = true
+                Task { try? await Task.sleep(for: .seconds(1.2)); justQueued = false }
+            } label: {
+                Image(systemName: justQueued ? "checkmark" : "text.append")
+                    .foregroundStyle(justQueued ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+                    .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(.plain).help("Add to queue")
-            .opacity(hovering && item.kind.isQueueable ? 1 : 0)
+            .opacity((hovering || justQueued) && item.kind.isQueueable ? 1 : 0)
             .allowsHitTesting(hovering && item.kind.isQueueable)
             Button { model.play(uri: item.uri) } label: {
                 Image(systemName: "play.circle.fill").font(.title3)

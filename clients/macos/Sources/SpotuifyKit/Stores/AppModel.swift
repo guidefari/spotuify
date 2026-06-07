@@ -24,6 +24,10 @@ public final class AppModel {
     public private(set) var recent: [MediaItem] = []
     /// Transient status line (rate-limit countdown, premium/auth notice, …).
     public private(set) var banner: String?
+    /// Transient confirmation toast (e.g. "Added to queue"), auto-dismissed.
+    /// Gives instant feedback for fire-and-forget mutations.
+    public private(set) var toast: String?
+    private var toastTask: Task<Void, Never>?
 
     private let connection = DaemonConnection()
     private let logger = Logger(subsystem: "com.bhekanik.spotuify", category: "appmodel")
@@ -110,12 +114,14 @@ public final class AppModel {
     }
 
     public func queueAdd(uri: String) {
+        showToast("Added to queue")
         Task { [weak self] in try? await self?.connection.request(.queueAdd(uri: uri)) }
     }
 
     /// Append many tracks in one request (e.g. "queue all liked songs").
     public func queueAll(uris: [String]) {
         guard !uris.isEmpty else { return }
+        showToast("Added \(uris.count) to queue")
         Task { [weak self] in try? await self?.connection.request(.queueAddMany(uris: uris)) }
     }
 
@@ -140,11 +146,13 @@ public final class AppModel {
     /// Follow an artist. The daemon emits a `LibraryChanged` event that refreshes
     /// the Followed-Artists list.
     public func followArtist(uri: String) {
+        showToast("Following")
         Task { [weak self] in try? await self?.connection.request(.artistFollow(artist: uri)) }
     }
 
     /// Unfollow an artist.
     public func unfollowArtist(uri: String) {
+        showToast("Unfollowed")
         Task { [weak self] in try? await self?.connection.request(.artistUnfollow(artist: uri)) }
     }
 
@@ -152,6 +160,7 @@ public final class AppModel {
 
     /// Save (like) a track/album/etc. by URI. The daemon emits `LibraryChanged`.
     public func like(uri: String) {
+        showToast("Added to Library")
         Task { [weak self] in
             try? await self?.connection.request(.librarySave(uri: uri, current: false))
         }
@@ -159,6 +168,7 @@ public final class AppModel {
 
     /// Remove a saved (liked) item by URI.
     public func unlike(uri: String) {
+        showToast("Removed from Library")
         Task { [weak self] in try? await self?.connection.request(.libraryUnsave(uri: uri)) }
     }
 
@@ -236,6 +246,17 @@ public final class AppModel {
     public var onRemindersReady: (() -> Void)?
 
     public func clearBanner() { banner = nil }
+
+    /// Show a transient confirmation toast that auto-dismisses after ~1.8s.
+    public func showToast(_ message: String) {
+        toast = message
+        toastTask?.cancel()
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.8))
+            guard !Task.isCancelled else { return }
+            self?.toast = nil
+        }
+    }
 
     /// The daemon socket this client targets (for display/diagnostics).
     public var socketPath: String { SocketPath.resolve() }
