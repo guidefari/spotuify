@@ -50,7 +50,6 @@ final class SystemMediaController {
         center.togglePlayPauseCommand.addTarget { [weak self] _ in self?.model?.togglePlayPause(); return .success }
         center.nextTrackCommand.addTarget { [weak self] _ in self?.model?.next(); return .success }
         center.previousTrackCommand.addTarget { [weak self] _ in self?.model?.previous(); return .success }
-        center.changePlaybackPositionCommand.isEnabled = true
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let self,
                   let positionEvent = event as? MPChangePlaybackPositionCommandEvent,
@@ -60,6 +59,33 @@ final class SystemMediaController {
             self.model?.seek(toFraction: positionEvent.positionTime * 1000 / Double(duration))
             return .success
         }
+
+        // Explicitly enable the commands we handle. A headphone/AirPods single
+        // press maps to `togglePlayPauseCommand` (some devices send play/pause
+        // separately), so all three must be live. Disable the ones we don't
+        // implement so the system's command set is coherent and it doesn't
+        // mis-route a button to an unhandled command.
+        for command in [
+            center.playCommand, center.pauseCommand, center.togglePlayPauseCommand,
+            center.nextTrackCommand, center.previousTrackCommand,
+            center.changePlaybackPositionCommand,
+        ] {
+            command.isEnabled = true
+        }
+        for command in [
+            center.seekForwardCommand, center.seekBackwardCommand,
+            center.skipForwardCommand, center.skipBackwardCommand,
+            center.changeRepeatModeCommand, center.changeShuffleModeCommand,
+        ] {
+            command.isEnabled = false
+        }
+
+        // Claim Now Playing immediately. macOS only delivers media-key /
+        // headphone events to the app that is the current Now Playing source,
+        // which requires a published `nowPlayingInfo` + `playbackState`. Without
+        // this initial publish the app stays a non-source until the *next*
+        // playback change, so the first headphone press goes nowhere.
+        Task { await self.updateNowPlaying(player: model.player) }
     }
 
     /// Publish the current track/state to the Now Playing center.
