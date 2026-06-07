@@ -21,6 +21,7 @@ public final class AppModel {
     public let player = PlayerStore()
     public let search = SearchStore()
     public let podcasts = PodcastsStore()
+    public let config = ConfigStore()
     public let library = LibraryStore()
     public let lyrics = LyricsStore()
     public let reminders = RemindersStore()
@@ -55,6 +56,7 @@ public final class AppModel {
     public init() {
         search.connect(self)
         podcasts.connect(self)
+        config.connect(self)
         library.connect(self)
         lyrics.connect(self)
         reminders.connect(self)

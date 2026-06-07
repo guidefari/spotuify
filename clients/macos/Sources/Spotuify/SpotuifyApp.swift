@@ -32,6 +32,9 @@ struct SpotuifyApp: App {
         .windowResizability(.contentSize)
         .defaultSize(width: 980, height: 720)
         .commands {
+            CommandGroup(after: .appSettings) {
+                CheckForUpdatesCommand(model: model)
+            }
             CommandGroup(after: .windowArrangement) {
                 MiniPlayerCommand()
             }
@@ -111,6 +114,19 @@ private struct GoCommands: View {
             Button(dest.title) { navigator.selection = dest }
                 .keyboardShortcut(
                     KeyEquivalent(Character("\((index + 1) % 10)")), modifiers: .command)
+        }
+    }
+}
+
+/// "Check for Updates…" in the app menu — forces a fresh check and opens
+/// Settings so the result (Updates pane + banner) is visible.
+private struct CheckForUpdatesCommand: View {
+    let model: AppModel
+    @Environment(\.openSettings) private var openSettings
+    var body: some View {
+        Button("Check for Updates…") {
+            model.checkUpdate(force: true)
+            openSettings()
         }
     }
 }
