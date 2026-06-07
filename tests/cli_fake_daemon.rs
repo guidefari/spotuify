@@ -147,7 +147,7 @@ fn fake_daemon_cli_journey_covers_json_ids_and_mutation_receipts() {
         pid: None,
     };
 
-    let devices = run_json(temp.path(), &["devices", "--format", "json"]);
+    let devices = run_json_until_non_empty(temp.path(), &["devices", "--format", "json"]);
     let status = run_json(temp.path(), &["daemon", "status", "--format", "json"]);
     daemon.pid = status["daemon_pid"].as_u64();
     assert!(
@@ -320,6 +320,23 @@ fn run_json(root: &Path, args: &[&str]) -> Value {
             args.join(" ")
         )
     })
+}
+
+/// Like `run_json`, but for endpoints that populate asynchronously on daemon
+/// cold-start (e.g. `devices`, which fills only after the first provider poll —
+/// clients normally react to a `DevicesChanged` event). Retries until the JSON
+/// array is non-empty, then returns the last result so the caller's assertions
+/// don't race the first empty response.
+fn run_json_until_non_empty(root: &Path, args: &[&str]) -> Value {
+    let mut value = run_json(root, args);
+    for _ in 0..50 {
+        if value.as_array().is_some_and(|items| !items.is_empty()) {
+            break;
+        }
+        sleep(Duration::from_millis(100));
+        value = run_json(root, args);
+    }
+    value
 }
 
 fn run_stdout(root: &Path, args: &[&str]) -> String {
