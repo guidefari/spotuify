@@ -6,6 +6,7 @@ struct SpotuifyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
     @State private var theme = ArtworkTheme()
+    @State private var navigator = Navigator()
 
     var body: some Scene {
         // `Window` (not `WindowGroup`) so there is exactly one player window —
@@ -15,6 +16,7 @@ struct SpotuifyApp: App {
             RootView()
                 .environment(model)
                 .environment(theme)
+                .environment(navigator)
                 .task {
                     model.start()
                     SystemMediaController.shared.configure(model: model)
@@ -30,6 +32,8 @@ struct SpotuifyApp: App {
             CommandGroup(after: .windowArrangement) {
                 MiniPlayerCommand()
             }
+            CommandMenu("Playback") { PlaybackCommands(model: model) }
+            CommandMenu("Go") { GoCommands(navigator: navigator) }
         }
 
         // Single floating HUD window — likewise reused, never duplicated.
@@ -66,6 +70,44 @@ struct RootView: View {
             AppShell()
         default:
             DaemonGateView(readiness: model.readiness)
+        }
+    }
+}
+
+/// Global playback keyboard control (Space / ⌘arrows / ⌘⇧S / ⌘⇧R), shown in
+/// the Playback menu so the shortcuts are discoverable. Space play/pause yields
+/// to a focused text field (it inserts a space there instead).
+private struct PlaybackCommands: View {
+    let model: AppModel
+    var body: some View {
+        Button("Play / Pause") { model.togglePlayPause() }
+            .keyboardShortcut(.space, modifiers: [])
+        Button("Next") { model.next() }
+            .keyboardShortcut(.rightArrow, modifiers: .command)
+        Button("Previous") { model.previous() }
+            .keyboardShortcut(.leftArrow, modifiers: .command)
+        Divider()
+        Button("Volume Up") { model.setVolume(Int(model.player.volumePercent ?? 0) + 5) }
+            .keyboardShortcut(.upArrow, modifiers: .command)
+        Button("Volume Down") { model.setVolume(Int(model.player.volumePercent ?? 0) - 5) }
+            .keyboardShortcut(.downArrow, modifiers: .command)
+        Divider()
+        Button("Toggle Shuffle") { model.toggleShuffle() }
+            .keyboardShortcut("s", modifiers: [.command, .shift])
+        Button("Cycle Repeat") { model.cycleRepeat() }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+    }
+}
+
+/// View navigation: ⌘1…⌘9, ⌘0 jump to each destination (mirrors the TUI's
+/// 1–9/0 and the sidebar order).
+private struct GoCommands: View {
+    let navigator: Navigator
+    var body: some View {
+        ForEach(Array(Navigator.numbered.enumerated()), id: \.element.id) { index, dest in
+            Button(dest.title) { navigator.selection = dest }
+                .keyboardShortcut(
+                    KeyEquivalent(Character("\((index + 1) % 10)")), modifiers: .command)
         }
     }
 }

@@ -1,4 +1,19 @@
+import Observation
 import SwiftUI
+
+/// Shared current-destination state, so both the sidebar (`AppShell`) and the
+/// app-level keyboard `Commands` (⌘1–0) can drive view navigation.
+@MainActor
+@Observable
+final class Navigator {
+    var selection: Destination = .nowPlaying
+
+    /// Numeric-key order for ⌘1…⌘9, ⌘0 (mirrors the TUI's 1–9/0 + sidebar).
+    static let numbered: [Destination] = [
+        .nowPlaying, .queue, .search, .likedSongs, .albums,
+        .artists, .podcasts, .playlists, .history, .devices,
+    ]
+}
 
 /// Sidebar destinations.
 enum Destination: String, CaseIterable, Identifiable {

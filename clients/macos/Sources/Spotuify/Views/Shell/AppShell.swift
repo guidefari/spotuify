@@ -6,7 +6,7 @@ import SpotuifyKit
 struct AppShell: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
-    @State private var selection: Destination = .nowPlaying
+    @Environment(Navigator.self) private var navigator
     /// Shared with NowPlayingView: when it minimises its controls for full art,
     /// the footer transport reappears so playback stays controllable.
     @AppStorage("nowPlayingMinimized") private var nowPlayingMinimized = false
@@ -16,10 +16,11 @@ struct AppShell: View {
     private var globalPanel: GlobalPanel { GlobalPanel(rawValue: globalPanelRaw) ?? .none }
 
     var body: some View {
-        VStack(spacing: 0) {
+        @Bindable var nav = navigator
+        return VStack(spacing: 0) {
             HStack(spacing: 0) {
                 NavigationSplitView {
-                    Sidebar(selection: $selection)
+                    Sidebar(selection: $nav.selection)
                         .navigationSplitViewColumnWidth(min: 200, ideal: Theme.sidebarWidth, max: 260)
                 } detail: {
                     destinationView
@@ -28,7 +29,7 @@ struct AppShell: View {
                 .navigationSplitViewStyle(.balanced)
                 // Global queue/lyrics rail — shown on every page except Now
                 // Playing (which has its own in-stage panels).
-                if globalPanel != .none && selection != .nowPlaying {
+                if globalPanel != .none && navigator.selection != .nowPlaying {
                     Divider()
                     GlobalSidePanel(panel: globalPanel) { globalPanelRaw = GlobalPanel.none.rawValue }
                         .frame(width: 340)
@@ -38,7 +39,7 @@ struct AppShell: View {
             // The immersive Now Playing page has its own full transport, so hide
             // the bottom bar there — unless its controls are minimised for full
             // art, in which case the footer is where the transport lives.
-            if selection != .nowPlaying || nowPlayingMinimized {
+            if navigator.selection != .nowPlaying || nowPlayingMinimized {
                 Divider()
                 NowPlayingBar()
             }
@@ -58,13 +59,13 @@ struct AppShell: View {
                 get: { model.presentDueInbox },
                 set: { model.presentDueInbox = $0 })
         ) {
-            DueRemindersSheet { selection = .notifications }
+            DueRemindersSheet { navigator.selection = .notifications }
         }
     }
 
     @ViewBuilder
     private var destinationView: some View {
-        switch selection {
+        switch navigator.selection {
         case .nowPlaying: NowPlayingView()
         case .search: SearchView()
         case .likedSongs: LikedSongsView()
