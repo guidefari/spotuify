@@ -3,13 +3,16 @@ set -euo pipefail
 
 # Builds the Release Spotuify.app and packages it into a distributable DMG.
 #
-# The DMG is UNSIGNED: there is no Apple Developer ID identity and no
-# notarization. On first launch users must right-click the app and choose
-# Open (Gatekeeper will otherwise refuse an unsigned/quarantined bundle).
+# Signing is automatic when a "Developer ID Application" identity is in the
+# keychain (or SPOTUIFY_SIGN_IDENTITY is set): the app gets a hardened-runtime
+# Developer ID signature and the DMG is signed. Set SPOTUIFY_NOTARY_PROFILE to a
+# stored `notarytool` profile to also notarize + staple (opens with no Gatekeeper
+# warning). With no identity (e.g. CI), it falls back to an ad-hoc unsigned DMG
+# (users right-click -> Open on first launch).
 #
 # Usage:
 #   scripts/build-dmg.sh [VERSION]
-#   SPOTUIFY_VERSION=0.1.44 scripts/build-dmg.sh
+#   SPOTUIFY_VERSION=0.1.46 SPOTUIFY_NOTARY_PROFILE=spotuify-notary scripts/build-dmg.sh
 #
 # Version resolution order: $1 arg, then $SPOTUIFY_VERSION, then the workspace
 # version in the repo-root Cargo.toml.
@@ -76,23 +79,57 @@ dmg_path="$dist_dir/Spotuify-${VERSION}.dmg"
 echo "==> Generating Xcode project (xcodegen)"
 xcodegen generate
 
+# --- resolve signing identity -------------------------------------------------
+# If a Developer ID Application identity is available (or SPOTUIFY_SIGN_IDENTITY
+# is set), build a signed + hardened-runtime app; otherwise fall back to an
+# ad-hoc-signed unsigned bundle (e.g. on CI runners without the cert).
+SIGN_ID="${SPOTUIFY_SIGN_IDENTITY:-}"
+if [[ -z "$SIGN_ID" ]] && command -v security >/dev/null 2>&1; then
+  SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
+    | grep -m1 'Developer ID Application' | sed -E 's/.*"(.*)".*/\1/')"
+fi
+TEAM_ID="${SPOTUIFY_TEAM_ID:-}"
+if [[ -z "$TEAM_ID" && -n "$SIGN_ID" ]]; then
+  TEAM_ID="$(printf '%s' "$SIGN_ID" | sed -E 's/.*\(([A-Z0-9]+)\)$/\1/')"
+fi
+
 # --- build Release config -----------------------------------------------------
-# A plain `build` into a known DerivedData path is the simplest route that
-# yields a runnable Spotuify.app, and avoids archive/export-plist signing
-# friction for an unsigned distribution. We pin MARKETING_VERSION so the
-# bundle's CFBundleShortVersionString matches the DMG name.
+# A plain `build` into a known DerivedData path yields a runnable Spotuify.app
+# and pins MARKETING_VERSION so CFBundleShortVersionString matches the DMG name.
 echo "==> Building Release configuration (xcodebuild)"
-xcodebuild \
-  -project Spotuify.xcodeproj \
-  -scheme Spotuify \
-  -configuration Release \
-  -derivedDataPath "$derived_data" \
-  -destination 'generic/platform=macOS' \
-  MARKETING_VERSION="$VERSION" \
-  CODE_SIGN_IDENTITY="-" \
-  CODE_SIGNING_REQUIRED=NO \
-  CODE_SIGNING_ALLOWED=NO \
-  build
+if [[ -n "$SIGN_ID" ]]; then
+  echo "==> Signing with: $SIGN_ID (team ${TEAM_ID:-?})"
+  xcodebuild \
+    -project Spotuify.xcodeproj \
+    -scheme Spotuify \
+    -configuration Release \
+    -derivedDataPath "$derived_data" \
+    -destination 'generic/platform=macOS' \
+    -allowProvisioningUpdates \
+    MARKETING_VERSION="$VERSION" \
+    CODE_SIGN_STYLE=Manual \
+    CODE_SIGN_IDENTITY="$SIGN_ID" \
+    DEVELOPMENT_TEAM="$TEAM_ID" \
+    CODE_SIGNING_REQUIRED=YES \
+    CODE_SIGNING_ALLOWED=YES \
+    ENABLE_HARDENED_RUNTIME=YES \
+    OTHER_CODE_SIGN_FLAGS="--timestamp" \
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
+    build
+else
+  echo "==> No Developer ID identity found; building unsigned"
+  xcodebuild \
+    -project Spotuify.xcodeproj \
+    -scheme Spotuify \
+    -configuration Release \
+    -derivedDataPath "$derived_data" \
+    -destination 'generic/platform=macOS' \
+    MARKETING_VERSION="$VERSION" \
+    CODE_SIGN_IDENTITY="-" \
+    CODE_SIGNING_REQUIRED=NO \
+    CODE_SIGNING_ALLOWED=NO \
+    build
+fi
 
 products_dir="$derived_data/Build/Products/Release"
 app_path="$products_dir/Spotuify.app"
@@ -103,15 +140,18 @@ if [[ ! -d "$app_path" ]]; then
 fi
 echo "==> Built app: $app_path"
 
-# Stage a clean copy of the app so we never package stale DerivedData siblings.
+# Stage a clean copy of the app so we never package stale DerivedData siblings
+# (cp -R preserves the code signature).
 rm -rf "$export_dir"
 mkdir -p "$export_dir"
 cp -R "$app_path" "$export_dir/Spotuify.app"
 app_path="$export_dir/Spotuify.app"
 
-# Ad-hoc sign so the bundle is internally consistent (unsigned distribution,
-# no Developer ID). Best-effort: do not fail the build if codesign is fussy.
-if command -v codesign >/dev/null 2>&1; then
+if [[ -n "$SIGN_ID" ]]; then
+  echo "==> Verifying Developer ID signature"
+  codesign --verify --strict --verbose=2 "$app_path" 2>&1 | tail -3
+elif command -v codesign >/dev/null 2>&1; then
+  # No Developer ID: ad-hoc sign so the bundle is internally consistent.
   echo "==> Ad-hoc signing app bundle (unsigned distribution)"
   codesign --force --deep --sign - "$app_path" >/dev/null 2>&1 || \
     echo "    (ad-hoc sign skipped; bundle remains unsigned)"
@@ -154,12 +194,31 @@ else
   rm -rf "$staging_dir"
 fi
 
-# --- report -------------------------------------------------------------------
 if [[ ! -f "$dmg_path" ]]; then
   echo "::error:: DMG not produced at $dmg_path" >&2
   exit 70
 fi
 
+# --- sign + notarize the DMG --------------------------------------------------
+# Signing the DMG itself and notarizing makes it open with no Gatekeeper
+# warning. Requires the Developer ID identity (SIGN_ID) and a stored notarytool
+# profile (SPOTUIFY_NOTARY_PROFILE, e.g. created via `notarytool store-credentials`).
+if [[ -n "$SIGN_ID" ]]; then
+  echo "==> Signing DMG"
+  codesign --force --timestamp --sign "$SIGN_ID" "$dmg_path"
+  if [[ -n "${SPOTUIFY_NOTARY_PROFILE:-}" ]]; then
+    echo "==> Notarizing DMG (profile: $SPOTUIFY_NOTARY_PROFILE) — this can take a few minutes"
+    xcrun notarytool submit "$dmg_path" --keychain-profile "$SPOTUIFY_NOTARY_PROFILE" --wait
+    echo "==> Stapling notarization ticket"
+    xcrun stapler staple "$dmg_path"
+    echo "==> Gatekeeper assessment:"
+    spctl -a -vv -t install "$dmg_path" 2>&1 | head -3 || true
+  else
+    echo "    (SPOTUIFY_NOTARY_PROFILE unset; DMG is signed but NOT notarized)"
+  fi
+fi
+
+# --- report -------------------------------------------------------------------
 size="$(du -h "$dmg_path" | cut -f1 | tr -d '[:space:]')"
 sha="$(shasum -a 256 "$dmg_path" | awk '{print $1}')"
 
