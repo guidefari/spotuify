@@ -363,3 +363,29 @@ Out of scope for v1: fuzzy re-release matching (a deluxe or remastered edition
 with a different album id can read as "not in library"); strict id matching is
 used instead. A `/me/albums/contains` fallback for a cold saved-album cache is
 deferred.
+
+## D018: Update-awareness + cross-show episode feed (2026-06-07)
+
+Decision: the daemon owns an update check and a podcast episode feed; clients are
+views. Protocol bumped 5 to 6 (additive: `check-update` / `update-available` /
+`update-status`, `episode-feed`, and a `date` search sort).
+
+Rationale:
+
+- Update check lives in the daemon so a single periodic GitHub call (startup, then
+  every 6h, bounded 4s/8s timeouts) serves every client. It emits
+  `UpdateAvailable` once per newer release and answers `CheckUpdate` from cache.
+  The daemon derives the upgrade command from the running exe path
+  (Homebrew / cargo / DMG / dev), so each client renders the right action.
+- mxr deliberately avoids phone-home; we honor that ethos by contacting only the
+  public, unauthenticated GitHub releases API, sending no identifying data, and
+  making it opt-out via `SPOTUIFY_NO_UPDATE_CHECK`. Surfaced in CLI
+  (`spotuify update`), the TUI banner, and a macOS banner + Settings toggle.
+- The episode feed fans out `show-episodes` over the followed shows (bounded
+  concurrency, first page each), merges, and caches the merged set for 15 min;
+  sort + limit are applied per request. CLI: `spotuify episodes --sort …`.
+
+Out of scope: sorting podcasts by "tags" or genres. Spotify's API exposes none on
+shows or episodes (only release date, duration, title, show name, publisher,
+played state), so the available-field sorts ship instead. User-applied local tags
+would be a separate feature and were not built.

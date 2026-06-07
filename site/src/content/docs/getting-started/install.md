@@ -118,6 +118,21 @@ VERSION="0.1.47"
 curl -fsSLO "https://github.com/planetaryescape/spotuify/releases/download/v${VERSION}/Spotuify-${VERSION}.dmg"
 ```
 
+## Staying up to date
+
+The daemon checks GitHub for newer releases (on start, then every few hours) and
+tells you how to upgrade for the way you installed:
+
+- **CLI:** `spotuify update` prints the current and latest versions plus the exact
+  upgrade command (`--force` re-checks now, `--format json` for scripts).
+- **macOS app:** an "update available" banner with a Download button; toggle it off
+  under Settings.
+- **TUI:** an upgrade banner with the upgrade command.
+
+The check only contacts the public GitHub releases API and sends no identifying
+data. Disable it entirely with `SPOTUIFY_NO_UPDATE_CHECK=1` in the daemon's
+environment.
+
 ## Configure Spotify
 
 `spotuify` is BYO Spotify app GA: the supported GA setup is for users who can create their own Spotify Developer app. It is not broad consumer no-developer setup yet; that would require a reviewed/shared Spotify app or a product decision to make first-party/keymaster auth the default.
