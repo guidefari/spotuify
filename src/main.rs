@@ -729,6 +729,16 @@ enum ConfigCommand {
     },
     /// Set a config value.
     Set { key: String, value: String },
+    /// Print every config key + value (the whole editable config). Drives the
+    /// macOS Settings window's visual config editor.
+    Show {
+        /// Print sensitive values instead of `<redacted>`.
+        #[arg(long)]
+        reveal_secret: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2070,6 +2080,28 @@ fn handle_config(command: ConfigCommand) -> Result<()> {
         ConfigCommand::Set { key, value } => {
             let path = set_config_value(ConfigKey::parse(&key)?, &value)?;
             println!("updated {}", path.display());
+        }
+        ConfigCommand::Show {
+            reveal_secret,
+            format,
+        } => {
+            // Build an ordered key -> value map over every settable key. The
+            // macOS Settings window reads this (json) to populate its form.
+            let mut entries: Vec<(String, String)> = Vec::new();
+            for key_str in ConfigKey::valid_keys() {
+                let key = ConfigKey::parse(key_str)?;
+                let value = get_config_value(key)?.unwrap_or_default();
+                let value = if matches!(key, ConfigKey::ClientSecret)
+                    && !reveal_secret
+                    && !value.is_empty()
+                {
+                    "<redacted>".to_string()
+                } else {
+                    value
+                };
+                entries.push(((*key_str).to_string(), value));
+            }
+            output::print_config_values(&entries, format)?;
         }
     }
     Ok(())

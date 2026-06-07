@@ -139,6 +139,7 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_config_init", &["config", "init", "--help"]),
         ("cli_help_config_get", &["config", "get", "--help"]),
         ("cli_help_config_set", &["config", "set", "--help"]),
+        ("cli_help_config_show", &["config", "show", "--help"]),
         ("cli_help_analytics", &["analytics", "--help"]),
         (
             "cli_help_analytics_events",
@@ -152,7 +153,7 @@ fn cli_help_snapshots_cover_command_tree() {
         ("cli_help_sync", &["sync", "--help"]),
     ];
 
-    assert_eq!(cases.len(), 93);
+    assert_eq!(cases.len(), 94);
     for (name, args) in cases {
         assert_help_snapshot(name, args);
     }

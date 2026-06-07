@@ -141,6 +141,49 @@ pub fn print_update_status(
     }
 }
 
+/// Render the full config as `key -> value` pairs. JSON emits a flat object
+/// (consumed by the macOS Settings editor); table/ids/csv print line forms.
+pub fn print_config_values(entries: &[(String, String)], format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => {
+            let map: std::collections::BTreeMap<&str, &str> = entries
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&map)?);
+            Ok(())
+        }
+        OutputFormat::Jsonl => {
+            for (k, v) in entries {
+                println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::json!({ "key": k, "value": v }))?
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Csv => {
+            println!("key,value");
+            for (k, v) in entries {
+                println!("{}", csv_row(&[k, v]));
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for (k, _) in entries {
+                println!("{k}");
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            for (k, v) in entries {
+                println!("{k}\t{v}");
+            }
+            Ok(())
+        }
+    }
+}
+
 pub fn print_media_refresh(summary: &MediaRefreshOutput, format: OutputFormat) -> Result<()> {
     match format {
         OutputFormat::Json => print_json(summary),
