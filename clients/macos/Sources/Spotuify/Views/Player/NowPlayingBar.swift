@@ -99,8 +99,9 @@ struct NowPlayingBar: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .fixedSize()
+            DeviceMenu(showsActiveName: false)
             VolumeControl().frame(width: 96)
         }
-        .frame(maxWidth: 300, alignment: .trailing)
+        .frame(maxWidth: 340, alignment: .trailing)
     }
 }
