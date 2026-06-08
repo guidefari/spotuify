@@ -208,7 +208,10 @@ mod tests {
         assert!(brew.url.is_none());
 
         let cargo = upgrade_hint(UpgradeMethod::Cargo, "0.1.48", None);
-        assert!(cargo.command.as_deref().unwrap().contains("--tag v0.1.48"));
+        assert!(cargo
+            .command
+            .as_deref()
+            .is_some_and(|command| command.contains("--tag v0.1.48")));
 
         let app = upgrade_hint(
             UpgradeMethod::MacApp,

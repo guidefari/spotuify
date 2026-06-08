@@ -57,6 +57,13 @@ pub trait SyncContext: Send + Sync {
 
     fn warm_queue(&self, _queue: &Queue) {}
 
+    /// Give hosts a chance to overlay daemon-owned optimistic queue
+    /// mutations before a live queue poll is persisted or broadcast.
+    /// Default is identity for tests and hosts without optimistic state.
+    fn overlay_pending_queue_appends(&self, queue: Queue, _now_ms: i64) -> Queue {
+        queue
+    }
+
     /// Feed a Web API playback poll into the host's in-memory clock so
     /// subsequent `snapshot_playback` reads reflect the freshest state.
     /// Returns `true` when the sample was applied (caller should then

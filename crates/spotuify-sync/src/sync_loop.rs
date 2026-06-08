@@ -514,6 +514,7 @@ async fn sync_queue<C: SyncContext>(ctx: &C, summary: &mut CacheSyncSummary) -> 
                 // the just-written queue and the diff would always
                 // collapse to "no change".
                 let before_queue = ctx.snapshot_queue().await;
+                let queue = ctx.overlay_pending_queue_appends(queue, now_ms());
                 summary.queue_snapshots += ctx.store().persist_queue_bulk(&queue).await?;
                 summary.queue_items += queue.items.len() as u32;
                 let mut items = Vec::with_capacity(queue.items.len() + 1);

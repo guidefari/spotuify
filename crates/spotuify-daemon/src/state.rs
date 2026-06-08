@@ -69,6 +69,69 @@ type PlayerBox = Box<dyn PlayerBackend>;
 type PlayerEventStream = tokio_stream::wrappers::UnboundedReceiverStream<PlayerEvent>;
 type PlayerTokenSlot = Arc<RwLock<Option<String>>>;
 type PlayerBuildResult = (PlayerBox, PlayerEventStream, PlayerTokenSlot);
+const PENDING_QUEUE_APPEND_TTL_MS: i64 = 5_000;
+
+#[derive(Clone, Debug)]
+struct PendingQueueAppend {
+    item: MediaItem,
+    required_occurrence: usize,
+    added_at_ms: i64,
+}
+
+fn pending_queue_appends_for(
+    base: &Queue,
+    queued_items: &[MediaItem],
+    added_at_ms: i64,
+) -> Vec<PendingQueueAppend> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for item in &base.items {
+        *counts.entry(item.uri.clone()).or_default() += 1;
+    }
+
+    queued_items
+        .iter()
+        .map(|item| {
+            let count = counts.entry(item.uri.clone()).or_default();
+            *count += 1;
+            PendingQueueAppend {
+                item: item.clone(),
+                required_occurrence: *count,
+                added_at_ms,
+            }
+        })
+        .collect()
+}
+
+fn merge_queue_pending_appends(
+    mut queue: Queue,
+    pending: &mut Vec<PendingQueueAppend>,
+    now_ms: i64,
+) -> (Queue, bool) {
+    pending.retain(|entry| now_ms.saturating_sub(entry.added_at_ms) <= PENDING_QUEUE_APPEND_TTL_MS);
+    if pending.is_empty() {
+        return (queue, false);
+    }
+
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for item in &queue.items {
+        *counts.entry(item.uri.clone()).or_default() += 1;
+    }
+
+    let mut merged = false;
+    for entry in pending.iter() {
+        let count = counts.entry(entry.item.uri.clone()).or_default();
+        if *count < entry.required_occurrence {
+            queue.items.push(entry.item.clone());
+            *count += 1;
+            merged = true;
+        }
+    }
+    if merged {
+        queue.session_active = true;
+        queue.as_of_ms = now_ms;
+    }
+    (queue, merged)
+}
 
 enum PlayerCommand {
     RegisterDevice {
@@ -249,6 +312,7 @@ pub(crate) struct DaemonState {
     /// otherwise clobber the optimistic local cache. Same shape as
     /// Linear's `lastSyncId`.
     mutation_seq: Arc<AtomicU64>,
+    pending_queue_appends: Arc<parking_lot::Mutex<Vec<PendingQueueAppend>>>,
     /// Whether the user currently intends THIS device to be the playback
     /// target. Set true when our embedded device starts/resumes/changes a
     /// track, cleared when a poll shows another device became active. Gates
@@ -468,6 +532,7 @@ impl DaemonState {
             system_integration,
             viz_coordinator,
             mutation_seq: Arc::new(AtomicU64::new(0)),
+            pending_queue_appends: Arc::new(parking_lot::Mutex::new(Vec::new())),
             we_are_active,
             latest_release: Arc::new(parking_lot::Mutex::new(None)),
             episode_feed: Arc::new(parking_lot::Mutex::new(None)),
@@ -527,6 +592,26 @@ impl DaemonState {
     /// means the result is likely a stale pre-mutation snapshot.
     pub(crate) fn may_apply_state_update(&self, captured_seq: u64) -> bool {
         self.current_mutation_seq() == captured_seq
+    }
+
+    pub(crate) fn track_pending_queue_appends(
+        &self,
+        base: &Queue,
+        queued_items: &[MediaItem],
+        added_at_ms: i64,
+    ) {
+        if queued_items.is_empty() {
+            return;
+        }
+        self.pending_queue_appends
+            .lock()
+            .extend(pending_queue_appends_for(base, queued_items, added_at_ms));
+    }
+
+    pub(crate) fn overlay_pending_queue_appends(&self, queue: Queue, now_ms: i64) -> Queue {
+        let (queue, _) =
+            merge_queue_pending_appends(queue, &mut self.pending_queue_appends.lock(), now_ms);
+        queue
     }
 
     pub(crate) async fn mutation_lane(&self, request: &Request) -> Option<Arc<Mutex<()>>> {
@@ -2136,11 +2221,120 @@ impl spotuify_sync::SyncContext for DaemonState {
             .flatten()
             .unwrap_or_default()
     }
+    fn overlay_pending_queue_appends(
+        &self,
+        queue: spotuify_spotify::client::Queue,
+        now_ms: i64,
+    ) -> spotuify_spotify::client::Queue {
+        DaemonState::overlay_pending_queue_appends(self, queue, now_ms)
+    }
     async fn snapshot_devices(&self) -> Vec<spotuify_core::Device> {
         self.store.list_devices().await.unwrap_or_default()
     }
     fn event_subscriber_count(&self) -> usize {
         self.event_tx.receiver_count()
+    }
+}
+
+#[cfg(test)]
+mod queue_pending_tests {
+    use super::{
+        merge_queue_pending_appends, pending_queue_appends_for, PENDING_QUEUE_APPEND_TTL_MS,
+    };
+    use spotuify_core::{MediaItem, MediaKind, Queue};
+
+    fn track(uri: &str, name: &str) -> MediaItem {
+        MediaItem {
+            id: uri.rsplit(':').next().map(str::to_string),
+            uri: uri.to_string(),
+            name: name.to_string(),
+            subtitle: "Artist".to_string(),
+            context: "Album".to_string(),
+            duration_ms: 180_000,
+            kind: MediaKind::Track,
+            ..Default::default()
+        }
+    }
+
+    fn queue(items: Vec<MediaItem>, as_of_ms: i64) -> Queue {
+        Queue {
+            currently_playing: None,
+            items,
+            session_active: true,
+            as_of_ms,
+        }
+    }
+
+    #[test]
+    fn pending_queue_append_keeps_duplicate_visible_until_ttl() {
+        let existing = track("spotify:track:a", "Existing");
+        let queued = track("spotify:track:a", "Queued duplicate");
+        let base = queue(vec![existing.clone()], 1);
+        let mut pending = pending_queue_appends_for(&base, std::slice::from_ref(&queued), 100);
+
+        let (merged, changed) =
+            merge_queue_pending_appends(queue(vec![existing.clone()], 2), &mut pending, 200);
+        assert!(changed);
+        assert_eq!(
+            merged
+                .items
+                .iter()
+                .map(|item| item.uri.as_str())
+                .collect::<Vec<_>>(),
+            vec!["spotify:track:a", "spotify:track:a"]
+        );
+
+        let (confirmed, changed) = merge_queue_pending_appends(
+            queue(vec![existing.clone(), queued], 3),
+            &mut pending,
+            300,
+        );
+        assert!(!changed);
+        assert_eq!(
+            confirmed
+                .items
+                .iter()
+                .map(|item| item.uri.as_str())
+                .collect::<Vec<_>>(),
+            vec!["spotify:track:a", "spotify:track:a"]
+        );
+
+        let (late_stale, changed) =
+            merge_queue_pending_appends(queue(vec![existing], 4), &mut pending, 400);
+        assert!(changed);
+        assert_eq!(
+            late_stale
+                .items
+                .iter()
+                .map(|item| item.uri.as_str())
+                .collect::<Vec<_>>(),
+            vec!["spotify:track:a", "spotify:track:a"]
+        );
+    }
+
+    #[test]
+    fn pending_queue_append_expires_back_to_live_queue() {
+        let existing = track("spotify:track:a", "Existing");
+        let queued = track("spotify:track:a", "Queued duplicate");
+        let base = queue(vec![existing.clone()], 1);
+        let mut pending = pending_queue_appends_for(&base, &[queued], 100);
+
+        let (merged, changed) = merge_queue_pending_appends(
+            queue(vec![existing], 2),
+            &mut pending,
+            101 + PENDING_QUEUE_APPEND_TTL_MS,
+        );
+
+        assert!(!changed);
+        assert!(pending.is_empty());
+        assert_eq!(
+            merged
+                .items
+                .iter()
+                .map(|item| item.uri.as_str())
+                .collect::<Vec<_>>(),
+            vec!["spotify:track:a"]
+        );
     }
 }
 

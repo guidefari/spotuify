@@ -30,6 +30,7 @@ const DEVICE_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const DEVICE_REGISTRY_TIMEOUT: Duration = Duration::from_secs(8);
 const DEVICE_REGISTRY_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const SEARCH_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const QUEUE_APPEND_BASE_MAX_AGE_MS: i64 = 30_000;
 
 pub(crate) async fn handle_request_with_source(
     state: Arc<DaemonState>,
@@ -2827,14 +2828,24 @@ async fn optimistic_queue_with_appends(
     if queued_items.is_empty() {
         return None;
     }
-    let base = state
+    let mut base = state
         .store()
         .latest_queue(500)
         .await
         .ok()
         .flatten()
         .unwrap_or_default();
-    Some(queue_with_appended_items(base, queued_items, now_ms()))
+    let as_of_ms = now_ms();
+    let cache_age_ms = as_of_ms.saturating_sub(base.as_of_ms);
+    let looks_historical = base.currently_playing.is_none() && !base.items.is_empty();
+    if looks_historical
+        || (!base.session_active
+            && (base.as_of_ms <= 0 || cache_age_ms > QUEUE_APPEND_BASE_MAX_AGE_MS))
+    {
+        base = spotuify_core::Queue::default();
+    }
+    state.track_pending_queue_appends(&base, &queued_items, as_of_ms);
+    Some(queue_with_appended_items(base, queued_items, as_of_ms))
 }
 
 async fn context_queue_snapshot_for_play_uri(
@@ -3051,17 +3062,18 @@ async fn cache_queue_if_fresh(
     state: &DaemonState,
     queue: &spotuify_spotify::client::Queue,
     captured_seq: u64,
-) -> bool {
+) -> Option<spotuify_spotify::client::Queue> {
     if !state.may_apply_state_update(captured_seq) {
         tracing::debug!("dropping stale queue refresh: mutation in flight");
-        return false;
+        return None;
     }
     if !queue.session_active {
         tracing::debug!("queue refresh: no active session, preserving cache");
-        return false;
+        return None;
     }
-    cache_queue(state, queue).await;
-    true
+    let queue = state.overlay_pending_queue_appends(queue.clone(), now_ms());
+    cache_queue(state, &queue).await;
+    Some(queue)
 }
 
 fn spawn_queue_refresh(state: Arc<DaemonState>) {
@@ -3083,7 +3095,8 @@ fn spawn_queue_refresh(state: Arc<DaemonState>) {
         };
         match actions::queue(&mut client).await {
             Ok(queue) => {
-                let applied = cache_queue_if_fresh(&task_state, &queue, captured_seq).await;
+                let applied_queue = cache_queue_if_fresh(&task_state, &queue, captured_seq).await;
+                let applied = applied_queue.is_some();
                 tracing::debug!(
                     target: "spotuify_daemon::refresh",
                     captured_seq,
@@ -3102,11 +3115,11 @@ fn spawn_queue_refresh(state: Arc<DaemonState>) {
                     items = queue.items.len(),
                     "queue refresh"
                 );
-                if applied {
+                if let Some(queue) = applied_queue {
                     task_state.emit_event(DaemonEvent::QueueChanged {
                         action: "refreshed".to_string(),
                         uris: Vec::new(),
-                        queue: Some(queue.clone()),
+                        queue: Some(queue),
                     });
                 }
             }
@@ -5137,13 +5150,14 @@ mod post_command_persist_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use spotuify_core::{MediaItem, MediaKind, Queue};
+    use spotuify_core::{now_ms, MediaItem, MediaKind, Queue};
     use spotuify_protocol::{DaemonEvent, IpcPayload, PlaybackCommand, Request, ResponseData};
     use spotuify_spotify::actions::CommandKind;
     use tempfile::TempDir;
 
     use super::{
-        compute_optimistic_playback, dispatch, persist_command_result, playback_command_kind,
+        cache_queue, cache_queue_if_fresh, compute_optimistic_playback, dispatch,
+        optimistic_queue_with_appends, persist_command_result, playback_command_kind,
         transport_cmd_for_command_kind, DaemonState, ExpectedPlayback,
     };
 
@@ -5546,6 +5560,88 @@ mod post_command_persist_tests {
     }
 
     #[tokio::test]
+    async fn stale_queue_refresh_preserves_pending_optimistic_append() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+        let existing = track("spotify:track:queued", "Queued");
+        let appended = track("spotify:track:queued", "Queued duplicate");
+        let base = Queue {
+            currently_playing: Some(track("spotify:track:current", "Current")),
+            items: vec![existing.clone()],
+            session_active: true,
+            as_of_ms: now_ms(),
+        };
+        state
+            .store()
+            .persist_queue(&base)
+            .await
+            .expect("persist base queue");
+
+        let optimistic = optimistic_queue_with_appends(&state, vec![appended.clone()])
+            .await
+            .expect("optimistic append");
+        cache_queue(&state, &optimistic).await;
+
+        let stale_live = Queue {
+            currently_playing: base.currently_playing.clone(),
+            items: vec![existing.clone()],
+            session_active: true,
+            as_of_ms: 2,
+        };
+        let applied = cache_queue_if_fresh(&state, &stale_live, state.current_mutation_seq())
+            .await
+            .expect("stale live queue should be overlaid and cached");
+        let applied_uris = applied
+            .items
+            .iter()
+            .map(|item| item.uri.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            applied_uris,
+            vec!["spotify:track:queued", "spotify:track:queued"]
+        );
+
+        let cached = state
+            .store()
+            .latest_queue(10)
+            .await
+            .expect("latest queue")
+            .expect("queue cache");
+        let cached_uris = cached
+            .items
+            .iter()
+            .map(|item| item.uri.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cached_uris,
+            vec!["spotify:track:queued", "spotify:track:queued"]
+        );
+
+        let confirmed_live = Queue {
+            currently_playing: base.currently_playing,
+            items: vec![existing, appended],
+            session_active: true,
+            as_of_ms: 3,
+        };
+        let confirmed = cache_queue_if_fresh(&state, &confirmed_live, state.current_mutation_seq())
+            .await
+            .expect("confirmed live queue should be cached");
+        let confirmed_uris = confirmed
+            .items
+            .iter()
+            .map(|item| item.uri.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            confirmed_uris,
+            vec!["spotify:track:queued", "spotify:track:queued"]
+        );
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
     async fn queue_get_returns_cached_queue_instead_of_empty_snapshot() {
         let _guard = crate::ENV_LOCK.lock().await;
         let _env = TestEnv::new();
@@ -5575,7 +5671,10 @@ mod post_command_persist_tests {
                     .collect::<Vec<_>>();
                 assert_eq!(uris, vec!["spotify:track:queued", "spotify:track:queued"]);
             }
-            other => panic!("expected queue response, got {other:?}"),
+            other => assert!(
+                matches!(other, ResponseData::Queue { .. }),
+                "expected queue response"
+            ),
         }
 
         state.shutdown_search().await;
