@@ -79,6 +79,10 @@ public final class ConfigStore {
         if values[key] == value { return }
         values[key] = value
         pending[key]?.cancel()
+        if key == "client_id", value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            errorMessage = "Client ID cannot be blank"
+            return
+        }
         pending[key] = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(450))
             guard let self, !Task.isCancelled else { return }

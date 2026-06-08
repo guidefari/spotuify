@@ -790,7 +790,14 @@ pub fn set_config_value(key: ConfigKey, value: &str) -> SpotifyResult<PathBuf> {
     let mut file = read_config_file(&path)?;
 
     match key {
-        ConfigKey::ClientId => file.client_id = blank_to_none(Some(value.to_string())),
+        ConfigKey::ClientId => {
+            if value.trim().is_empty() {
+                return Err(SpotifyError::InvalidInput {
+                    message: "client_id cannot be blank".to_string(),
+                });
+            }
+            file.client_id = Some(value.trim().to_string());
+        }
         ConfigKey::ClientSecret => file.client_secret = blank_to_none(Some(value.to_string())),
         ConfigKey::RedirectUri => file.redirect_uri = blank_to_none(Some(value.to_string())),
         ConfigKey::PlayerBackend => {
@@ -1305,6 +1312,28 @@ bitrate = 320
 
         assert_eq!(init_mode, 0o600);
         assert_eq!(set_mode, 0o600);
+    }
+
+    #[test]
+    fn config_set_rejects_blank_client_id_without_touching_file() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let config_path = temp.path().join("spotuify.toml");
+
+        let old_config = std::env::var_os("SPOTUIFY_CONFIG");
+        std::env::set_var("SPOTUIFY_CONFIG", &config_path);
+
+        init_config().expect("config init should write");
+        set_config_value(ConfigKey::ClientId, "client").expect("client id should set");
+        let before = std::fs::read_to_string(&config_path).expect("read config before");
+        let err = set_config_value(ConfigKey::ClientId, "   ")
+            .expect_err("blank client_id should be rejected");
+        let after = std::fs::read_to_string(&config_path).expect("read config after");
+
+        restore_env("SPOTUIFY_CONFIG", old_config);
+
+        assert!(err.to_string().contains("client_id cannot be blank"));
+        assert_eq!(after, before);
     }
 
     #[test]
