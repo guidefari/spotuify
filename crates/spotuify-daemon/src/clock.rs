@@ -41,6 +41,12 @@ use spotuify_player::PlayerEvent;
 /// PositionCorrection, sink underrun).
 pub const POSITION_DRIFT_THRESHOLD_MS: i64 = 1_500;
 
+/// Spotify can return an empty `GET /me/player` body for a few seconds while
+/// next/previous is transitioning. Require the no-active-session signal to
+/// persist before clearing the daemon-owned clock so transient readbacks do not
+/// make playback look stopped, while genuine idle state still wins eventually.
+pub const NO_ACTIVE_SESSION_CONFIRM_MS: i64 = 10_000;
+
 #[derive(Debug)]
 pub struct PlaybackClock {
     inner: RwLock<ClockState>,
@@ -58,6 +64,7 @@ struct ClockState {
     shuffle: bool,
     repeat: String,
     source: PlaybackStateSource,
+    first_empty_web_api_poll_ms: Option<i64>,
 }
 
 impl ClockState {
@@ -73,6 +80,7 @@ impl ClockState {
             shuffle: false,
             repeat: "off".to_string(),
             source: PlaybackStateSource::RecentFallback,
+            first_empty_web_api_poll_ms: None,
         }
     }
 
@@ -121,6 +129,7 @@ impl PlaybackClock {
         st.provider_timestamp_ms = playback.provider_timestamp_ms;
         st.sampled_at_ms = sampled_at_ms;
         st.source = source;
+        st.first_empty_web_api_poll_ms = None;
     }
 
     /// Read the current best-known playback state. Pure read — no
@@ -167,6 +176,7 @@ impl PlaybackClock {
                 st.is_playing = true;
                 st.source = PlaybackStateSource::PlayerEvent;
                 st.sampled_at_ms = now_ms;
+                st.first_empty_web_api_poll_ms = None;
             }
             PlayerEvent::PlaybackPaused => {
                 // Freeze at the current extrapolated progress.
@@ -176,14 +186,17 @@ impl PlaybackClock {
                 st.is_playing = false;
                 st.source = PlaybackStateSource::PlayerEvent;
                 st.sampled_at_ms = now_ms;
+                st.first_empty_web_api_poll_ms = None;
             }
             PlayerEvent::PlaybackResumed => {
                 st.base_instant = Instant::now();
                 st.is_playing = true;
                 st.source = PlaybackStateSource::PlayerEvent;
                 st.sampled_at_ms = now_ms;
+                st.first_empty_web_api_poll_ms = None;
             }
             PlayerEvent::PositionTick { position_ms } => {
+                st.first_empty_web_api_poll_ms = None;
                 let extrapolated = st.current_progress_ms(Instant::now()) as i64;
                 let real = *position_ms as i64;
                 if (extrapolated - real).abs() > POSITION_DRIFT_THRESHOLD_MS {
@@ -209,6 +222,7 @@ impl PlaybackClock {
                 st.is_playing = false;
                 st.source = PlaybackStateSource::PlayerEvent;
                 st.sampled_at_ms = now_ms;
+                st.first_empty_web_api_poll_ms = None;
             }
             _ => {
                 // Ready/Degraded/PremiumRequired/SessionDisconnected/Failed/
@@ -236,6 +250,7 @@ impl PlaybackClock {
             None => st.device = seed(),
         }
         st.sampled_at_ms = now_ms;
+        st.first_empty_web_api_poll_ms = None;
     }
 
     /// Apply a `CommandResult.playback` returned by `actions::execute`.
@@ -252,6 +267,7 @@ impl PlaybackClock {
         st.base_instant = Instant::now();
         st.shuffle = playback.shuffle;
         st.repeat = playback.repeat.clone();
+        st.first_empty_web_api_poll_ms = None;
         // CommandResult shouldn't be older than a previous PlayerEvent
         // for the same URI; if a PlayerEvent has already advanced past
         // the command's stale progress, the event wins (it was sampled
@@ -282,6 +298,10 @@ impl PlaybackClock {
             return false;
         }
         let mut st = self.inner.write();
+        if !playback_has_live_signal(playback) {
+            return apply_empty_web_api_poll(&mut st, sampled_at_ms, provider_timestamp_ms);
+        }
+        st.first_empty_web_api_poll_ms = None;
         let same_uri = matches_uri(&st.item, &playback.item);
         if same_uri {
             // Same track: only re-seat if our current source is weaker
@@ -306,6 +326,7 @@ impl PlaybackClock {
         st.provider_timestamp_ms = provider_timestamp_ms;
         st.source = PlaybackStateSource::WebApiPoll;
         st.sampled_at_ms = sampled_at_ms;
+        st.first_empty_web_api_poll_ms = None;
         true
     }
 
@@ -317,7 +338,64 @@ impl PlaybackClock {
         st.base_instant = Instant::now();
         st.source = PlaybackStateSource::CommandResult;
         st.sampled_at_ms = sampled_at_ms;
+        st.first_empty_web_api_poll_ms = None;
     }
+}
+
+fn apply_empty_web_api_poll(
+    st: &mut ClockState,
+    sampled_at_ms: i64,
+    provider_timestamp_ms: Option<i64>,
+) -> bool {
+    if !clock_state_has_live_signal(st) {
+        st.first_empty_web_api_poll_ms = None;
+        st.provider_timestamp_ms = provider_timestamp_ms;
+        return false;
+    }
+
+    let first_empty_ms = match st.first_empty_web_api_poll_ms {
+        Some(first_empty_ms) => first_empty_ms,
+        None => {
+            st.first_empty_web_api_poll_ms = Some(sampled_at_ms);
+            tracing::debug!(
+                target: "spotuify_daemon::clock",
+                sampled_at_ms,
+                "ignoring first empty Web API playback poll"
+            );
+            return false;
+        }
+    };
+
+    if sampled_at_ms.saturating_sub(first_empty_ms) < NO_ACTIVE_SESSION_CONFIRM_MS {
+        tracing::debug!(
+            target: "spotuify_daemon::clock",
+            sampled_at_ms,
+            first_empty_ms,
+            "ignoring unconfirmed empty Web API playback poll"
+        );
+        return false;
+    }
+
+    st.item = None;
+    st.device = None;
+    st.is_playing = false;
+    st.base_progress_ms = 0;
+    st.base_instant = Instant::now();
+    st.shuffle = false;
+    st.repeat = "off".to_string();
+    st.provider_timestamp_ms = provider_timestamp_ms;
+    st.source = PlaybackStateSource::WebApiPoll;
+    st.sampled_at_ms = sampled_at_ms;
+    st.first_empty_web_api_poll_ms = None;
+    true
+}
+
+fn clock_state_has_live_signal(st: &ClockState) -> bool {
+    st.item.is_some() || st.device.is_some() || st.is_playing
+}
+
+fn playback_has_live_signal(playback: &Playback) -> bool {
+    playback.item.is_some() || playback.device.is_some() || playback.is_playing
 }
 
 fn matches_uri(a: &Option<MediaItem>, b: &Option<MediaItem>) -> bool {
@@ -508,6 +586,63 @@ mod tests {
         let applied = clock.apply_web_api_poll(&pb, 5, 6, 1, None);
         assert!(!applied);
         assert!(clock.snapshot().item.is_none(), "clock must not be touched");
+    }
+
+    #[test]
+    fn clock_web_api_poll_ignores_transient_empty_snapshot() {
+        let clock = PlaybackClock::new();
+        let playing = Playback {
+            item: Some(track("track:a", 200_000)),
+            is_playing: true,
+            progress_ms: 50_000,
+            ..Default::default()
+        };
+        clock.apply_command_result(&playing, 1);
+
+        let empty = Playback::default();
+        let applied = clock.apply_web_api_poll(&empty, 1, 1, 5_000, None);
+
+        assert!(
+            !applied,
+            "first empty Spotify poll must be treated as transient"
+        );
+        let snap = clock.snapshot();
+        assert_eq!(
+            snap.item.as_ref().map(|item| item.uri.as_str()),
+            Some("track:a")
+        );
+        assert!(
+            snap.is_playing,
+            "transient empty poll must not stop playback"
+        );
+    }
+
+    #[test]
+    fn clock_web_api_poll_clears_confirmed_no_active_session() {
+        let clock = PlaybackClock::new();
+        let playing = Playback {
+            item: Some(track("track:a", 200_000)),
+            is_playing: true,
+            progress_ms: 50_000,
+            ..Default::default()
+        };
+        clock.apply_command_result(&playing, 1);
+
+        let empty = Playback::default();
+        assert!(!clock.apply_web_api_poll(&empty, 1, 1, 5_000, None));
+        let applied =
+            clock.apply_web_api_poll(&empty, 1, 1, 5_000 + NO_ACTIVE_SESSION_CONFIRM_MS, None);
+
+        assert!(
+            applied,
+            "confirmed no-active-session should clear stale playback"
+        );
+        let snap = clock.snapshot();
+        assert!(snap.item.is_none());
+        assert!(snap.device.is_none());
+        assert!(!snap.is_playing);
+        assert_eq!(snap.progress_ms, 0);
+        assert_eq!(snap.source, Some(PlaybackStateSource::WebApiPoll));
     }
 
     #[test]

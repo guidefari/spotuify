@@ -3235,6 +3235,28 @@ mod tests {
     }
 
     #[test]
+    fn me_playlists_mapping_keeps_followed_playlist_metadata() {
+        let value = json!({
+            "id": "followed-playlist",
+            "name": "Followed Playlist",
+            "owner": {"id": "not-current-user", "display_name": "Third Party"},
+            "tracks": {"total": 42},
+            "snapshot_id": "snap-followed"
+        });
+
+        let playlist = serde_json::from_value::<super::RawPlaylist>(value)
+            .expect("followed playlist metadata should deserialize")
+            .into_playlist()
+            .expect("followed playlist should not be owner-filtered");
+
+        assert_eq!(playlist.id, "followed-playlist");
+        assert_eq!(playlist.name, "Followed Playlist");
+        assert_eq!(playlist.owner, "Third Party");
+        assert_eq!(playlist.tracks_total, 42);
+        assert_eq!(playlist.snapshot_id.as_deref(), Some("snap-followed"));
+    }
+
+    #[test]
     fn playlist_items_endpoint_shape_deserializes() {
         let value = json!({
             "total": 2,

@@ -2994,30 +2994,48 @@ fn spawn_playback_refresh(state: Arc<DaemonState>) {
         };
         match actions::status(&mut client).await {
             Ok(playback) => {
+                let has_live_signal = playback_has_live_signal(&playback);
                 let fresh = task_state.may_apply_state_update(captured_seq);
-                if fresh {
-                    task_state
-                        .viz_coordinator()
-                        .set_playing(playback.is_playing);
-                }
                 // Phase 2 — feed the clock from the poll. The clock
                 // itself enforces source priority + URI tie-break so a
-                // stale poll can't clobber a fresh local PlayerEvent.
+                // stale poll can't clobber a fresh local PlayerEvent. Empty
+                // no-active-session polls go through the clock too: the clock
+                // ignores the first transient readback around next/previous,
+                // then clears stale playback only after the guard confirms it.
                 let now_ms = spotuify_core::now_ms();
                 let state_seq = task_state.current_mutation_seq();
-                task_state.playback_clock().apply_web_api_poll(
+                let clock_applied = task_state.playback_clock().apply_web_api_poll(
                     &playback,
                     captured_seq,
                     state_seq,
                     now_ms,
                     playback.provider_timestamp_ms,
                 );
-                let applied = cache_playback_if_fresh(&task_state, &playback, captured_seq).await;
+                if fresh && (has_live_signal || clock_applied) {
+                    task_state
+                        .viz_coordinator()
+                        .set_playing(playback.is_playing);
+                }
+                let applied = if has_live_signal || clock_applied {
+                    cache_playback_if_fresh(&task_state, &playback, captured_seq).await
+                } else {
+                    false
+                };
                 tracing::debug!(
                     target: "spotuify_daemon::refresh",
                     captured_seq,
                     duration_ms = started.elapsed().as_millis() as u64,
-                    outcome = if applied { "applied" } else { "stale" },
+                    outcome = if applied {
+                        if has_live_signal {
+                            "applied"
+                        } else {
+                            "no-session-cleared"
+                        }
+                    } else if has_live_signal {
+                        "stale"
+                    } else {
+                        "empty-ignored"
+                    },
                     fetched_uri = playback
                         .item
                         .as_ref()
@@ -3288,6 +3306,10 @@ fn post_command_playback_matches(playback: &Playback, expected: Option<&Expected
     true
 }
 
+fn playback_has_live_signal(playback: &Playback) -> bool {
+    playback.item.is_some() || playback.device.is_some() || playback.is_playing
+}
+
 fn spawn_devices_refresh(state: Arc<DaemonState>) {
     let task_state = state.clone();
     let captured_seq = state.current_mutation_seq();
@@ -3473,18 +3495,26 @@ fn expected_playback_after_command(
             uri: Some(uri.clone()),
             is_playing: predicted.and_then(|playback| playback.is_playing.then_some(true)),
         }),
-        PlaybackCommand::Next => predicted.map(|playback| ExpectedPlayback {
-            uri: playback.item.as_ref().map(|item| item.uri.clone()),
-            is_playing: Some(playback.is_playing),
-        }),
+        PlaybackCommand::Next | PlaybackCommand::Previous => {
+            predicted.map(|playback| ExpectedPlayback {
+                // Spotify may return a different valid track than our cached
+                // prediction (shuffle/autoplay/queue races, or previous
+                // stepping back instead of restarting current). Treat any
+                // post-command snapshot with the expected play/pause state as
+                // authoritative instead of rejecting it and leaving clients on
+                // stale optimistic state; reject a stale paused readback while
+                // the daemon-owned prediction says playback should remain live.
+                uri: None,
+                is_playing: Some(playback.is_playing),
+            })
+        }
         PlaybackCommand::Seek { .. } | PlaybackCommand::SeekRelative { .. } => {
             predicted.map(|playback| ExpectedPlayback {
                 uri: playback.item.as_ref().map(|item| item.uri.clone()),
                 is_playing: None,
             })
         }
-        PlaybackCommand::Previous
-        | PlaybackCommand::Volume { .. }
+        PlaybackCommand::Volume { .. }
         | PlaybackCommand::Shuffle { .. }
         | PlaybackCommand::Repeat { .. } => None,
     }
@@ -3564,15 +3594,15 @@ fn reject_if_auth_blocked(state: &DaemonState) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Predict the post-command playback state so the daemon can emit an
-/// optimistic `PlaybackChanged` BEFORE the Spotify round-trip. Returns
-/// `None` when no prediction is sensible (e.g. `Previous` — we can't
-/// guess the prior track from the queue tail).
-///
-/// The eventual authoritative `CommandResult` event from
-/// `persist_command_result` overrides whatever we predict via the
-/// clock's source-priority logic. Same pattern the embedded librespot
-/// `PlayerEvent` already uses for local mutations.
+// Predict the post-command playback state so the daemon can emit an
+// optimistic `PlaybackChanged` BEFORE the Spotify round-trip. Returns
+// `None` when no prediction is sensible (e.g. `Next` without a current
+// queue row — we can't guess the next track safely).
+//
+// The eventual authoritative `CommandResult` event from
+// `persist_command_result` overrides whatever we predict via the
+// clock's source-priority logic. Same pattern the embedded librespot
+// `PlayerEvent` already uses for local mutations.
 /// The next track to optimistically show for a `Next`, taken from the cached
 /// queue — but only when the queue's `currently_playing` matches the track that
 /// is actually playing (`current_uri`). A mismatch means the cache is
@@ -5157,8 +5187,9 @@ mod post_command_persist_tests {
 
     use super::{
         cache_queue, cache_queue_if_fresh, compute_optimistic_playback, dispatch,
-        optimistic_queue_with_appends, persist_command_result, playback_command_kind,
-        transport_cmd_for_command_kind, DaemonState, ExpectedPlayback,
+        expected_playback_after_command, optimistic_queue_with_appends, persist_command_result,
+        playback_command_kind, post_command_playback_matches, transport_cmd_for_command_kind,
+        DaemonState, ExpectedPlayback,
     };
 
     struct TestEnv {
@@ -5996,6 +6027,38 @@ mod post_command_persist_tests {
 
         state.shutdown_search().await;
         state.shutdown_player().await;
+    }
+
+    #[test]
+    fn next_previous_expected_playback_accepts_valid_spotify_track_mismatch() {
+        let predicted = spotuify_core::Playback {
+            item: Some(track("spotify:track:predicted", "Predicted")),
+            is_playing: true,
+            ..Default::default()
+        };
+        let spotify_track = spotuify_core::Playback {
+            item: Some(track("spotify:track:actual", "Actual")),
+            is_playing: true,
+            ..Default::default()
+        };
+        let paused_readback = spotuify_core::Playback {
+            item: Some(track("spotify:track:actual", "Actual")),
+            is_playing: false,
+            ..Default::default()
+        };
+
+        for command in [PlaybackCommand::Next, PlaybackCommand::Previous] {
+            let expected = expected_playback_after_command(&command, Some(&predicted))
+                .expect("track navigation prediction should build an expectation");
+            assert!(
+                post_command_playback_matches(&spotify_track, Some(&expected)),
+                "a valid playing track from Spotify should reconcile {command:?}"
+            );
+            assert!(
+                !post_command_playback_matches(&paused_readback, Some(&expected)),
+                "{command:?} must not reconcile to a stopped/paused readback"
+            );
+        }
     }
 
     #[tokio::test]

@@ -74,6 +74,7 @@ export_dir="$macos_dir/build/release-export"
 dist_dir="$macos_dir/dist"
 staging_dir="$macos_dir/build/dmg-staging"
 dmg_path="$dist_dir/Spotuify-${VERSION}.dmg"
+cli_entitlements="$macos_dir/Support/spotuify-cli.entitlements"
 
 # --- generate xcode project ---------------------------------------------------
 echo "==> Generating Xcode project (xcodegen)"
@@ -177,7 +178,9 @@ fi
 if [[ -n "$SIGN_ID" ]]; then
   if [[ -f "$app_path/Contents/Resources/spotuify" ]]; then
     echo "==> Signing bundled binary"
-    codesign --force --options runtime --timestamp -s "$SIGN_ID" \
+    codesign --force --options runtime --timestamp \
+      --entitlements "$cli_entitlements" \
+      -s "$SIGN_ID" \
       "$app_path/Contents/Resources/spotuify"
   fi
   echo "==> Re-sealing app bundle with Developer ID"

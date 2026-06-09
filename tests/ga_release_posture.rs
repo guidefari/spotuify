@@ -56,3 +56,19 @@ fn release_docs_require_read_only_and_mutation_live_smokes_before_ga() -> std::i
     }
     Ok(())
 }
+
+#[test]
+fn macos_dmg_signing_allows_homebrew_portaudio_for_bundled_cli() -> std::io::Result<()> {
+    let script = repo_file("clients/macos/scripts/build-dmg.sh")?;
+    let entitlements = repo_file("clients/macos/Support/spotuify-cli.entitlements")?;
+
+    assert!(
+        script.contains("--entitlements \"$cli_entitlements\""),
+        "DMG signing must pass CLI entitlements when signing the bundled spotuify binary"
+    );
+    assert!(
+        entitlements.contains("com.apple.security.cs.disable-library-validation"),
+        "bundled CLI needs library validation disabled so Homebrew PortAudio can load"
+    );
+    Ok(())
+}

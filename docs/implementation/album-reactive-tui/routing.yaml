@@ -1,0 +1,56 @@
+feature: album-reactive-tui
+
+defaults:
+  max_attempts_before_escalation: 2
+  escalation_model: pe-default-frontier
+
+default_models:
+  frontier:
+    alias: pe-default-frontier
+    provider: openai-codex
+    model: gpt-5.5
+    use_for:
+      - playback_reliability
+      - terminal_ui
+      - product_judgement
+      - review
+  local_coder:
+    alias: pe-default-local-coder
+    provider: ollama
+    model: qwen3-coder-next:latest
+    use_for:
+      - small_scoped_rust_edits
+      - unit_tests
+
+lanes:
+  local_heavy:
+    concurrency: 1
+  api_model:
+    concurrency: 1
+  frontier:
+    concurrency: 1
+  shell:
+    concurrency: 4
+
+policy:
+  playback_reliability:
+    executor_type: frontier_model
+    lane: frontier
+    preferred_model: pe-default-frontier
+  terminal_ui:
+    executor_type: frontier_model
+    lane: frontier
+    preferred_model: pe-default-frontier
+  product_probe:
+    executor_type: frontier_model
+    lane: frontier
+    preferred_model: pe-default-frontier
+
+skills:
+  root: /Users/bhekanik/.dotfiles/.skills
+  policy: explicit_only
+  selected:
+    - spotuify
+    - build-and-fix
+    - ui-skills
+    - code-review

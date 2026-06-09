@@ -266,15 +266,10 @@ fn spawn_auth_health_loop(state: Arc<DaemonState>) {
     });
 }
 
-/// Fire a single round of cache-warming probes against Spotify as
-/// soon as the daemon comes up. The handlers themselves never block
-/// on Spotify any more, so without this the first PlaybackGet right
-/// after `spotuify` launches would always render a synthetic
-/// last-played (or an empty Playback on a truly fresh install) and
-/// the user would only see real state on the next sync tick. This
-/// warm-up makes the common case — daemon already running, TUI just
-/// opened — feel instant. Failures (no auth yet, no network) are
-/// silent; the regular sync scheduler retries on its 60s cadence.
+fn playback_has_live_signal(playback: &spotuify_core::Playback) -> bool {
+    playback.item.is_some() || playback.device.is_some() || playback.is_playing
+}
+
 /// Bail out of the initial cache warm on a Spotify rate-limit error.
 /// Used to short-circuit subsequent warm steps after the first 429 —
 /// otherwise startup fires the whole burst (4+ requests in <1s) at an
@@ -291,6 +286,15 @@ fn warm_bail_on_rate_limit(err: &spotuify_spotify::SpotifyError) -> bool {
     }
 }
 
+/// Fire a single round of cache-warming probes against Spotify as
+/// soon as the daemon comes up. The handlers themselves never block
+/// on Spotify any more, so without this the first PlaybackGet right
+/// after `spotuify` launches would always render a synthetic
+/// last-played (or an empty Playback on a truly fresh install) and
+/// the user would only see real state on the next sync tick. This
+/// warm-up makes the common case — daemon already running, TUI just
+/// opened — feel instant. Failures (no auth yet, no network) are
+/// silent; the regular sync scheduler retries on its 60s cadence.
 fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
     let task_state = state.clone();
     state.spawn_background("initial-cache-warm", async move {
@@ -306,18 +310,9 @@ fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
         let started_at_ms = spotuify_core::now_ms();
         match actions::status(&mut client).await {
             Ok(playback) => {
-                task_state
-                    .viz_coordinator()
-                    .set_playing(playback.is_playing);
+                let has_live_signal = playback_has_live_signal(&playback);
                 let sampled_at_ms = spotuify_core::now_ms();
                 let state_seq = task_state.current_mutation_seq();
-                if pre_seq == state_seq {
-                    if let Err(err) = task_state.store().persist_playback(&playback).await {
-                        tracing::debug!(error = %err, "initial playback warm persist failed");
-                    }
-                } else {
-                    tracing::debug!("dropping initial playback warm persist: mutation in flight");
-                }
                 let applied = task_state.playback_clock.apply_web_api_poll(
                     &playback,
                     pre_seq,
@@ -325,6 +320,18 @@ fn spawn_initial_cache_warm(state: Arc<DaemonState>) {
                     sampled_at_ms,
                     playback.provider_timestamp_ms,
                 );
+                if has_live_signal || applied {
+                    task_state
+                        .viz_coordinator()
+                        .set_playing(playback.is_playing);
+                }
+                if pre_seq == state_seq && (has_live_signal || applied) {
+                    if let Err(err) = task_state.store().persist_playback(&playback).await {
+                        tracing::debug!(error = %err, "initial playback warm persist failed");
+                    }
+                } else if pre_seq != state_seq {
+                    tracing::debug!("dropping initial playback warm persist: mutation in flight");
+                }
                 if applied {
                     task_state.emit_event(DaemonEvent::PlaybackChanged {
                         action: "warmed".to_string(),

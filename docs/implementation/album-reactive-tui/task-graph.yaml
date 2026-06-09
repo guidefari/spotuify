@@ -1,0 +1,66 @@
+feature: album-reactive-tui
+
+phases:
+  phase-001:
+    title: Repair transport regression
+    tasks:
+      - task-001
+  phase-002:
+    title: Add album-art-reactive terminal theme
+    tasks:
+      - task-002
+  phase-003:
+    title: Preserve playlist product intent
+    tasks:
+      - task-003
+  phase-004:
+    title: Probe recommendations capability
+    tasks:
+      - task-004
+
+tasks:
+  task-001:
+    title: Fix next/previous playback stop regression
+    phase: phase-001
+    depends_on: []
+    status: completed
+    executor_type: frontier_model
+    lane: frontier
+    risk: high
+  task-002:
+    title: Add album-art-reactive TUI palette
+    phase: phase-002
+    depends_on:
+      - task-001
+    status: completed
+    executor_type: frontier_model
+    lane: frontier
+    risk: medium
+  task-003:
+    title: Verify playlist library scope and harden messaging
+    phase: phase-003
+    depends_on:
+      - task-002
+    status: completed
+    executor_type: frontier_model
+    lane: frontier
+    risk: medium
+  task-004:
+    title: Probe Spotify recommendations before adding a page
+    phase: phase-004
+    depends_on:
+      - task-003
+    status: completed
+    executor_type: frontier_model
+    lane: frontier
+    risk: medium
+
+lanes:
+  local_heavy:
+    concurrency: 1
+  api_model:
+    concurrency: 1
+  frontier:
+    concurrency: 1
+  shell:
+    concurrency: 4

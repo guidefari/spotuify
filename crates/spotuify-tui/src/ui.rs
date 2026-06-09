@@ -43,7 +43,10 @@ fn pad_pane_top(area: Rect) -> Rect {
 
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
-    frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(app.palette.background)),
+        area,
+    );
 
     let root = Layout::default()
         .direction(Direction::Vertical)
@@ -1209,13 +1212,13 @@ fn render_now_playing(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .title(Line::from(vec![Span::styled(
             " spotuify ",
             Style::default()
-                .fg(BG)
-                .bg(GREEN)
+                .fg(app.palette.foreground)
+                .bg(app.palette.accent)
                 .add_modifier(Modifier::BOLD),
         )]))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(35, 44, 49)))
-        .style(Style::default().bg(PANEL));
+        .border_style(Style::default().fg(app.palette.now_playing_rail))
+        .style(Style::default().bg(app.palette.background));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1422,7 +1425,11 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
     frame.render_widget(
         Gauge::default()
-            .gauge_style(Style::default().fg(GREEN).bg(Color::Rgb(38, 45, 49)))
+            .gauge_style(
+                Style::default()
+                    .fg(app.palette.accent)
+                    .bg(Color::Rgb(38, 45, 49)),
+            )
             .ratio(progress)
             .label(format!(
                 "{} / {}",
@@ -2257,7 +2264,9 @@ fn render_spectrum(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
     frame.render_widget(
-        SpectrumWidget::new(&app.spectrum_bands).color_scheme(&app.viz_color_scheme),
+        SpectrumWidget::new(&app.spectrum_bands)
+            .color_scheme(&app.viz_color_scheme)
+            .accent(app.palette.accent),
         inner,
     );
 }
@@ -3030,6 +3039,7 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     item,
                     app.marked_uris.contains(&item.uri),
                     now_playing_uri == Some(item.uri.as_str()),
+                    app.palette.now_playing_rail,
                 )
             })
             .collect::<Vec<_>>(),
@@ -3039,7 +3049,7 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
         // selected row doesn't read like a second seeker bar.
         Style::default()
             .fg(TEXT)
-            .bg(crate::widgets::style::GREEN_SOFT)
+            .bg(app.palette.soft_accent)
             .add_modifier(Modifier::BOLD),
     )
     .highlight_symbol("▌")
@@ -3791,6 +3801,7 @@ fn render_media_list(
                 item,
                 app.marked_uris.contains(&item.uri),
                 now_playing_uri == Some(item.uri.as_str()),
+                app.palette.now_playing_rail,
             )
         })
         .collect::<Vec<_>>();
@@ -3801,7 +3812,7 @@ fn render_media_list(
             // chip from looking like a second seeker bar.
             Style::default()
                 .fg(TEXT)
-                .bg(crate::widgets::style::GREEN_SOFT)
+                .bg(app.palette.soft_accent)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol(" ")
@@ -4507,10 +4518,20 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn media_item(item: &MediaItem, marked: bool) -> ListItem<'static> {
-    media_item_with(item, marked, false)
+    media_item_with(
+        item,
+        marked,
+        false,
+        crate::widgets::style::UiPalette::DEFAULT.now_playing_rail,
+    )
 }
 
-fn media_item_with(item: &MediaItem, marked: bool, now_playing: bool) -> ListItem<'static> {
+fn media_item_with(
+    item: &MediaItem,
+    marked: bool,
+    now_playing: bool,
+    now_playing_rail: Color,
+) -> ListItem<'static> {
     // Row 1: rail · marker · kind glyph · name (bold) · duration
     // Row 2: rail · aligned indent · artist · album/context
     // The now-playing row gets a coloured vertical rail down its
@@ -4519,12 +4540,11 @@ fn media_item_with(item: &MediaItem, marked: bool, now_playing: bool) -> ListIte
     // tinted background, makes the live row identifiable even when
     // the user has selected a different row above or below it.
     // Marker priority: now-playing ▶ > marked ● > nothing.
-    use crate::widgets::style::NOW_PLAYING_RAIL;
     let rail = if now_playing {
         Span::styled(
             "▌",
             Style::default()
-                .fg(NOW_PLAYING_RAIL)
+                .fg(now_playing_rail)
                 .add_modifier(Modifier::BOLD),
         )
     } else {
@@ -4843,6 +4863,7 @@ mod tests {
             awaiting_track_change_until: None,
             current_art_url: None,
             cover: None,
+            palette: crate::widgets::style::UiPalette::default(),
             selected_art_url: None,
             selected_art_cover: None,
             playback_updated_at: None,
@@ -4899,6 +4920,34 @@ mod tests {
             refresh_requested: false,
             pending_g: false,
         }
+    }
+
+    #[test]
+    fn now_playing_chrome_uses_dynamic_palette_roles() {
+        let mut app = test_app();
+        app.palette = crate::widgets::style::UiPalette {
+            accent: Color::Rgb(200, 40, 30),
+            soft_accent: Color::Rgb(120, 45, 45),
+            background: Color::Rgb(35, 22, 22),
+            foreground: Color::Rgb(250, 250, 250),
+            now_playing_rail: Color::Rgb(220, 120, 110),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(90, PLAYER_HEIGHT)).expect("terminal");
+        terminal
+            .draw(|frame| render_now_playing(frame, &mut app, frame.area()))
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+        let area = buf.area();
+        let mut saw_title_chip = false;
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let cell = &buf[(x, y)];
+                saw_title_chip |=
+                    cell.bg == Color::Rgb(200, 40, 30) && cell.fg == Color::Rgb(250, 250, 250);
+            }
+        }
+        assert!(saw_title_chip);
+        assert_eq!(buf[(0, 0)].fg, Color::Rgb(220, 120, 110));
     }
 
     fn item(uri: &str, name: &str) -> MediaItem {

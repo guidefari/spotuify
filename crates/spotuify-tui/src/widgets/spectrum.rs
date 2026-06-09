@@ -7,6 +7,7 @@ pub struct SpectrumWidget<'a> {
     bands: &'a [f32; 12],
     color_scheme: SpectrumColorScheme,
     color_enabled: bool,
+    accent: Option<Color>,
 }
 
 impl<'a> SpectrumWidget<'a> {
@@ -15,11 +16,17 @@ impl<'a> SpectrumWidget<'a> {
             bands,
             color_scheme: SpectrumColorScheme::SpotifyGreen,
             color_enabled: std::env::var_os("NO_COLOR").is_none(),
+            accent: None,
         }
     }
 
     pub fn color_scheme(mut self, value: &str) -> Self {
         self.color_scheme = SpectrumColorScheme::from_config(value);
+        self
+    }
+
+    pub fn accent(mut self, value: Color) -> Self {
+        self.accent = Some(value);
         self
     }
 
@@ -72,6 +79,7 @@ impl Widget for SpectrumWidget<'_> {
                         row_from_bottom,
                         area.height,
                         self.color_scheme,
+                        self.accent,
                     ))
                 };
                 for x in x0..x_end {
@@ -101,7 +109,12 @@ impl SpectrumColorScheme {
     }
 }
 
-fn spectrum_color(row_from_bottom: u16, height: u16, scheme: SpectrumColorScheme) -> Color {
+fn spectrum_color(
+    row_from_bottom: u16,
+    height: u16,
+    scheme: SpectrumColorScheme,
+    accent: Option<Color>,
+) -> Color {
     let ratio = row_from_bottom as f32 / height.max(1) as f32;
     match scheme {
         SpectrumColorScheme::Monochrome => return Color::Gray,
@@ -118,6 +131,9 @@ fn spectrum_color(row_from_bottom: u16, height: u16, scheme: SpectrumColorScheme
             return Color::Rgb(245, 95, 80);
         }
         SpectrumColorScheme::SpotifyGreen => {}
+    }
+    if let Some(accent) = accent {
+        return accent;
     }
     if ratio > 0.75 {
         Color::Rgb(245, 88, 88)

@@ -1,0 +1,78 @@
+version: 1
+outcomes:
+  - model: openai-codex/gpt-5.5
+    provider: openai-codex
+    escalationEvidence: []
+    taskType: playback_reliability
+    outcome: passed
+    recordedAt: 2026-06-09T13:01:51.415Z
+    notes: Task-001 passed after retry; good root-cause work, needed host review to
+      avoid over-broad empty-poll handling.
+  - model: openai-codex/gpt-5.5
+    escalationEvidence: []
+    taskType: terminal_ui
+    outcome: passed
+    recordedAt: 2026-06-09T13:22:44.184Z
+    notes: Album-art TUI palette accepted after deterministic validation; scoped TUI
+      change, no live Spotify calls.
+  - model: openai-codex/gpt-5.5
+    escalationEvidence: []
+    taskType: product_judgement
+    outcome: passed
+    recordedAt: 2026-06-09T13:54:16.096Z
+    notes: Playlist scope verification accepted; preserved user library behavior and
+      added regression coverage for followed playlists.
+  - model: openai-codex/gpt-5.5
+    escalationEvidence: []
+    taskType: product_probe
+    outcome: passed
+    recordedAt: 2026-06-09T14:01:12.123Z
+    notes: "Recommendations probe accepted as no-code decision: deprecated endpoint
+      plus live 429 means no CLI/TUI surface."
+modelStats:
+  openai-codex/gpt-5.5:
+    playback_reliability:
+      attempts: 1
+      passed: 1
+      failed: 0
+      blocked: 0
+      timeout: 0
+      no_op: 0
+    terminal_ui:
+      attempts: 1
+      passed: 1
+      failed: 0
+      blocked: 0
+      timeout: 0
+      no_op: 0
+    product_judgement:
+      attempts: 1
+      passed: 1
+      failed: 0
+      blocked: 0
+      timeout: 0
+      no_op: 0
+    product_probe:
+      attempts: 1
+      passed: 1
+      failed: 0
+      blocked: 0
+      timeout: 0
+      no_op: 0
+reviewQueue:
+  - id: 2026-06-09T13:01:51.415Z-openai-codex-gpt-5-5-playback-reliability
+    reason: routing outcome recorded for review
+    proposedChange: Review whether openai-codex/gpt-5.5 should be preferred for
+      playback_reliability after outcome passed.
+  - id: 2026-06-09T13:22:44.184Z-openai-codex-gpt-5-5-terminal-ui
+    reason: routing outcome recorded for review
+    proposedChange: Review whether openai-codex/gpt-5.5 should be preferred for
+      terminal_ui after outcome passed.
+  - id: 2026-06-09T13:54:16.096Z-openai-codex-gpt-5-5-product-judgement
+    reason: routing outcome recorded for review
+    proposedChange: Review whether openai-codex/gpt-5.5 should be preferred for
+      product_judgement after outcome passed.
+  - id: 2026-06-09T14:01:12.123Z-openai-codex-gpt-5-5-product-probe
+    reason: routing outcome recorded for review
+    proposedChange: Review whether openai-codex/gpt-5.5 should be preferred for
+      product_probe after outcome passed.

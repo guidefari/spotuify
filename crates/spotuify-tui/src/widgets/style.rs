@@ -44,6 +44,143 @@ pub const DIM_BORDER: Color = Color::Rgb(45, 55, 60);
 pub const CHIP_BG: Color = Color::Rgb(60, 72, 78);
 pub const CHIP_FG: Color = Color::Rgb(240, 248, 252);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UiPalette {
+    pub accent: Color,
+    pub soft_accent: Color,
+    pub background: Color,
+    pub foreground: Color,
+    pub now_playing_rail: Color,
+}
+
+impl UiPalette {
+    pub const DEFAULT: Self = Self {
+        accent: ACCENT,
+        soft_accent: GREEN_SOFT,
+        background: PANEL,
+        foreground: BG,
+        now_playing_rail: NOW_PLAYING_RAIL,
+    };
+
+    pub fn from_cover(image: &image::DynamicImage) -> Option<Self> {
+        let rgb = dominant_terminal_safe_rgb(image)?;
+        let accent = Color::Rgb(rgb.0, rgb.1, rgb.2);
+        let foreground = readable_on(rgb);
+        let bg = blend_rgb((22, 27, 30), rgb, 0.18);
+        let soft = blend_rgb((50, 130, 75), rgb, 0.48);
+        let rail = blend_rgb(rgb, (245, 248, 250), 0.30);
+        Some(Self {
+            accent,
+            soft_accent: Color::Rgb(soft.0, soft.1, soft.2),
+            background: Color::Rgb(bg.0, bg.1, bg.2),
+            foreground,
+            now_playing_rail: Color::Rgb(rail.0, rail.1, rail.2),
+        })
+    }
+}
+
+impl Default for UiPalette {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+fn dominant_terminal_safe_rgb(image: &image::DynamicImage) -> Option<(u8, u8, u8)> {
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let step_x = (width / 48).max(1);
+    let step_y = (height / 48).max(1);
+    let mut buckets = std::collections::BTreeMap::<(u8, u8, u8), (u32, u32, u32, u32)>::new();
+    for y in (0..height).step_by(step_y as usize) {
+        for x in (0..width).step_by(step_x as usize) {
+            let [r, g, b, a] = rgba.get_pixel(x, y).0;
+            if a < 180 {
+                continue;
+            }
+            let key = (r >> 3, g >> 3, b >> 3);
+            let entry = buckets.entry(key).or_insert((0, 0, 0, 0));
+            entry.0 += u32::from(r);
+            entry.1 += u32::from(g);
+            entry.2 += u32::from(b);
+            entry.3 += 1;
+        }
+    }
+    buckets
+        .values()
+        .filter(|(_, _, _, count)| *count > 0)
+        .map(|(r, g, b, count)| {
+            let rgb = (
+                (*r / *count) as u8,
+                (*g / *count) as u8,
+                (*b / *count) as u8,
+            );
+            let sat = saturation(rgb);
+            let lum = relative_luminance(rgb);
+            let lum_score = (1.0 - (lum - 0.48).abs()).max(0.15);
+            let score = *count as f32 * (0.35 + sat) * lum_score;
+            (score, rgb)
+        })
+        .max_by(|(a, _), (b, _)| a.total_cmp(b))
+        .map(|(_, rgb)| normalize_accent(rgb))
+}
+
+fn normalize_accent(rgb: (u8, u8, u8)) -> (u8, u8, u8) {
+    let lum = relative_luminance(rgb);
+    let target = if lum < 0.28 {
+        0.42
+    } else if lum > 0.72 {
+        0.58
+    } else {
+        lum
+    };
+    if (target - lum).abs() < f32::EPSILON {
+        return rgb;
+    }
+    let t = if target > lum {
+        ((target - lum) / (1.0 - lum)).clamp(0.0, 1.0)
+    } else {
+        (1.0 - target / lum.max(0.01)).clamp(0.0, 1.0)
+    };
+    if target > lum {
+        blend_rgb(rgb, (255, 255, 255), t)
+    } else {
+        blend_rgb(rgb, (0, 0, 0), t)
+    }
+}
+
+fn readable_on(rgb: (u8, u8, u8)) -> Color {
+    if relative_luminance(rgb) > 0.45 {
+        BG
+    } else {
+        CHIP_FG
+    }
+}
+
+fn saturation((r, g, b): (u8, u8, u8)) -> f32 {
+    let r = r as f32 / 255.0;
+    let g = g as f32 / 255.0;
+    let b = b as f32 / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    if max <= f32::EPSILON {
+        0.0
+    } else {
+        (max - min) / max
+    }
+}
+
+fn relative_luminance((r, g, b): (u8, u8, u8)) -> f32 {
+    (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) / 255.0
+}
+
+fn blend_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).clamp(0.0, 255.0) as u8;
+    (mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+}
+
 // ---------------------------------------------------------------------
 // Chips
 // ---------------------------------------------------------------------
@@ -182,6 +319,32 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn solid_image(rgb: [u8; 3]) -> image::DynamicImage {
+        let mut img = image::RgbaImage::new(4, 4);
+        for pixel in img.pixels_mut() {
+            *pixel = image::Rgba([rgb[0], rgb[1], rgb[2], 255]);
+        }
+        image::DynamicImage::ImageRgba8(img)
+    }
+
+    #[test]
+    fn cover_palette_extracts_terminal_safe_roles_from_art() {
+        let palette = UiPalette::from_cover(&solid_image([0, 0, 80])).expect("palette");
+        assert_ne!(palette.accent, UiPalette::DEFAULT.accent);
+        assert_ne!(palette.background, UiPalette::DEFAULT.background);
+        assert_ne!(
+            palette.now_playing_rail,
+            UiPalette::DEFAULT.now_playing_rail
+        );
+        assert_eq!(palette.foreground, CHIP_FG);
+    }
+
+    #[test]
+    fn monochrome_light_covers_get_dark_readable_foreground() {
+        let palette = UiPalette::from_cover(&solid_image([235, 235, 235])).expect("palette");
+        assert_eq!(palette.foreground, BG);
     }
 
     #[test]

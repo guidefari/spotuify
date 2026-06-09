@@ -676,10 +676,10 @@ fn translate_librespot_player_event(event: LibrespotPlayerEvent) -> Option<Playe
         | LibrespotPlayerEvent::Seeked { position_ms, .. } => {
             Some(PlayerEvent::PositionTick { position_ms })
         }
-        LibrespotPlayerEvent::EndOfTrack { track_id, .. }
-        | LibrespotPlayerEvent::Stopped { track_id, .. } => Some(PlayerEvent::EndOfTrack {
+        LibrespotPlayerEvent::EndOfTrack { track_id, .. } => Some(PlayerEvent::EndOfTrack {
             uri: spotify_uri_string(&track_id),
         }),
+        LibrespotPlayerEvent::Stopped { .. } => None,
         LibrespotPlayerEvent::TimeToPreloadNextTrack { track_id, .. } => {
             Some(PlayerEvent::PreloadNext {
                 uri: spotify_uri_string(&track_id),
@@ -933,6 +933,21 @@ mod tests {
                 position_ms: 40_000
             }
         ));
+    }
+
+    #[test]
+    fn librespot_stopped_event_does_not_mark_playback_ended() {
+        let track_id =
+            SpotifyUri::from_uri("spotify:track:3n3Ppam7vgaVa1iaRUc9Lp").expect("valid track URI");
+        let event = translate_librespot_player_event(LibrespotPlayerEvent::Stopped {
+            play_request_id: 7,
+            track_id,
+        });
+
+        assert!(
+            event.is_none(),
+            "librespot emits Stopped during track transitions; treating it as EndOfTrack pauses the daemon clock after next/previous"
+        );
     }
 
     #[test]

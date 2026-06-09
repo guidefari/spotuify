@@ -22,6 +22,7 @@ use tokio::time;
 
 use crate::tui_actions::{ActionContext, CommandPalette, TuiAction};
 use crate::ui;
+use crate::widgets::style::UiPalette;
 use spotuify_cli::actions::{CommandKind, CommandResult};
 use spotuify_core::{Notification, Recurrence, Reminder, SyncedLyrics};
 use spotuify_protocol::ipc_client::IpcClient;
@@ -343,6 +344,7 @@ pub struct App {
     pub awaiting_track_change_until: Option<Instant>,
     pub current_art_url: Option<String>,
     pub cover: Option<StatefulProtocol>,
+    pub palette: UiPalette,
     pub selected_art_url: Option<String>,
     pub selected_art_cover: Option<StatefulProtocol>,
     /// Wall-clock of the most recent event-driven write to `self.playback`.
@@ -786,6 +788,7 @@ impl App {
             awaiting_track_change_until: None,
             current_art_url: None,
             cover: None,
+            palette: UiPalette::default(),
             selected_art_url: None,
             selected_art_cover: None,
             playback_updated_at: None,
@@ -1571,7 +1574,7 @@ impl App {
                         if playlist_tracks_forbidden(&error) {
                             self.inaccessible_playlist_ids.insert(playlist_id);
                             self.toast = Some(format!(
-                                "{playlist_name} is unavailable to third-party apps"
+                                "Tracks for {playlist_name} are restricted by Spotify for third-party apps"
                             ));
                         } else if !self.open_login_modal_if_auth_revoked(&error) {
                             self.error = Some(error);
@@ -1684,6 +1687,11 @@ impl App {
             AsyncResult::DaemonEvent(event) => self.apply_daemon_event(event, async_tx),
             AsyncResult::CoverFetched { url, image } => {
                 if self.current_art_url.as_deref() == Some(url.as_str()) {
+                    self.palette = if terminal_color_enabled() {
+                        UiPalette::from_cover(&image).unwrap_or_default()
+                    } else {
+                        UiPalette::default()
+                    };
                     self.cover = Some(self.picker.new_resize_protocol(image));
                 } else {
                     tracing::debug!(
@@ -1850,6 +1858,7 @@ impl App {
         }
         self.current_art_url = new_url.clone();
         self.cover = None;
+        self.palette = UiPalette::default();
         if let Some(url) = new_url {
             spawn_cover_fetch(url, async_tx.clone());
         }
@@ -2761,6 +2770,8 @@ fn request_force_cover(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResu
         return;
     };
     app.current_art_url = Some(url.clone());
+    app.cover = None;
+    app.palette = UiPalette::default();
     spawn_cover_fetch(url, async_tx.clone());
 }
 
@@ -2772,6 +2783,10 @@ fn request_force_cover(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResu
 /// silently on arrival.
 ///
 /// Failures are logged and swallowed — cover just stays cleared.
+fn terminal_color_enabled() -> bool {
+    std::env::var_os("NO_COLOR").is_none()
+}
+
 fn spawn_cover_fetch(url: String, async_tx: mpsc::UnboundedSender<AsyncResult>) {
     // Unit tests exercise the event-arm bookkeeping without a tokio
     // runtime; production always runs under tokio::main. Skip the
@@ -5884,6 +5899,7 @@ mod tests {
             awaiting_track_change_until: None,
             current_art_url: None,
             cover: None,
+            palette: UiPalette::default(),
             selected_art_url: None,
             selected_art_cover: None,
             playback_updated_at: None,
@@ -8057,6 +8073,49 @@ mod tests {
     }
 
     #[test]
+    fn palette_updates_only_for_matching_active_cover_url() {
+        let mut app = test_app();
+        app.current_art_url = Some("https://e.com/current.jpg".to_string());
+        let stale = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            2,
+            2,
+            image::Rgb([240, 20, 20]),
+        ));
+        app.apply_async_result(AsyncResult::CoverFetched {
+            url: "https://e.com/old.jpg".to_string(),
+            image: stale,
+        });
+        assert_eq!(app.palette, UiPalette::default());
+
+        let current = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            2,
+            2,
+            image::Rgb([20, 80, 240]),
+        ));
+        app.apply_async_result(AsyncResult::CoverFetched {
+            url: "https://e.com/current.jpg".to_string(),
+            image: current,
+        });
+        if terminal_color_enabled() {
+            assert_ne!(app.palette, UiPalette::default());
+        } else {
+            assert_eq!(app.palette, UiPalette::default());
+        }
+    }
+
+    #[test]
+    fn art_url_change_resets_palette_until_new_cover_decodes() {
+        let mut app = test_app();
+        app.palette = UiPalette {
+            accent: ratatui::style::Color::Rgb(240, 20, 20),
+            ..UiPalette::default()
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        app.handle_art_url_change(Some("https://e.com/new.jpg".to_string()), &tx);
+        assert_eq!(app.palette, UiPalette::default());
+    }
+
+    #[test]
     fn command_result_playback_updates_active_cover_url() {
         let mut app = test_app();
         let result = CommandResult {
@@ -8247,16 +8306,26 @@ mod tests {
     }
 
     #[test]
-    fn forbidden_playlist_tracks_are_hidden_after_failure() {
+    fn forbidden_playlist_tracks_hide_only_that_playlist_after_failure() {
         let mut app = test_app();
-        app.playlists = vec![Playlist {
-            id: "p1".to_string(),
-            name: "Hidden Playlist".to_string(),
-            owner: "owner".to_string(),
-            tracks_total: 12,
-            image_url: None,
-            snapshot_id: None,
-        }];
+        app.playlists = vec![
+            Playlist {
+                id: "p1".to_string(),
+                name: "Hidden Playlist".to_string(),
+                owner: "owner".to_string(),
+                tracks_total: 12,
+                image_url: None,
+                snapshot_id: None,
+            },
+            Playlist {
+                id: "followed".to_string(),
+                name: "Followed Playlist".to_string(),
+                owner: "third-party".to_string(),
+                tracks_total: 5,
+                image_url: None,
+                snapshot_id: None,
+            },
+        ];
 
         app.apply_async_result(AsyncResult::PlaylistTracks {
             playlist_id: "p1".to_string(),
@@ -8265,11 +8334,13 @@ mod tests {
             result: Err("Spotify API 403 on GET /playlists/p1/items: Forbidden".to_string()),
         });
 
-        assert!(app.filtered_playlists().is_empty());
+        let visible = app.filtered_playlists();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, "followed");
         assert!(app.error.is_none());
         assert_eq!(
             app.toast.as_deref(),
-            Some("Hidden Playlist is unavailable to third-party apps")
+            Some("Tracks for Hidden Playlist are restricted by Spotify for third-party apps")
         );
     }
 
