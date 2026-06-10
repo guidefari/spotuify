@@ -190,7 +190,16 @@ struct GlobalSidePanel: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.horizontal, 10)
         }
-        .background(.regularMaterial)
+        // The header/content stay in the safe area (below the titlebar), but the
+        // material fills up behind the (translucent) titlebar so the rail reads as
+        // one continuous full-height panel. Without this, the toolbar region over
+        // this sibling-of-the-split-view showed as an empty dark strip above the
+        // header.
+        .background {
+            Rectangle()
+                .fill(.regularMaterial)
+                .ignoresSafeArea(.container, edges: .top)
+        }
     }
 
     @ViewBuilder
