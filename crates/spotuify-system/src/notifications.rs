@@ -10,7 +10,7 @@
 //! stacking them. macOS / Windows use notify-rust's native backend
 //! (NSUserNotification / WinRT toast).
 
-use spotuify_core::Playback;
+use spotuify_core::{MediaItem, Playback};
 use spotuify_protocol::DaemonEvent;
 
 use std::collections::HashSet;
@@ -156,9 +156,21 @@ impl NotificationsHandle {
                     }
                 }
                 drop(dedup);
-                let s = expand_tokens(&self.config.summary, action);
-                let b = expand_tokens(&self.config.body, action);
-                Some((s, b))
+                // Expand templates from the playback snapshot when it rode
+                // along; fall back to the action-only expansion otherwise.
+                match playback.as_ref().and_then(|p| p.item.as_ref()) {
+                    Some(item) => {
+                        let progress_ms = playback.as_ref().map_or(0, |p| p.progress_ms);
+                        Some((
+                            expand_tokens_item(&self.config.summary, item, progress_ms),
+                            expand_tokens_item(&self.config.body, item, progress_ms),
+                        ))
+                    }
+                    None => Some((
+                        expand_tokens(&self.config.summary, action),
+                        expand_tokens(&self.config.body, action),
+                    )),
+                }
             }
             DaemonEvent::AuthError { kind } if self.config.on_error => {
                 let key = format!("{kind:?}");
@@ -227,10 +239,32 @@ fn track_uri_from_event(action: &str, playback: Option<&Playback>) -> Option<Str
         .filter(|uri| uri.starts_with("spotify:"))
 }
 
-/// Pure-function token expansion. PlaybackChanged events don't carry
-/// the track details directly; once we wire the cover-art + track
-/// fields into the protocol event, replace this fallback. For now we
-/// substitute the action label so notifications still render.
+/// Expand `{track}`/`{artist}`/`{album}`/`{duration}`/`{progress}` from a
+/// playback item. Used whenever the `PlaybackChanged` carried a snapshot.
+pub fn expand_tokens_item(template: &str, item: &MediaItem, progress_ms: u64) -> String {
+    let album = item
+        .album
+        .clone()
+        .filter(|a| !a.is_empty())
+        .unwrap_or_else(|| item.context.clone());
+    template
+        .replace("{track}", &item.name)
+        .replace("{artist}", &item.subtitle)
+        .replace("{artists}", &item.subtitle)
+        .replace("{album}", &album)
+        .replace("{duration}", &format_ms(item.duration_ms))
+        .replace("{progress}", &format_ms(progress_ms))
+}
+
+/// `m:ss` for notification templates.
+fn format_ms(ms: u64) -> String {
+    let total_secs = ms / 1000;
+    format!("{}:{:02}", total_secs / 60, total_secs % 60)
+}
+
+/// Action-only token expansion fallback for `PlaybackChanged` events that
+/// arrived without a playback snapshot (older daemons / rare paths). The
+/// action label stands in for `{track}`; the rest render empty.
 pub fn expand_tokens(template: &str, action: &str) -> String {
     template
         .replace("{track}", action)
@@ -359,6 +393,42 @@ mod tests {
             h.render(&playback_changed("paused")).is_none(),
             "second pause emit should be deduped"
         );
+    }
+
+    #[test]
+    fn item_tokens_expand_from_playback_snapshot() {
+        let item = MediaItem {
+            name: "Never Too Much".into(),
+            subtitle: "Luther Vandross".into(),
+            album: Some("Never Too Much".into()),
+            duration_ms: 425_000,
+            ..MediaItem::default()
+        };
+        let summary = expand_tokens_item("{track}", &item, 60_000);
+        assert_eq!(summary, "Never Too Much");
+        let body = expand_tokens_item("{artist} — {album} ({progress}/{duration})", &item, 60_000);
+        assert_eq!(body, "Luther Vandross — Never Too Much (1:00/7:05)");
+    }
+
+    #[test]
+    fn playback_changed_with_snapshot_renders_real_track_fields() {
+        let h = NotificationsHandle::new(enabled_config()).expect("handle");
+        let item = MediaItem {
+            uri: "spotify:track:1".into(),
+            name: "Song".into(),
+            subtitle: "Artist".into(),
+            ..MediaItem::default()
+        };
+        let ev = DaemonEvent::PlaybackChanged {
+            action: "started spotify:track:1".into(),
+            playback: Some(Playback {
+                item: Some(item),
+                is_playing: true,
+                ..Playback::default()
+            }),
+        };
+        let (summary, _) = h.render(&ev).expect("track change renders");
+        assert_eq!(summary, "Song", "summary should use the real track name");
     }
 
     #[test]

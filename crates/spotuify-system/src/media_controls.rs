@@ -92,29 +92,65 @@ impl MediaControlsHandle {
         self.commands_rx.lock().await.recv().await
     }
 
-    /// Fan an event out to the media controls if enabled. Today the
-    /// daemon's `PlaybackChanged` carries only the action string; once
-    /// we enrich the event with track metadata we can push the
-    /// souvlaki `MediaMetadata` update too. The cadence cap is
-    /// enforced inside the souvlaki driver loop.
+    /// Fan a `PlaybackChanged` out to the OS media controls: push the
+    /// track metadata (title / artist / album / cover / duration) from
+    /// the event's playback snapshot, then the play/pause state. The
+    /// cadence cap is enforced inside the souvlaki driver loop.
     pub async fn handle(&self, event: &DaemonEvent) {
         if !self.config.enabled {
             return;
         }
-        if let Some(playback) = playback_for_event(event) {
-            if let Ok(mut controls) = self.controls.lock() {
-                if let Err(err) = controls.set_playback(playback) {
-                    tracing::warn!(error = %err, "media-controls playback update failed");
-                }
+        let DaemonEvent::PlaybackChanged { action, playback } = event else {
+            return;
+        };
+        let Ok(mut controls) = self.controls.lock() else {
+            return;
+        };
+        if let Some(item) = playback.as_ref().and_then(|p| p.item.as_ref()) {
+            let album = item
+                .album
+                .as_deref()
+                .filter(|a| !a.is_empty())
+                .unwrap_or(item.context.as_str());
+            let metadata = souvlaki::MediaMetadata {
+                title: Some(item.name.as_str()),
+                artist: Some(item.subtitle.as_str()),
+                album: (!album.is_empty()).then_some(album),
+                // souvlaki loads http(s)/file URLs per platform; the
+                // Spotify CDN URL works for MPRIS/SMTC/NowPlaying.
+                cover_url: item.image_url.as_deref(),
+                duration: (item.duration_ms > 0)
+                    .then(|| std::time::Duration::from_millis(item.duration_ms)),
+            };
+            if let Err(err) = controls.set_metadata(metadata) {
+                tracing::warn!(error = %err, "media-controls metadata update failed");
+            }
+        }
+        if let Some(state) = media_playback_state(action, playback.as_ref()) {
+            if let Err(err) = controls.set_playback(state) {
+                tracing::warn!(error = %err, "media-controls playback update failed");
             }
         }
     }
 }
 
-fn playback_for_event(event: &DaemonEvent) -> Option<souvlaki::MediaPlayback> {
-    let DaemonEvent::PlaybackChanged { action, .. } = event else {
-        return None;
-    };
+/// Map a `PlaybackChanged` to a souvlaki play/pause state. Prefers the
+/// snapshot's `is_playing` (with progress); falls back to the action
+/// label when no snapshot rode along.
+fn media_playback_state(
+    action: &str,
+    playback: Option<&spotuify_core::Playback>,
+) -> Option<souvlaki::MediaPlayback> {
+    if let Some(pb) = playback {
+        let progress = Some(souvlaki::MediaPosition(std::time::Duration::from_millis(
+            pb.progress_ms,
+        )));
+        return Some(if pb.is_playing {
+            souvlaki::MediaPlayback::Playing { progress }
+        } else {
+            souvlaki::MediaPlayback::Paused { progress }
+        });
+    }
     if action == "paused" || action == "pause" {
         return Some(souvlaki::MediaPlayback::Paused { progress: None });
     }

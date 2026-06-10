@@ -55,6 +55,17 @@ spotuify config set analytics.hook_command "/Users/me/bin/spotuify-listen-hook"
 
 The hook can scrobble to ListenBrainz, post a now-playing notification, or feed your own logs. Keep it fast; hooks have timeouts so playback is not held hostage.
 
+The hook is invoked once per event with positional args (and matching
+`SPOTUIFY_*` env vars):
+
+```text
+<cmd> track-change    <uri> <track> <artist> <album> <duration_ms>
+<cmd> playback-paused  <uri> <position_ms>
+<cmd> playback-resumed <uri> <position_ms>
+<cmd> track-finished   <uri> <reason>
+<cmd> listen-qualified <uri> <duration_ms>
+```
+
 Hook commands are executed by the shell exactly as configured. Track data is passed through `SPOTUIFY_*` environment variables; it is not interpolated into the command string.
 
 ## Scrobbling to external services

@@ -261,22 +261,39 @@ pub fn project(event: &DaemonEvent) -> Option<HookEvent> {
             uri: track_uri.clone(),
             duration_ms: *duration_ms,
         }),
-        E::PlaybackChanged { action, .. } => project_playback_changed(action),
+        E::PlaybackChanged { action, playback } => {
+            project_playback_changed(action, playback.as_ref())
+        }
         _ => None,
     }
 }
 
-fn project_playback_changed(action: &str) -> Option<HookEvent> {
-    if let Some(uri) = action
+fn project_playback_changed(
+    action: &str,
+    playback: Option<&spotuify_core::Playback>,
+) -> Option<HookEvent> {
+    let item = playback.and_then(|p| p.item.as_ref());
+    if let Some(action_uri) = action
         .strip_prefix("track changed ")
         .or_else(|| action.strip_prefix("started "))
     {
-        return Some(HookEvent::TrackChange {
-            uri: uri.to_string(),
-            track: String::new(),
-            artist: String::new(),
-            album: String::new(),
-            duration_ms: 0,
+        // Prefer the enriched event payload; fall back to the bare URI in
+        // the action label (older daemons / events without a snapshot).
+        return Some(match item {
+            Some(i) => HookEvent::TrackChange {
+                uri: i.uri.clone(),
+                track: i.name.clone(),
+                artist: i.subtitle.clone(),
+                album: hook_album(i),
+                duration_ms: i.duration_ms,
+            },
+            None => HookEvent::TrackChange {
+                uri: action_uri.to_string(),
+                track: String::new(),
+                artist: String::new(),
+                album: String::new(),
+                duration_ms: 0,
+            },
         });
     }
     if let Some(uri) = action.strip_prefix("ended ") {
@@ -285,7 +302,31 @@ fn project_playback_changed(action: &str) -> Option<HookEvent> {
             reason: "completed".to_string(),
         });
     }
-    None
+    // Pause/resume: project only the librespot state events ("paused" /
+    // "resumed"), not the command-authoritative verbs ("pause"/"resume"),
+    // so a single user pause fires the hook once. Requires a known track
+    // so the hook gets a uri + position.
+    let position_ms = playback.map_or(0, |p| p.progress_ms);
+    match (action, item) {
+        ("paused", Some(i)) => Some(HookEvent::PlaybackPaused {
+            uri: i.uri.clone(),
+            position_ms,
+        }),
+        ("resumed", Some(i)) => Some(HookEvent::PlaybackResumed {
+            uri: i.uri.clone(),
+            position_ms,
+        }),
+        _ => None,
+    }
+}
+
+/// Album name for hook payloads: the track's album when present, else the
+/// playback-context label.
+fn hook_album(item: &spotuify_core::MediaItem) -> String {
+    item.album
+        .clone()
+        .filter(|album| !album.is_empty())
+        .unwrap_or_else(|| item.context.clone())
 }
 
 #[cfg(test)]
@@ -387,6 +428,63 @@ mod tests {
             assert_eq!(uri, "spotify:track:ghi");
             assert_eq!(reason, "completed");
         }
+    }
+
+    #[test]
+    fn project_enriches_track_change_and_emits_pause_resume_from_snapshot() {
+        let item = spotuify_core::MediaItem {
+            uri: "spotify:track:abc".into(),
+            name: "Hello".into(),
+            subtitle: "Adele".into(),
+            album: Some("25".into()),
+            duration_ms: 220_000,
+            ..spotuify_core::MediaItem::default()
+        };
+        let snapshot = |action: &str| DaemonEvent::PlaybackChanged {
+            action: action.into(),
+            playback: Some(spotuify_core::Playback {
+                item: Some(item.clone()),
+                progress_ms: 42_000,
+                ..spotuify_core::Playback::default()
+            }),
+        };
+
+        // Track change pulls real metadata off the snapshot.
+        match project(&snapshot("track changed spotify:track:abc")) {
+            Some(HookEvent::TrackChange {
+                uri,
+                track,
+                artist,
+                album,
+                duration_ms,
+            }) => {
+                assert_eq!(uri, "spotify:track:abc");
+                assert_eq!(track, "Hello");
+                assert_eq!(artist, "Adele");
+                assert_eq!(album, "25");
+                assert_eq!(duration_ms, 220_000);
+            }
+            other => panic!("expected enriched TrackChange, got {other:?}"),
+        }
+
+        // librespot state events project to pause/resume with position.
+        assert!(matches!(
+            project(&snapshot("paused")),
+            Some(HookEvent::PlaybackPaused {
+                position_ms: 42_000,
+                ..
+            })
+        ));
+        assert!(matches!(
+            project(&snapshot("resumed")),
+            Some(HookEvent::PlaybackResumed {
+                position_ms: 42_000,
+                ..
+            })
+        ));
+        // Command-authoritative verbs do NOT double-fire the hook.
+        assert!(project(&snapshot("pause")).is_none());
+        assert!(project(&snapshot("resume")).is_none());
     }
 
     #[test]

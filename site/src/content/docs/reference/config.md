@@ -49,6 +49,11 @@ spotuify config get client_secret
 spotuify config get client_secret --reveal-secret
 ```
 
+The `notifications.summary` / `notifications.body` templates expand these
+tokens from the current track: `{track}`, `{artist}`, `{album}`,
+`{duration}` (`m:ss`), and `{progress}` (`m:ss`). Defaults are
+`{track}` / `{artist} — {album}`.
+
 :::note[Legacy `[spotifyd]` migration]
 Old configs with `[spotifyd] device_name = "..."` are still honored as a
 fallback for `player.device_name`, so an upgrade won't lose your device name.
