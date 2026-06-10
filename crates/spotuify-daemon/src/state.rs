@@ -927,6 +927,12 @@ impl DaemonState {
         *self.player_health.lock()
     }
 
+    /// Record the playback context (playlist/album/artist URI) the next
+    /// started track plays from, for playlist-level listen analytics.
+    pub(crate) fn set_playback_context(&self, context_uri: Option<String>) {
+        self._session_tracker.set_current_context(context_uri);
+    }
+
     /// Backend kind for diagnostics output.
     pub(crate) async fn player_kind(&self) -> BackendKind {
         let (resp, rx) = oneshot::channel();

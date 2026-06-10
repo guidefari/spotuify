@@ -21,17 +21,18 @@ impl Store {
     pub async fn insert_listen_fact(&self, fact: &ListenFact) -> Result<i64> {
         let res = sqlx::query(
             "INSERT INTO listen_facts (
-                session_id, track_uri, artist_uri, album_uri,
+                session_id, track_uri, artist_uri, album_uri, context_uri,
                 started_at_ms, ended_at_ms, duration_ms, elapsed_ms,
                 audible_ms, completion_ratio, qualified,
                 qualification_rule_version, skip_reason, source, backend,
                 private_session, created_at_ms
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&fact.session_id)
         .bind(&fact.track_uri)
         .bind(fact.artist_uri.as_deref())
         .bind(fact.album_uri.as_deref())
+        .bind(fact.context_uri.as_deref())
         .bind(fact.started_at_ms)
         .bind(fact.ended_at_ms)
         .bind(fact.duration_ms)
@@ -128,14 +129,36 @@ impl Store {
         // cutoff + qualified=1) and join media_items / playlists for
         // display names. Falling back to the URI when names aren't
         // cached locally so the CLI never renders blanks.
-        let group_uri = match kind {
-            TopKind::Tracks => "track_uri",
-            TopKind::Artists => "artist_uri",
-            TopKind::Albums => "album_uri",
-            TopKind::Playlists => "track_uri", // playlist-level top deferred to follow-up
-        };
-        let rows = sqlx::query(&format!(
+        // Playlists group by the captured playback context (filtered to
+        // playlist URIs) and join the playlists table for display names;
+        // the other kinds group by their entity URI joined to media_items.
+        let query = if matches!(kind, TopKind::Playlists) {
             "SELECT
+                lf.context_uri AS uri,
+                COALESCE(p.name, lf.context_uri) AS name,
+                '' AS subtitle,
+                COUNT(*) AS qualified_count,
+                0 AS skip_count,
+                SUM(lf.audible_ms) AS total_audible_ms,
+                MAX(lf.started_at_ms) AS last_listened_at_ms
+             FROM listen_facts lf
+             LEFT JOIN playlists p
+                ON ('spotify:playlist:' || p.id) = lf.context_uri
+             WHERE lf.qualified = 1
+               AND lf.started_at_ms >= ?
+               AND lf.context_uri LIKE 'spotify:playlist:%'
+             GROUP BY lf.context_uri
+             ORDER BY total_audible_ms DESC
+             LIMIT ?"
+                .to_string()
+        } else {
+            let group_uri = match kind {
+                TopKind::Artists => "artist_uri",
+                TopKind::Albums => "album_uri",
+                _ => "track_uri",
+            };
+            format!(
+                "SELECT
                 lf.{group_uri} AS uri,
                 COALESCE(mi.name, lf.{group_uri}) AS name,
                 COALESCE(mi.subtitle, '') AS subtitle,
@@ -150,12 +173,14 @@ impl Store {
                AND lf.{group_uri} IS NOT NULL
              GROUP BY lf.{group_uri}
              ORDER BY total_audible_ms DESC
-             LIMIT ?",
-        ))
-        .bind(cutoff_ms)
-        .bind(limit as i64)
-        .fetch_all(&self.reader)
-        .await?;
+             LIMIT ?"
+            )
+        };
+        let rows = sqlx::query(&query)
+            .bind(cutoff_ms)
+            .bind(limit as i64)
+            .fetch_all(&self.reader)
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -503,6 +528,10 @@ impl Store {
                 track_uri: track_uri.clone(),
                 artist_uri: None,
                 album_uri: None,
+                // Rebuild derives from raw analytics_events, which don't
+                // carry playback context; playlist-level top-k only counts
+                // live-captured contexts.
+                context_uri: None,
                 started_at_ms: occurred - elapsed_ms,
                 ended_at_ms: occurred,
                 duration_ms: elapsed_ms,

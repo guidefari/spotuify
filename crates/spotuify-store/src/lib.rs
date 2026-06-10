@@ -62,7 +62,7 @@ const DEDUP_TOLERANCE_MS: i64 = 60 * 1000;
 /// - v13: media enrichment for cached media/library rows
 /// - v14: listening reminders
 /// - v15: typed retry-after seconds on sync_events
-pub const CACHE_VERSION: u32 = 16;
+pub const CACHE_VERSION: u32 = 17;
 
 const FRESHNESS_FRESH: &str = "fresh";
 
@@ -3011,6 +3011,15 @@ const MIGRATION_011_COLUMNS: &[ColumnMigration] = &[ColumnMigration {
     definition: "tracks_accessible INTEGER NOT NULL DEFAULT 1",
 }];
 
+/// Playback context (playlist/album/artist URI) the track was played
+/// from, so analytics can do playlist-level top-k. Nullable: pre-17 rows
+/// and plays with no context stay NULL.
+const MIGRATION_017_COLUMNS: &[ColumnMigration] = &[ColumnMigration {
+    table: "listen_facts",
+    name: "context_uri",
+    definition: "context_uri TEXT",
+}];
+
 const MIGRATION_013_COLUMNS: &[ColumnMigration] = &[
     ColumnMigration {
         table: "media_items",
@@ -3149,6 +3158,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 16,
         name: "media_artist_album_refs",
         kind: MigrationKind::AddColumns(MIGRATION_016_COLUMNS),
+    },
+    Migration {
+        version: 17,
+        name: "listen_facts_context_uri",
+        kind: MigrationKind::AddColumns(MIGRATION_017_COLUMNS),
     },
 ];
 

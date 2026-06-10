@@ -204,6 +204,12 @@ async fn dispatch(
                 CommandKind::PlayItem { item } => Some(item.uri.clone()),
                 _ => None,
             };
+            // Tell the session tracker which context the next started track
+            // plays from (for playlist-level analytics). Only set on an
+            // explicit play so pause/next keep the existing context.
+            if let Some(context) = &context_queue_uri {
+                state.set_playback_context(Some(context.clone()));
+            }
             reject_if_auth_blocked(&state)?;
             // Bump the mutation seq BEFORE the Spotify call so any
             // background poll-in-flight (sync_loop, spawn_*_refresh)

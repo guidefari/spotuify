@@ -40,6 +40,9 @@ pub enum SessionState {
         /// audible time (network stalls / buffer drops don't advance it).
         /// 0 when no embedded counter is wired (wall-clock fallback).
         audible_baseline_ms: u64,
+        /// Playback context (playlist/album/artist URI) the track started
+        /// from, captured at session start for playlist-level analytics.
+        context_uri: Option<String>,
         #[allow(dead_code)]
         source: PlaybackSource,
         #[allow(dead_code)]
@@ -55,6 +58,7 @@ pub enum SessionState {
         last_position_ms: u32,
         accumulated_paused_ms: i64,
         audible_baseline_ms: u64,
+        context_uri: Option<String>,
         #[allow(dead_code)]
         source: PlaybackSource,
         #[allow(dead_code)]
@@ -90,6 +94,10 @@ pub struct SessionTracker {
     /// finalize derive audible time from real written samples instead of
     /// wall-clock-minus-pauses. `None` for non-embedded backends/tests.
     audio_counter: Option<Arc<spotuify_player::backends::audio_counter_tap::AudioCounterHandle>>,
+    /// Current playback context (playlist/album/artist URI), set by the
+    /// daemon when a play-with-context command runs and captured into the
+    /// session at the next `PlaybackStarted`. `None` for context-less play.
+    current_context: parking_lot::Mutex<Option<String>>,
 }
 
 impl Default for SessionTracker {
@@ -105,6 +113,7 @@ impl SessionTracker {
             store: None,
             event_tx: None,
             audio_counter: None,
+            current_context: parking_lot::Mutex::new(None),
         }
     }
 
@@ -113,6 +122,13 @@ impl SessionTracker {
         self.audio_counter
             .as_ref()
             .map_or(0, |counter| counter.audible_ms())
+    }
+
+    /// Set the playback context (playlist/album/artist URI) the next
+    /// started track plays from. The daemon calls this when a
+    /// play-with-context command runs; `None` clears it (context-less play).
+    pub fn set_current_context(&self, context_uri: Option<String>) {
+        *self.current_context.lock() = context_uri;
     }
 
     /// Construct with a store + event broadcast. Production callers
@@ -130,6 +146,7 @@ impl SessionTracker {
             store: Some(store),
             event_tx: Some(event_tx),
             audio_counter,
+            current_context: parking_lot::Mutex::new(None),
         }
     }
 
@@ -147,6 +164,7 @@ impl SessionTracker {
                     last_position_ms: *position_ms,
                     accumulated_paused_ms: 0,
                     audible_baseline_ms: self.audible_now(),
+                    context_uri: self.current_context.lock().clone(),
                     source: PlaybackSource::Unknown,
                     backend: BackendLabel::Embedded,
                     private_session: false,
@@ -160,6 +178,7 @@ impl SessionTracker {
                     last_position_ms,
                     accumulated_paused_ms,
                     audible_baseline_ms,
+                    context_uri,
                     source,
                     backend,
                     private_session,
@@ -173,6 +192,7 @@ impl SessionTracker {
                         last_position_ms: *last_position_ms,
                         accumulated_paused_ms: *accumulated_paused_ms,
                         audible_baseline_ms: *audible_baseline_ms,
+                        context_uri: context_uri.clone(),
                         source: *source,
                         backend: *backend,
                         private_session: *private_session,
@@ -188,6 +208,7 @@ impl SessionTracker {
                     last_position_ms,
                     accumulated_paused_ms,
                     audible_baseline_ms,
+                    context_uri,
                     source,
                     backend,
                     private_session,
@@ -201,6 +222,7 @@ impl SessionTracker {
                         last_position_ms: *last_position_ms,
                         accumulated_paused_ms: accumulated_paused_ms.saturating_add(pause_delta),
                         audible_baseline_ms: *audible_baseline_ms,
+                        context_uri: context_uri.clone(),
                         source: *source,
                         backend: *backend,
                         private_session: *private_session,
@@ -267,6 +289,7 @@ impl SessionTracker {
             last_position_ms,
             accumulated_paused_ms,
             audible_baseline_ms,
+            context_uri,
             _src,
             _backend,
             private_session,
@@ -279,6 +302,7 @@ impl SessionTracker {
                 last_position_ms,
                 accumulated_paused_ms,
                 audible_baseline_ms,
+                context_uri,
                 source,
                 backend,
                 private_session,
@@ -291,6 +315,7 @@ impl SessionTracker {
                 last_position_ms,
                 accumulated_paused_ms,
                 audible_baseline_ms,
+                context_uri,
                 source,
                 backend,
                 private_session,
@@ -302,6 +327,7 @@ impl SessionTracker {
                 last_position_ms,
                 accumulated_paused_ms,
                 audible_baseline_ms,
+                context_uri,
                 source,
                 backend,
                 private_session,
@@ -349,6 +375,7 @@ impl SessionTracker {
             track_uri: uri.clone(),
             artist_uri: None,
             album_uri: None,
+            context_uri,
             started_at_ms,
             ended_at_ms,
             duration_ms,

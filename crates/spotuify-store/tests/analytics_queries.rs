@@ -43,6 +43,7 @@ fn fact(
         track_uri: track_uri.to_string(),
         artist_uri: artist_uri.map(String::from),
         album_uri: None,
+        context_uri: None,
         started_at_ms,
         ended_at_ms: started_at_ms + audible_ms,
         duration_ms: audible_ms * 2,
@@ -110,6 +111,43 @@ async fn top_tracks_ranks_by_total_audible_ms_descending() {
     assert_eq!(top[0].total_audible_ms, 200_000);
     assert_eq!(top[1].uri, "spotify:track:a");
     assert_eq!(top[1].total_audible_ms, 120_000);
+}
+
+#[tokio::test]
+async fn top_playlists_groups_by_context_uri_and_ignores_non_playlist_contexts() {
+    let s = store().await;
+    let now = spotuify_core::now_ms();
+
+    let with_context = |session: &str, track: &str, context: &str, audible: i64| {
+        let mut f = fact(session, track, None, now, audible, true, None);
+        f.context_uri = Some(context.to_string());
+        f
+    };
+
+    // Two listens from one playlist (90s total), one from another (200s),
+    // and one played from a bare track context (must be excluded).
+    s.insert_listen_fact(&with_context("p1", "spotify:track:a", "spotify:playlist:AA", 40_000))
+        .await
+        .unwrap();
+    s.insert_listen_fact(&with_context("p2", "spotify:track:b", "spotify:playlist:AA", 50_000))
+        .await
+        .unwrap();
+    s.insert_listen_fact(&with_context("p3", "spotify:track:c", "spotify:playlist:BB", 200_000))
+        .await
+        .unwrap();
+    s.insert_listen_fact(&with_context("t1", "spotify:track:d", "spotify:track:d", 999_000))
+        .await
+        .unwrap();
+
+    let top = s
+        .top_entries(TopKind::Playlists, SinceWindow::All, 10)
+        .await
+        .unwrap();
+    assert_eq!(top.len(), 2, "only the two playlist contexts count");
+    assert_eq!(top[0].uri, "spotify:playlist:BB", "200s beats 90s");
+    assert_eq!(top[0].total_audible_ms, 200_000);
+    assert_eq!(top[1].uri, "spotify:playlist:AA");
+    assert_eq!(top[1].total_audible_ms, 90_000);
 }
 
 #[tokio::test]

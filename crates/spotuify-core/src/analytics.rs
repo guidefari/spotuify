@@ -377,6 +377,10 @@ pub struct ListenFact {
     pub track_uri: String,
     pub artist_uri: Option<String>,
     pub album_uri: Option<String>,
+    /// Playback context the track was played from (playlist/album/artist
+    /// URI). Enables playlist-level top-k. `None` for context-less plays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_uri: Option<String>,
     pub started_at_ms: i64,
     pub ended_at_ms: i64,
     pub duration_ms: i64,

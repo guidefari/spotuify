@@ -71,6 +71,7 @@ fn playing_snapshot(
         last_position_ms,
         accumulated_paused_ms,
         audible_baseline_ms: 0,
+        context_uri: None,
         source: PlaybackSource::Unknown,
         backend: BackendLabel::Embedded,
         private_session,
