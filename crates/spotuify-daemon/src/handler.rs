@@ -4,38 +4,35 @@ use std::time::{Duration, Instant};
 use spotuify_core::{now_ms, search_performed_event, Playback};
 use spotuify_protocol::{
     CommandReceipt, DaemonEvent, EpisodeSort, Operation, OperationId, OperationKind,
-    OperationSource, OperationStatus, PlaybackCommand, PlaylistCreateReceipt, ReceiptId, Request,
-    Response, ResponseData, SearchScopeData, SearchSortData, SearchSourceData,
+    OperationSource, OperationStatus, PlaybackCommand, ReceiptId, Request, Response, ResponseData,
+    SearchScopeData, SearchSortData, SearchSourceData,
 };
 use spotuify_spotify::actions::{self, CommandKind};
 use spotuify_spotify::client::{MediaItem, MediaKind, SpotifyClient};
-use spotuify_spotify::config::Config;
 use spotuify_spotify::selection;
 
-use crate::analytics::AnalyticsStore;
-use crate::retention::retention_cutoffs;
 use crate::state::{DaemonState, FastTransportStatus};
 
-const LYRICS_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-const LYRICS_NEGATIVE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+pub(crate) const LYRICS_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+pub(crate) const LYRICS_NEGATIVE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Cap the Spotify Mercury lyrics fetch. `mercury_get` awaits the player
 /// actor with no timeout, so a hung/unresponsive session would stall the
 /// whole lyrics fetch (and the client spinner) until the 5-min client
 /// timeout. On timeout we fall through to the LRCLIB provider.
-const MERCURY_LYRICS_TIMEOUT: Duration = Duration::from_secs(6);
+pub(crate) const MERCURY_LYRICS_TIMEOUT: Duration = Duration::from_secs(6);
 /// Cap for Mercury discovery requests (related artists, radio stations).
-const MERCURY_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
-const MUTATION_BODY_TIMEOUT: Duration = Duration::from_secs(30);
-const TRANSPORT_BACKEND_TIMEOUT: Duration = Duration::from_secs(5);
-const FAST_TRANSPORT_TIMEOUT: Duration = Duration::from_millis(250);
+pub(crate) const MERCURY_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
+pub(crate) const MUTATION_BODY_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const TRANSPORT_BACKEND_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const FAST_TRANSPORT_TIMEOUT: Duration = Duration::from_millis(250);
 /// After the fast deadline elapses we keep watching the player actor's
 /// ack for this long so a late failure can reconcile.
-const FAST_TRANSPORT_ACK_GRACE: Duration = Duration::from_secs(10);
-const DEVICE_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
-const DEVICE_REGISTRY_TIMEOUT: Duration = Duration::from_secs(8);
-const DEVICE_REGISTRY_POLL_INTERVAL: Duration = Duration::from_millis(500);
-const SEARCH_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
-const QUEUE_APPEND_BASE_MAX_AGE_MS: i64 = 30_000;
+pub(crate) const FAST_TRANSPORT_ACK_GRACE: Duration = Duration::from_secs(10);
+pub(crate) const DEVICE_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const DEVICE_REGISTRY_TIMEOUT: Duration = Duration::from_secs(8);
+pub(crate) const DEVICE_REGISTRY_POLL_INTERVAL: Duration = Duration::from_millis(500);
+pub(crate) const SEARCH_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+pub(crate) const QUEUE_APPEND_BASE_MAX_AGE_MS: i64 = 30_000;
 
 pub(crate) async fn handle_request_with_source(
     state: Arc<DaemonState>,
@@ -53,7 +50,7 @@ pub(crate) async fn handle_request_with_source(
 /// `AuthRevoked`) get the correct `IpcErrorKind` — otherwise we'd
 /// fall back to substring classification on the display string and
 /// lose specificity.
-fn error_response_from(err: &anyhow::Error) -> Response {
+pub(crate) fn error_response_from(err: &anyhow::Error) -> Response {
     let message = err.to_string();
     if let Some(spotify_err) = err.downcast_ref::<spotuify_spotify::SpotifyError>() {
         let kind = spotify_err.ipc_kind();
@@ -63,1861 +60,42 @@ fn error_response_from(err: &anyhow::Error) -> Response {
     Response::error(message)
 }
 
-async fn dispatch(
+pub(crate) async fn dispatch(
     state: Arc<DaemonState>,
     request: Request,
     source: Option<OperationSource>,
 ) -> anyhow::Result<ResponseData> {
-    // Resolve the lane mutex without acquiring it. Optimistic mutation
-    // arms lock inside their spawned body so IPC can return the
-    // MutationAccepted response immediately, even if an older transport
-    // call is still draining.
-    let mutation_lane = state.mutation_lane(&request).await;
-    // Phase 12 — capture the canonical serialized Request once so each
-    // mutation arm can persist it as `request_json` on its receipt row.
-    // `ops redo` deserialises this back into a Request for replay.
-    let request_json = serde_json::to_string(&request).unwrap_or_else(|_| "{}".to_string());
-    let operation_source = source.unwrap_or(OperationSource::DaemonInternal);
-    match request {
-        Request::Ping => Ok(ResponseData::Pong),
-        Request::SubscribeEvents => Ok(ResponseData::Ack {
-            message: "subscribed to daemon events".to_string(),
-        }),
-        Request::GetDaemonStatus => Ok(ResponseData::DaemonStatus {
-            status: state.status(),
-        }),
-        Request::GetDoctorReport => Ok(ResponseData::DoctorReport {
-            // Phase 6.9: pass the daemon's recent-event snapshot so the
-            // report includes RateLimited / AuthError / SchemaCompat
-            // findings.
-            report: {
-                // Mint the first-party bearer directly (no IPC) so the
-                // live API checks can run; the daemon holds the session.
-                let bearer = state.web_api_bearer(false).await;
-                let mut report = crate::diagnostics::collect_report_with_events(
-                    state.status(),
-                    state.event_log_snapshot().await,
-                    bearer,
-                )
-                .await?;
-                report.system = Some(state.system_integration.diagnostics());
-                report.viz = Some(state.viz_coordinator().diagnostics().await);
-                // Phase: surface a zombie player session the health loop is
-                // working to recover. Warning severity (a reconnecting
-                // session is degraded, not fatal) so `healthy` stays as
-                // build_findings computed it.
-                let health = state.player_health_snapshot();
-                if !health.connected && state.is_we_are_active() {
-                    let remediation = if health.gave_up {
-                        vec!["spotuify reconnect".to_string()]
-                    } else {
-                        Vec::new()
-                    };
-                    report.findings.push(spotuify_protocol::DoctorFinding {
-                        category: spotuify_protocol::DoctorFindingCategory::Device,
-                        severity: spotuify_protocol::DoctorFindingSeverity::Warning,
-                        message: if health.gave_up {
-                            format!(
-                                "player session is down after {} reconnect attempts; \
-                                 run `spotuify reconnect` or play something to re-register",
-                                health.consecutive_failures
-                            )
-                        } else {
-                            "player session is down; the daemon is auto-reconnecting".to_string()
-                        },
-                        remediation,
-                    });
-                }
-                report
-            },
-        }),
-        Request::ClientSeed => {
-            let playback = state.snapshot_playback();
-            let queue = state.store().latest_queue(500).await?.unwrap_or_default();
-            let devices = cached_devices_with_own_device(&state).await?;
-            let recent = state.store().list_recent_items(20).await?;
-            let viz = state.viz_coordinator().diagnostics().await;
-            Ok(ResponseData::ClientSeed {
-                playback,
-                queue,
-                devices,
-                recent,
-                viz,
-            })
+    match crate::handlers::categorize(&request) {
+        crate::handlers::Cat::Admin => {
+            crate::handlers::admin::dispatch(state, request, source).await
         }
-        Request::PlaybackGet => {
-            // Phase 2 — sub-millisecond `PlaybackClock` snapshot. No
-            // SQLite read on the hot path: the clock is in-memory and
-            // extrapolates current progress against a monotonic baseline.
-            // The Spotify Web API call NEVER runs inline; it always runs
-            // in `spawn_playback_refresh` so auth file IO +
-            // token refresh + HTTP round-trip can't make the first
-            // PlaybackGet take a full minute the way it used to.
-            let playback = state.snapshot_playback();
-            state.viz_coordinator().set_playing(playback.is_playing);
-            spawn_playback_refresh(state.clone());
-            Ok(ResponseData::Playback { playback })
+        crate::handlers::Cat::Playback => {
+            crate::handlers::playback::dispatch(state, request, source).await
         }
-        Request::PlaybackCommand { command } => {
-            // Phase 5 — resolve `SeekRelative` to an absolute `Seek` against
-            // the daemon `PlaybackClock` BEFORE any other dispatch logic.
-            // Doing it here means the rest of the pipeline only ever sees
-            // absolute seeks. If there's no active track, return a typed
-            // InvalidRequest error so scripts get a clear failure.
-            let command = match command {
-                PlaybackCommand::SeekRelative { offset_ms } => {
-                    let snapshot = state.snapshot_playback();
-                    let Some(item) = snapshot.item.clone() else {
-                        anyhow::bail!("invalid request: seek requires an active track");
-                    };
-                    let current = snapshot.progress_ms as i64;
-                    let target = current.saturating_add(offset_ms).max(0) as u64;
-                    let clamped = if item.duration_ms > 0 {
-                        target.min(item.duration_ms)
-                    } else {
-                        target
-                    };
-                    tracing::debug!(
-                        target: "spotuify_daemon::seek",
-                        offset_ms,
-                        current_ms = current,
-                        target_ms = clamped,
-                        track_uri = %item.uri,
-                        "resolved relative seek from clock"
-                    );
-                    PlaybackCommand::Seek {
-                        position_ms: clamped,
-                    }
-                }
-                other => other,
-            };
-            let action = playback_command_action(&command);
-            let op_kind = playback_command_operation_kind(&command);
-            let viz_playing = playback_command_viz_state(&command);
-            let state_for = state.clone();
-            let pre_command_playback = state.snapshot_playback();
-            let command_kind = playback_command_kind(command.clone());
-            let fast_transport =
-                transport_cmd_for_command_kind(&command_kind, &pre_command_playback);
-            let context_queue_uri = match &command_kind {
-                CommandKind::PlayUri { uri } => Some(uri.clone()),
-                CommandKind::PlayItem { item } => Some(item.uri.clone()),
-                _ => None,
-            };
-            // Tell the session tracker which context the next started track
-            // plays from (for playlist-level analytics). Only set on an
-            // explicit play so pause/next keep the existing context.
-            if let Some(context) = &context_queue_uri {
-                state.set_playback_context(Some(context.clone()));
-            }
-            reject_if_auth_blocked(&state)?;
-            // Bump the mutation seq BEFORE the Spotify call so any
-            // background poll-in-flight (sync_loop, spawn_*_refresh)
-            // sees a newer seq and discards its stale pre-mutation
-            // snapshot instead of overwriting the optimistic local
-            // cache. See `DaemonState::mutation_seq`.
-            state.bump_mutation_seq();
-            // Update viz state optimistically — the user expects the
-            // visualiser to react the moment they hit Pause, not after
-            // Spotify ACKs.
-            if let Some(playing) = viz_playing {
-                state.viz_coordinator().set_playing(playing);
-            }
-            // Optimistic playback emit — the daemon owns the snapshot
-            // every subscriber renders. Predict the post-command state,
-            // apply it to the clock, and broadcast `PlaybackChanged`
-            // BEFORE the spawned closure dispatches to Spotify. Every
-            // client (TUI player widget, CLI `--watch`, MCP) reacts at
-            // first render tick instead of waiting 300-1500ms for
-            // Spotify to round-trip. The clock's source-priority
-            // ranking lets the eventual authoritative
-            // `CommandResult` event overwrite us cleanly.
-            let predicted = compute_optimistic_playback(&state, &command).await;
-            let expected_playback = expected_playback_after_command(&command, predicted.as_ref());
-            if let Some(predicted) = predicted.as_ref() {
-                state
-                    .playback_clock()
-                    .apply_command_result(predicted, spotuify_core::now_ms());
-                state.emit_event(DaemonEvent::PlaybackChanged {
-                    action: format!("optimistic-{action}"),
-                    playback: Some(state.snapshot_playback()),
-                });
-            }
-            let fast_transport_result =
-                if let Some((cmd, effective_command)) = fast_transport.as_ref() {
-                    apply_fast_transport(&state, cmd.clone(), effective_command, action).await
-                } else {
-                    None
-                };
-            let background_command_kind = fast_transport
-                .map(|(_, effective_command)| effective_command)
-                .unwrap_or(command_kind);
-            spawn_optimistic_mutation(
-                &state,
-                op_kind,
-                operation_source,
-                vec![],
-                action,
-                request_json.clone(),
-                Some(spotuify_protocol::PreState::Transport),
-                Some(spotuify_protocol::ReversalPlan::NotReversible {
-                    reason: "transport".to_string(),
-                }),
-                mutation_lane,
-                move |_op_id| async move {
-                    // Capture seq INSIDE the closure so we measure against
-                    // the mutation that just fired (the bump happened
-                    // before `spawn_optimistic_mutation`). A second mutation
-                    // that arrives while this awaits will advance the seq
-                    // and `persist_command_result` will drop us.
-                    let captured_seq = state_for.current_mutation_seq();
-                    let result = if let Some(result) = fast_transport_result {
-                        result
-                    } else {
-                        // Belt-and-suspenders: catch a latch flip between the
-                        // sync pre-check and the body's spotify_client() call.
-                        if let Some(err) = state_for.auth_gate_error() {
-                            return Err(anyhow::Error::new(err));
-                        }
-                        if let Some(result) =
-                            try_embedded_transport(&state_for, &background_command_kind).await
-                        {
-                            result
-                        } else {
-                            let mut client = state_for.spotify_client().await?;
-                            execute_with_device_recovery(
-                                &state_for,
-                                &mut client,
-                                background_command_kind,
-                            )
-                            .await?
-                        }
-                    };
-                    // Phase 1: persist BEFORE the event so subscribers
-                    // that fetch on the event see fresh state.
-                    let outcome = persist_command_result(
-                        &state_for,
-                        captured_seq,
-                        &result,
-                        action,
-                        expected_playback.as_ref(),
-                    )
-                    .await;
-                    tracing::debug!(
-                        target: "spotuify_daemon::post_command",
-                        action,
-                        captured_seq,
-                        persisted_playback = outcome.playback.is_some(),
-                        persisted_queue = outcome.queue_items.is_some(),
-                        persisted_devices = outcome.devices.is_some(),
-                        post_uri = outcome
-                            .playback
-                            .as_ref()
-                            .and_then(|p| p.uri.as_deref())
-                            .unwrap_or(""),
-                        post_is_playing = outcome
-                            .playback
-                            .as_ref()
-                            .map(|p| p.is_playing)
-                            .unwrap_or_default(),
-                        "post-command persist"
-                    );
-                    let message = result.message.clone().unwrap_or_else(|| action.to_string());
-                    // Phase 3 — embed the freshly-computed clock snapshot
-                    // (which has just been updated by `persist_command_result`)
-                    // so TUI/MCP subscribers apply the new state without a
-                    // follow-up `PlaybackGet` round-trip.
-                    state_for.emit_event(DaemonEvent::PlaybackChanged {
-                        action: action.to_string(),
-                        playback: Some(state_for.snapshot_playback()),
-                    });
-                    if outcome.queue_items.is_some() {
-                        let queue_snapshot = result.queue.clone();
-                        state_for.emit_event(DaemonEvent::QueueChanged {
-                            action: action.to_string(),
-                            uris: Vec::new(),
-                            queue: queue_snapshot,
-                        });
-                    }
-                    if let Some(uri) = context_queue_uri.as_deref() {
-                        if let Some(queue) =
-                            context_queue_snapshot_for_play_uri(&state_for, uri).await
-                        {
-                            let uris = queue
-                                .items
-                                .iter()
-                                .map(|item| item.uri.clone())
-                                .collect::<Vec<_>>();
-                            cache_queue(&state_for, &queue).await;
-                            state_for.warm_queue_uris(uris.clone());
-                            state_for.emit_event(DaemonEvent::QueueChanged {
-                                action: "play-context".to_string(),
-                                uris,
-                                queue: Some(queue),
-                            });
-                        }
-                    }
-                    if outcome.devices.is_some() {
-                        state_for.emit_event(DaemonEvent::DevicesChanged {
-                            action: action.to_string(),
-                            devices: result.devices.clone(),
-                        });
-                    }
-                    if result.request_refresh && outcome.playback.is_none() {
-                        spawn_playback_refresh(state_for.clone());
-                    }
-                    emit_mutation_finished(&state_for, action, &message);
-                    Ok(())
-                },
-            )
-            .await
+        crate::handlers::Cat::Search => {
+            crate::handlers::search::dispatch(state, request, source).await
         }
-        Request::DevicesList => {
-            // Never block on Spotify; serve whatever's cached and let
-            // the spawned refresh broadcast `DevicesChanged` when fresh
-            // data arrives.
-            let mut devices = state.store().list_devices().await?;
-            if let Some(own_device) = state.connected_own_device().await {
-                let own_id = own_device.id.as_deref();
-                if !devices.iter().any(|device| device.id.as_deref() == own_id) {
-                    devices.push(own_device);
-                }
-            }
-            spawn_devices_refresh(state.clone());
-            Ok(ResponseData::Devices { devices })
+        crate::handlers::Cat::Library => {
+            crate::handlers::library::dispatch(state, request, source).await
         }
-        Request::DeviceTransfer { device } => {
-            let state_for = state.clone();
-            // DeviceTransfer mutates the active device which the
-            // playback poll keys off of; bump seq so a polling refresh
-            // that started before this call can't repopulate the
-            // pre-transfer device.
-            state.bump_mutation_seq();
-            spawn_optimistic_mutation(
-                &state,
-                OperationKind::Transfer,
-                operation_source,
-                vec![],
-                "transfer",
-                request_json.clone(),
-                None,
-                None,
-                mutation_lane,
-                move |op_id| async move {
-                    let mut client = state_for.spotify_client().await?;
-                    let cached_devices = cached_devices_with_own_device(&state_for).await?;
-                    let target_device = match selection::resolve_device(&cached_devices, &device) {
-                        Ok(device) => device,
-                        Err(_) => {
-                            let devices = actions::devices(&mut client).await?;
-                            selection::resolve_device(&devices, &device)?
-                        }
-                    };
-                    let playback = state_for.snapshot_playback();
-                    let play = playback.is_playing;
-                    let prior_device_id = playback.device.as_ref().and_then(|d| d.id.clone());
-                    let pre_state = spotuify_protocol::PreState::Transfer {
-                        prior_device_id: prior_device_id.clone(),
-                    };
-                    let plan = match prior_device_id.clone() {
-                        Some(id) => {
-                            spotuify_protocol::ReversalPlan::TransferToPriorDevice { device_id: id }
-                        }
-                        None => spotuify_protocol::ReversalPlan::NotReversible {
-                            reason: "no prior active device to restore".to_string(),
-                        },
-                    };
-                    if let Err(err) = state_for
-                        .store()
-                        .update_operation_plan(op_id, Some(&pre_state), Some(&plan))
-                        .await
-                    {
-                        tracing::warn!(error = %err, "failed to persist transfer pre-state");
-                    }
-                    let captured_seq = state_for.current_mutation_seq();
-                    let device_name = target_device.name.clone();
-                    let device_id = target_device.id.clone();
-                    let result = match actions::execute(
-                        &mut client,
-                        CommandKind::Transfer {
-                            device: target_device,
-                            play,
-                        },
-                    )
-                    .await
-                    {
-                        Ok(result) => result,
-                        // Spotify lists Alexa/Echo speakers but routinely
-                        // 404s Web-API transfers to them — they're
-                        // Alexa-controlled and must be started there first.
-                        // Surface that instead of the raw "404 Not found".
-                        Err(err) if is_no_active_device_error(&err) => {
-                            let is_echo =
-                                device_id.as_deref().is_some_and(|id| id.contains("_amzn_"));
-                            let hint = if is_echo {
-                                format!(
-                                    "\"{device_name}\" can't be started from here — Alexa/Echo \
-                                     speakers must be started in Alexa (or the Spotify app) first, \
-                                     then transfer."
-                                )
-                            } else {
-                                format!(
-                                    "\"{device_name}\" is offline or unavailable to Spotify \
-                                     right now."
-                                )
-                            };
-                            return Err(anyhow::anyhow!(hint));
-                        }
-                        Err(err) => return Err(err.into()),
-                    };
-                    state_for.viz_coordinator().set_playing(play);
-                    // User-driven hand-off: mark whether this device remains the
-                    // intended target so a later session drop doesn't auto-
-                    // reconnect and steal playback from the device we just
-                    // transferred to.
-                    let to_own_device = state_for
-                        .own_device_id()
-                        .is_some_and(|own| device_id.as_deref() == Some(own.as_str()));
-                    state_for.set_we_are_active(to_own_device);
-                    // Phase 1: capture any playback/devices snapshot the
-                    // Transfer ACK returned so subscribers don't need a
-                    // re-fetch round-trip.
-                    let _outcome =
-                        persist_command_result(&state_for, captured_seq, &result, "transfer", None)
-                            .await;
-                    let message = result
-                        .message
-                        .clone()
-                        .unwrap_or_else(|| "transfer".to_string());
-                    state_for.emit_event(DaemonEvent::DevicesChanged {
-                        action: "transfer".to_string(),
-                        devices: result.devices.clone(),
-                    });
-                    state_for.emit_event(DaemonEvent::PlaybackChanged {
-                        action: "transfer".to_string(),
-                        playback: Some(state_for.snapshot_playback()),
-                    });
-                    emit_mutation_finished(&state_for, "transfer", &message);
-                    Ok(())
-                },
-            )
-            .await
+        crate::handlers::Cat::Playlists => {
+            crate::handlers::playlists::dispatch(state, request, source).await
         }
-        Request::Search {
-            query,
-            scope,
-            source,
-            limit,
-            kinds,
-            sort,
-        } => Ok(ResponseData::SearchResults {
-            items: search_with_source(state.clone(), query, scope, source, limit, kinds, sort)
-                .await?,
-        }),
-        Request::SearchStream {
-            query,
-            scope,
-            source,
-            version,
-        } => {
-            spawn_search_stream(state.clone(), query.clone(), scope, source, version);
-            Ok(ResponseData::SearchStarted { query, version })
+        crate::handlers::Cat::Analytics => {
+            crate::handlers::analytics::dispatch(state, request, source).await
         }
-        Request::SearchPage {
-            query,
-            kind,
-            offset,
-            version,
-        } => {
-            spawn_search_page(state.clone(), query.clone(), kind, offset, version);
-            Ok(ResponseData::SearchStarted { query, version })
+        crate::handlers::Cat::Ops => crate::handlers::ops::dispatch(state, request, source).await,
+        crate::handlers::Cat::Reminders => {
+            crate::handlers::reminders::dispatch(state, request, source).await
         }
-        Request::Reindex => Ok(ResponseData::Reindex {
-            stats: spotuify_search::reindex::reindex(state.store(), state.search()).await?,
-        }),
-        Request::CacheStatus => {
-            let index_documents = state.search().num_docs().await.unwrap_or(0);
-            let mut status = state.store().cache_status(index_documents).await?;
-            match state.system_integration.cover_cache.stats() {
-                Ok(stats) => {
-                    status.cover_cache_path = stats.root.display().to_string();
-                    status.cover_cache_files = stats.files;
-                    status.cover_cache_bytes = stats.bytes;
-                    status.cover_cache_oldest_entry_ms = stats.oldest_entry_ms;
-                    status.cover_cache_ttl_secs = stats.ttl_secs;
-                    status.cover_cache_max_bytes = stats.max_bytes;
-                }
-                Err(err) => tracing::warn!(error = %err, "cover cache stats unavailable"),
-            }
-            Ok(ResponseData::CacheStatus { status })
-        }
-        Request::LibraryList { limit } => Ok(ResponseData::MediaItems {
-            items: state.store().list_library_items(limit).await?,
-        }),
-        Request::LogsTail { lines } => Ok(ResponseData::Logs {
-            lines: crate::logging::read_tail(lines)?
-                .lines()
-                .map(ToString::to_string)
-                .collect(),
-        }),
-        Request::Sync { target } => Ok(ResponseData::Sync {
-            summary: spotuify_sync::sync_target(state.as_ref(), target).await?,
-        }),
-        Request::RecentlyPlayed => {
-            // Non-blocking: empty list is fine on cold start. Refresh
-            // populates the cache and subscribers re-fetch when they
-            // see SyncFinished or the next PlaybackChanged.
-            let items = state.store().list_recent_items(20).await?;
-            spawn_recent_refresh(state.clone());
-            Ok(ResponseData::MediaItems { items })
-        }
-        Request::Image { url } => {
-            let entry = state
-                .system_integration
-                .cover_cache
-                .get_or_fetch_entry(&url)
-                .await?;
-            Ok(ResponseData::Image {
-                bytes: tokio::fs::read(entry.path).await?,
-            })
-        }
-        Request::CoverArt { url } => {
-            let entry = state
-                .system_integration
-                .cover_cache
-                .get_or_fetch_entry(&url)
-                .await?;
-            Ok(ResponseData::CoverArt {
-                path: entry.path.display().to_string(),
-                cache_hit: entry.cache_hit,
-                bytes: entry.bytes,
-                fetched_at_ms: entry.fetched_at_ms,
-            })
-        }
-        Request::QueueGet => {
-            // Non-blocking: return the last known queue immediately,
-            // then refresh in the background. Returning default here
-            // makes clients briefly clear their visible queue on every
-            // fallback read/reseed.
-            let queue = state.store().latest_queue(500).await?.unwrap_or_default();
-            state.warm_queue(&queue);
-            spawn_queue_refresh(state.clone());
-            Ok(ResponseData::Queue { queue })
-        }
-        Request::QueueAdd { uri } => {
-            let state_for_event = state.clone();
-            let pre_state = Some(spotuify_protocol::PreState::QueueAdd { uri: uri.clone() });
-            let plan = Some(spotuify_protocol::ReversalPlan::QueueRemove { uri: uri.clone() });
-            // QueueAdd mutates the upcoming-queue list. Bump the seq
-            // so a queue poll already in flight can't repopulate the
-            // pre-add ordering.
-            state.bump_mutation_seq();
-            spawn_optimistic_mutation(
-                &state,
-                OperationKind::QueueAdd,
-                operation_source,
-                vec![uri.clone()],
-                "queue",
-                request_json.clone(),
-                pre_state,
-                plan,
-                mutation_lane,
-                move |_op_id| async move {
-                    let mut client = state_for_event.spotify_client().await?;
-                    let resolved_items =
-                        queueable_items_for_selection(&state_for_event, &mut client, &uri).await?;
-                    // Never use persisted queue snapshots for mutation
-                    // semantics. They are historical by design and may
-                    // describe a dead Spotify session. Preserve duplicate
-                    // resolved items because Spotify queues are positional,
-                    // not sets.
-                    let queued_items = resolved_items;
-                    let queue_uris: Vec<String> =
-                        queued_items.iter().map(|item| item.uri.clone()).collect();
-                    let selection_kind = selection::media_kind_from_uri(&uri)?;
-                    let idle_context_label = idle_context_start_label(&selection_kind);
-
-                    // "Queue" needs an active Spotify session. librespot
-                    // 0.8.0 can't originate add-to-queue (embedded
-                    // `queue_add` returns Unsupported), so we fall back to
-                    // the Web API `POST /me/player/queue`, which 404s with
-                    // NO_ACTIVE_DEVICE when nothing is playing. When Spotify
-                    // itself reports no active device for the first item, the
-                    // session is idle: start embedded playback. Track/episode
-                    // selections play the first item then queue the rest;
-                    // album/playlist selections start their context so the
-                    // backend owns natural progression. Keying off Spotify's
-                    // actual error (not the local clock) means a remote
-                    // session the daemon hasn't polled yet is never hijacked.
-                    let mut played_first = false;
-                    let mut played_context = false;
-                    // The first item reveals whether a session exists: queue
-                    // it, and if Spotify reports no active device, start one by
-                    // playing it on the embedded device instead.
-                    if let Some(first) = queue_uris.first().cloned() {
-                        match queue_one(state_for_event.as_ref(), &mut client, &first).await? {
-                            QueueAttempt::Queued => {}
-                            QueueAttempt::NoActiveDevice => {
-                                let start_uri = if idle_context_label.is_some() {
-                                    played_context = true;
-                                    uri.clone()
-                                } else {
-                                    first.clone()
-                                };
-                                state_for_event
-                                    .transport(crate::state::TransportCmd::PlayUri {
-                                        uri: start_uri.clone(),
-                                        position_ms: 0,
-                                    })
-                                    .await
-                                    .map_err(|err| {
-                                        anyhow::anyhow!(
-                                            "failed to start playback for {start_uri}: {err}"
-                                        )
-                                    })?;
-                                played_first = true;
-                            }
-                        }
-                    }
-
-                    if !played_context {
-                        for queue_uri in queue_uris.iter().skip(1) {
-                            // After an idle auto-play, the new session takes a
-                            // beat to register with Spotify, so retry briefly
-                            // instead of racing it with another 404.
-                            let mut attempt = 0u32;
-                            loop {
-                                match queue_one(state_for_event.as_ref(), &mut client, queue_uri)
-                                    .await?
-                                {
-                                    QueueAttempt::Queued => break,
-                                    QueueAttempt::NoActiveDevice if played_first && attempt < 6 => {
-                                        attempt += 1;
-                                        tokio::time::sleep(std::time::Duration::from_millis(500))
-                                            .await;
-                                    }
-                                    QueueAttempt::NoActiveDevice => {
-                                        return Err(anyhow::anyhow!(
-                                            "queue add for {queue_uri} failed: no active device"
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // What actually landed in the queue: the first item too,
-                    // unless we auto-played it to start the session.
-                    let queued_uris: Vec<String> = if played_context {
-                        Vec::new()
-                    } else if played_first {
-                        queue_uris.iter().skip(1).cloned().collect()
-                    } else {
-                        queue_uris.clone()
-                    };
-                    let appended_items: Vec<MediaItem> = if played_context {
-                        Vec::new()
-                    } else if played_first {
-                        queued_items.iter().skip(1).cloned().collect()
-                    } else {
-                        queued_items.clone()
-                    };
-                    let queue_snapshot =
-                        optimistic_queue_with_appends(&state_for_event, appended_items).await;
-                    if let Some(queue) = queue_snapshot.as_ref() {
-                        cache_queue(&state_for_event, queue).await;
-                    }
-                    let message = if played_first && queued_uris.is_empty() {
-                        if let Some(label) = idle_context_label {
-                            format!("playing {label} now")
-                        } else {
-                            "playing now".to_string()
-                        }
-                    } else if played_first {
-                        format!("playing now, queued {} item(s)", queued_uris.len())
-                    } else {
-                        format!("queued {} item(s)", queue_uris.len())
-                    };
-                    state_for_event.emit_event(DaemonEvent::QueueChanged {
-                        action: "queue".to_string(),
-                        uris: queued_uris.clone(),
-                        queue: queue_snapshot,
-                    });
-                    state_for_event.warm_queue_uris(queued_uris.clone());
-                    spawn_queue_refresh(state_for_event.clone());
-                    emit_mutation_finished(&state_for_event, "queue", &message);
-                    Ok(())
-                },
-            )
-            .await
-        }
-        Request::QueueAddMany { uris } => {
-            // "Queue all" — append a whole batch (e.g. every liked song).
-            // Spotify's queue endpoint is single-URI, so we loop internally
-            // and emit one aggregate receipt. Not reversible (Spotify can't
-            // remove queue items), so no undo plan.
-            let state_for_event = state.clone();
-            let subject = uris.clone();
-            state.bump_mutation_seq();
-            spawn_optimistic_mutation(
-                &state,
-                OperationKind::QueueAdd,
-                operation_source,
-                subject,
-                "queue",
-                request_json.clone(),
-                None,
-                None,
-                mutation_lane,
-                move |_op_id| async move {
-                    let mut client = state_for_event.spotify_client().await?;
-                    // Expand each selection (tracks pass through; album/playlist
-                    // URIs expand to their tracks). Preserve duplicates because
-                    // Spotify's queue is positional.
-                    let mut queue_uris: Vec<String> = Vec::new();
-                    let mut queued_items: Vec<MediaItem> = Vec::new();
-                    for selection in &uris {
-                        let resolved =
-                            queueable_items_for_selection(&state_for_event, &mut client, selection)
-                                .await?;
-                        for item in resolved {
-                            queue_uris.push(item.uri.clone());
-                            queued_items.push(item);
-                        }
-                    }
-                    if queue_uris.is_empty() {
-                        emit_mutation_finished(&state_for_event, "queue", "nothing to queue");
-                        return Ok(());
-                    }
-                    let mut played_first = false;
-                    if let Some(first) = queue_uris.first().cloned() {
-                        match queue_one(state_for_event.as_ref(), &mut client, &first).await? {
-                            QueueAttempt::Queued => {}
-                            QueueAttempt::NoActiveDevice => {
-                                state_for_event
-                                    .transport(crate::state::TransportCmd::PlayUri {
-                                        uri: first.clone(),
-                                        position_ms: 0,
-                                    })
-                                    .await
-                                    .map_err(|err| {
-                                        anyhow::anyhow!(
-                                            "failed to start playback for {first}: {err}"
-                                        )
-                                    })?;
-                                played_first = true;
-                            }
-                        }
-                    }
-                    for queue_uri in queue_uris.iter().skip(1) {
-                        let mut attempt = 0u32;
-                        loop {
-                            match queue_one(state_for_event.as_ref(), &mut client, queue_uri)
-                                .await?
-                            {
-                                QueueAttempt::Queued => break,
-                                QueueAttempt::NoActiveDevice if played_first && attempt < 6 => {
-                                    attempt += 1;
-                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                                }
-                                QueueAttempt::NoActiveDevice => {
-                                    return Err(anyhow::anyhow!(
-                                        "queue add for {queue_uri} failed: no active device"
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    let queued_uris: Vec<String> = if played_first {
-                        queue_uris.iter().skip(1).cloned().collect()
-                    } else {
-                        queue_uris.clone()
-                    };
-                    let appended_items: Vec<MediaItem> = if played_first {
-                        queued_items.iter().skip(1).cloned().collect()
-                    } else {
-                        queued_items.clone()
-                    };
-                    let queue_snapshot =
-                        optimistic_queue_with_appends(&state_for_event, appended_items).await;
-                    if let Some(queue) = queue_snapshot.as_ref() {
-                        cache_queue(&state_for_event, queue).await;
-                    }
-                    let message = if played_first {
-                        format!("playing now, queued {} item(s)", queued_uris.len())
-                    } else {
-                        format!("queued {} item(s)", queue_uris.len())
-                    };
-                    state_for_event.emit_event(DaemonEvent::QueueChanged {
-                        action: "queue".to_string(),
-                        uris: queued_uris.clone(),
-                        queue: queue_snapshot,
-                    });
-                    state_for_event.warm_queue_uris(queued_uris.clone());
-                    spawn_queue_refresh(state_for_event.clone());
-                    emit_mutation_finished(&state_for_event, "queue", &message);
-                    Ok(())
-                },
-            )
-            .await
-        }
-        Request::SavedTracks { limit, offset } => {
-            // Liked songs — live `/me/tracks`, cache fallback on failure.
-            let mut client = state.spotify_client().await?;
-            match client
-                .saved_tracks_page(limit.min(50) as u8, offset as u64)
-                .await
-            {
-                Ok(page) => Ok(ResponseData::MediaItems { items: page.items }),
-                Err(err) => {
-                    tracing::warn!(error = %err, "saved tracks live fetch failed; serving cache");
-                    Ok(ResponseData::MediaItems {
-                        items: state.store().list_saved_tracks(limit).await?,
-                    })
-                }
-            }
-        }
-        Request::SavedShows { limit } => Ok(ResponseData::MediaItems {
-            items: state.store().list_saved_shows(limit).await?,
-        }),
-        Request::ShowEpisodes {
-            show,
-            limit,
-            offset,
-        } => {
-            let mut client = state.spotify_client().await?;
-            let items = client
-                .show_episodes(&show, limit.min(50) as u8, offset as u64)
-                .await?;
-            Ok(ResponseData::MediaItems { items })
-        }
-        Request::EpisodeFeed {
-            limit,
-            sort,
-            refresh,
-        } => Ok(ResponseData::MediaItems {
-            items: episode_feed(&state, limit, sort, refresh).await?,
-        }),
-
-        // --- Listening reminders + notifications ---
-        Request::ReminderCreate {
-            media_uri,
-            anchor_at_ms,
-            recurrence,
-            tz,
-            message,
-        } => {
-            let (media_kind, name, subtitle, image_url) =
-                resolve_reminder_snapshot(&state, &media_uri).await?;
-            let reminder = spotuify_core::Reminder {
-                id: uuid::Uuid::now_v7().to_string(),
-                media_uri,
-                media_kind,
-                name,
-                subtitle,
-                image_url,
-                anchor_at_ms,
-                recurrence,
-                tz,
-                next_due_at_ms: crate::reminders::initial_next_due(anchor_at_ms, recurrence),
-                state: spotuify_core::ReminderState::Active,
-                message,
-                created_at_ms: now_ms(),
-            };
-            state.store().create_reminder(&reminder).await?;
-            crate::reminders::wake_scheduler();
-            state.emit_event(DaemonEvent::RemindersChanged {
-                action: "created".to_string(),
-            });
-            Ok(ResponseData::ReminderCreated { reminder })
-        }
-        Request::RemindersList { include_inactive } => Ok(ResponseData::Reminders {
-            reminders: state.store().list_reminders(include_inactive).await?,
-        }),
-        Request::ReminderCancel { id } => {
-            state.store().cancel_reminder(&id).await?;
-            crate::reminders::wake_scheduler();
-            state.emit_event(DaemonEvent::RemindersChanged {
-                action: "cancelled".to_string(),
-            });
-            Ok(ResponseData::Ack {
-                message: "reminder cancelled".to_string(),
-            })
-        }
-        Request::NotificationsList { include_archived } => Ok(ResponseData::Notifications {
-            notifications: state.store().list_notifications(include_archived).await?,
-        }),
-        Request::NotificationAct {
-            id,
-            action,
-            snooze_until_ms,
-        } => {
-            use spotuify_core::NotificationState as NS;
-            use spotuify_protocol::NotificationAction as NA;
-            let Some(notification) = state.store().get_notification(&id).await? else {
-                anyhow::bail!("notification {id} not found");
-            };
-            match action {
-                NA::Seen => {
-                    state
-                        .store()
-                        .set_notification_state(&id, NS::Seen, None, None)
-                        .await?;
-                }
-                NA::Dismiss => {
-                    state
-                        .store()
-                        .set_notification_state(&id, NS::Dismissed, None, None)
-                        .await?;
-                }
-                NA::Snooze => {
-                    let until = snooze_until_ms.unwrap_or_else(|| now_ms() + 3_600_000);
-                    state
-                        .store()
-                        .set_notification_state(&id, NS::Snoozed, Some(until), None)
-                        .await?;
-                    crate::reminders::wake_scheduler();
-                }
-                NA::Play => {
-                    state
-                        .transport(crate::state::TransportCmd::PlayUri {
-                            uri: notification.media_uri.clone(),
-                            position_ms: 0,
-                        })
-                        .await
-                        .map_err(|err| anyhow::anyhow!("play failed: {err}"))?;
-                    state
-                        .store()
-                        .set_notification_state(&id, NS::Done, None, Some("played"))
-                        .await?;
-                }
-                NA::Queue => {
-                    let mut client = state.spotify_client().await?;
-                    let items =
-                        queueable_items_for_selection(&state, &mut client, &notification.media_uri)
-                            .await?;
-                    for item in &items {
-                        let _ = queue_one(&state, &mut client, &item.uri).await?;
-                    }
-                    state
-                        .store()
-                        .set_notification_state(&id, NS::Done, None, Some("queued"))
-                        .await?;
-                }
-            }
-            state.emit_event(DaemonEvent::RemindersChanged {
-                action: "notification-acted".to_string(),
-            });
-            Ok(ResponseData::Ack {
-                message: "ok".to_string(),
-            })
-        }
-        Request::PlaylistsList => {
-            // Cache hit returns immediately + schedules refresh; cache
-            // miss falls through to a blocking Spotify call. Unlike
-            // PlaybackGet, PlaylistsList is used by the CLI's
-            // playlist-name resolver (`playlist add <name>`) as an
-            // authoritative lookup — an empty list there means
-            // "unknown playlist", not "still loading", which is the
-            // wrong UX for a synchronous one-shot CLI invocation. The
-            // TUI's playlists page isn't latency-critical the way the
-            // now-playing card is, so paying the round-trip on the
-            // very first launch is the right trade.
-            let cached = state.store().list_playlists(500).await?;
-            if !cached.is_empty() {
-                spawn_playlists_refresh(state.clone());
-                return Ok(ResponseData::Playlists { playlists: cached });
-            }
-            let mut client = state.spotify_client().await?;
-            let playlists = actions::playlists(&mut client).await?;
-            cache_playlists(&state, &playlists).await;
-            Ok(ResponseData::Playlists { playlists })
-        }
-        Request::PlaylistTracks { playlist, wait } => {
-            // Serve cached tracks when present, but don't turn an
-            // empty cache into a false "this playlist has no tracks".
-            // TUI calls use wait=false so first-load paging happens in
-            // the background and completes via PlaylistsChanged. CLI/MCP
-            // calls use wait=true for authoritative one-shot output.
-            let cached_playlists = state.store().list_playlists(500).await?;
-            let items =
-                if let Ok(resolved) = selection::resolve_playlist(&cached_playlists, &playlist) {
-                    let cached_items = state.store().playlist_items(&resolved.id, 500).await?;
-                    if !cached_items.is_empty() {
-                        cached_items
-                    } else if !wait {
-                        reject_if_auth_blocked(&state)?;
-                        spawn_playlist_tracks_refresh(state.clone(), resolved.id.clone());
-                        Vec::new()
-                    } else {
-                        reject_if_auth_blocked(&state)?;
-                        let mut client = state.spotify_client().await?;
-                        let items = match client.playlist_tracks(&resolved.id).await {
-                            Ok(items) => items,
-                            Err(err) => {
-                                if is_playlist_tracks_forbidden(&err) {
-                                    let _ = state
-                                        .store()
-                                        .mark_playlist_tracks_inaccessible(&resolved.id)
-                                        .await;
-                                    state.emit_event(DaemonEvent::PlaylistsChanged {
-                                        action: "tracks-inaccessible".to_string(),
-                                        playlist: Some(resolved.id.clone()),
-                                    });
-                                }
-                                return Err(err.into());
-                            }
-                        };
-                        cache_playlist_items(&state, &resolved.id, &items).await;
-                        items
-                    }
-                } else {
-                    reject_if_auth_blocked(&state)?;
-                    spawn_playlists_refresh(state.clone());
-                    Vec::new()
-                };
-            Ok(ResponseData::MediaItems { items })
-        }
-        Request::ArtistAlbums { artist } => {
-            let mut client = state.spotify_client().await?;
-            let mut items = client.artist_albums(&artist).await?;
-            // Tag each album with whether it's already saved, so clients can
-            // offer an "in library only" filter without a per-album lookup.
-            // A cold/failed cache simply yields an empty set (all not-saved).
-            let saved = state.store().saved_album_uris().await.unwrap_or_default();
-            for item in &mut items {
-                item.in_library = Some(saved.contains(&item.uri));
-            }
-            Ok(ResponseData::MediaItems { items })
-        }
-        Request::FollowedArtists { limit } => {
-            // Cache-first; fall back to a live fetch + persist on a cold cache.
-            let cached = state.store().list_followed_artists(limit).await?;
-            let items = if cached.is_empty() {
-                let mut client = state.spotify_client().await?;
-                let fetched = client.followed_artists().await?;
-                if !fetched.is_empty() {
-                    let _ = state.store().persist_followed_artists(&fetched).await;
-                }
-                fetched.into_iter().take(limit as usize).collect()
-            } else {
-                cached
-            };
-            Ok(ResponseData::MediaItems { items })
-        }
-        Request::AlbumTracks { album } => {
-            let mut client = state.spotify_client().await?;
-            let items = client.album_tracks(&album).await?;
-            Ok(ResponseData::MediaItems { items })
-        }
-        Request::RelatedArtists { artist } => {
-            // Mercury-backed (the Web API related-artists endpoint was
-            // deprecated Nov 2024). Needs the in-daemon librespot session.
-            let Some(mercury_uri) = spotuify_spotify::mercury::related_artists_mercury_uri(&artist)
-            else {
-                anyhow::bail!(
-                    "invalid request: related-artists needs a `spotify:artist:` URI, got `{artist}`"
-                );
-            };
-            let bytes =
-                tokio::time::timeout(MERCURY_DISCOVERY_TIMEOUT, state.mercury_get(&mercury_uri))
-                    .await
-                    .map_err(|_| anyhow::anyhow!("related-artists request timed out"))??;
-            let items = spotuify_spotify::mercury::parse_related_artists(&bytes);
-            if items.is_empty() {
-                tracing::warn!(
-                    %artist,
-                    "related-artists returned no parseable results; the Mercury endpoint \
-                     may have changed"
-                );
-            }
-            Ok(ResponseData::MediaItems { items })
-        }
-        Request::RadioStart { seed_uri, dry_run } => {
-            if !seed_uri.starts_with("spotify:") {
-                anyhow::bail!(
-                    "invalid request: radio-start needs a `spotify:` URI, got `{seed_uri}`"
-                );
-            }
-            let mercury_uri = spotuify_spotify::mercury::radio_station_mercury_uri(&seed_uri);
-            let bytes =
-                tokio::time::timeout(MERCURY_DISCOVERY_TIMEOUT, state.mercury_get(&mercury_uri))
-                    .await
-                    .map_err(|_| anyhow::anyhow!("radio station request timed out"))??;
-            let track_uris = spotuify_spotify::mercury::parse_radio_station(&bytes);
-            if track_uris.is_empty() {
-                anyhow::bail!(
-                    "radio station returned no tracks; the Mercury endpoint may have changed \
-                     or `{seed_uri}` has no station"
-                );
-            }
-            // Enrich for a useful preview; unresolved URIs fall back to bare items.
-            let mut items = state
-                .store()
-                .media_items_by_uris(&track_uris)
-                .await
-                .unwrap_or_default();
-            if items.len() != track_uris.len() {
-                let known: std::collections::HashSet<String> =
-                    items.iter().map(|item| item.uri.clone()).collect();
-                for uri in &track_uris {
-                    if !known.contains(uri) {
-                        items.push(MediaItem {
-                            id: uri.rsplit(':').next().map(str::to_string),
-                            uri: uri.clone(),
-                            kind: MediaKind::Track,
-                            source: Some("mercury".to_string()),
-                            ..MediaItem::default()
-                        });
-                    }
-                }
-            }
-            if !dry_run {
-                // Populate the active device's queue so playback flows into
-                // the station. Best-effort per track; queue is a set so
-                // duplicates move up rather than duplicate.
-                for uri in &track_uris {
-                    if let Err(err) = state.queue_add(uri).await {
-                        tracing::debug!(error = %err, %uri, "radio queue add failed");
-                    }
-                }
-            }
-            Ok(ResponseData::MediaItems { items })
-        }
-        Request::PlaylistAddItems { playlist, uris } => {
-            let state_for = state.clone();
-            let subject_uris = uris.clone();
-            spawn_optimistic_mutation(
-                &state,
-                OperationKind::PlaylistAdd,
-                operation_source,
-                subject_uris,
-                "playlist-add",
-                request_json.clone(),
-                // Initial values are placeholders; the body captures the
-                // resolved playlist's snapshot_id from the same
-                // `actions::playlists()` call it already makes for
-                // resolution and writes the real plan via
-                // `update_operation_plan`.
-                None,
-                None,
-                mutation_lane,
-                move |op_id| async move {
-                    let mut client = state_for.spotify_client().await?;
-                    let playlists = actions::playlists(&mut client).await?;
-                    let resolved = selection::resolve_playlist(&playlists, &playlist)?;
-                    let snapshot_id = resolved.snapshot_id.clone();
-                    let pre_state = spotuify_protocol::PreState::PlaylistAdd {
-                        playlist_id: resolved.id.clone(),
-                        snapshot_id: snapshot_id.clone(),
-                        added_uris: uris.clone(),
-                    };
-                    let plan = spotuify_protocol::ReversalPlan::PlaylistRemoveTracks {
-                        playlist_id: resolved.id.clone(),
-                        uris: uris.clone(),
-                        snapshot_id,
-                    };
-                    if let Err(err) = state_for
-                        .store()
-                        .update_operation_plan(op_id, Some(&pre_state), Some(&plan))
-                        .await
-                    {
-                        tracing::warn!(error = %err, "failed to persist playlist_add pre-state");
-                    }
-                    for uri in &uris {
-                        let item = media_item_from_uri(uri)?;
-                        actions::execute(
-                            &mut client,
-                            CommandKind::AddToPlaylist {
-                                item,
-                                playlist_id: resolved.id.clone(),
-                                playlist_name: resolved.name.clone(),
-                            },
-                        )
-                        .await?;
-                    }
-                    let message = format!("Added items to {}", resolved.name);
-                    state_for.emit_event(DaemonEvent::PlaylistsChanged {
-                        action: "playlist-add".to_string(),
-                        playlist: Some(resolved.id.clone()),
-                    });
-                    emit_mutation_finished(&state_for, "playlist-add", &message);
-                    Ok(())
-                },
-            )
-            .await
-        }
-        Request::PlaylistRemoveItems { playlist, uris } => {
-            if uris.is_empty() {
-                anyhow::bail!("no track URIs to remove");
-            }
-            let state_for = state.clone();
-            let subject_uris = uris.clone();
-            spawn_optimistic_mutation(
-                &state,
-                OperationKind::PlaylistRemove,
-                operation_source,
-                subject_uris,
-                "playlist-remove",
-                request_json.clone(),
-                None,
-                None,
-                mutation_lane,
-                move |op_id| async move {
-                    let mut client = state_for.spotify_client().await?;
-                    let playlists = actions::playlists(&mut client).await?;
-                    let resolved = selection::resolve_playlist(&playlists, &playlist)?;
-                    let snapshot_id = resolved.snapshot_id.clone();
-                    let current_items = client
-                        .playlist_tracks(&resolved.id)
-                        .await
-                        .unwrap_or_default();
-                    let removed_items = current_items
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, item)| uris.iter().any(|uri| uri == &item.uri))
-                        .map(|(position, item)| (item.uri.clone(), position as u32))
-                        .collect::<Vec<_>>();
-                    let pre_state = spotuify_protocol::PreState::PlaylistRemove {
-                        playlist_id: resolved.id.clone(),
-                        snapshot_id: snapshot_id.clone(),
-                        removed_items: removed_items.clone(),
-                    };
-                    let plan = spotuify_protocol::ReversalPlan::PlaylistAddAtPositions {
-                        playlist_id: resolved.id.clone(),
-                        items: removed_items,
-                        snapshot_id,
-                    };
-                    if let Err(err) = state_for
-                        .store()
-                        .update_operation_plan(op_id, Some(&pre_state), Some(&plan))
-                        .await
-                    {
-                        tracing::warn!(error = %err, "failed to persist playlist_remove pre-state");
-                    }
-                    client
-                        .remove_playlist_items(&resolved.id, &uris, resolved.snapshot_id.as_deref())
-                        .await?;
-                    let message = format!("Removed {} item(s) from {}", uris.len(), resolved.name);
-                    state_for.emit_event(DaemonEvent::PlaylistsChanged {
-                        action: "playlist-remove".to_string(),
-                        playlist: Some(resolved.id.clone()),
-                    });
-                    emit_mutation_finished(&state_for, "playlist-remove", &message);
-                    Ok(())
-                },
-            )
-            .await
-        }
-        Request::PlaylistCreate {
-            name,
-            description,
-            uris,
-        } => {
-            let _mutation_guard = match mutation_lane {
-                Some(lane) => Some(lane.lock_owned().await),
-                None => None,
-            };
-            if uris.is_empty() {
-                anyhow::bail!("no resolved track URIs to add");
-            }
-            for uri in &uris {
-                if selection::media_kind_from_uri(uri)? != MediaKind::Track {
-                    anyhow::bail!("playlist creation candidates must be track URIs: {uri}");
-                }
-            }
-            let request_summary = request_json.clone();
-            let state_for = state.clone();
-            let name_for = name.clone();
-            let description_for = description.clone();
-            let uris_for = uris.clone();
-            record_operation(
-                &state,
-                OperationKind::PlaylistCreate,
-                operation_source,
-                vec![],
-                "playlist-create",
-                &request_summary,
-                None,
-                None,
-                move |op_id| async move {
-                    let mut client = state_for.spotify_client().await?;
-                    let playlist = client
-                        .create_playlist(&name_for, description_for.as_deref(), false)
-                        .await?;
-                    let playlist_uri = selection::playlist_uri(&playlist.id);
-                    let pre_state = spotuify_protocol::PreState::PlaylistCreate {
-                        playlist_id: playlist.id.clone(),
-                    };
-                    let plan = spotuify_protocol::ReversalPlan::PlaylistDelete {
-                        playlist_id: playlist.id.clone(),
-                    };
-                    if let Err(err) = state_for
-                        .store()
-                        .update_operation_plan(op_id, Some(&pre_state), Some(&plan))
-                        .await
-                    {
-                        tracing::warn!(error = %err, "failed to persist playlist_create pre-state");
-                    }
-                    if let Err(err) = state_for
-                        .store()
-                        .update_operation_subject_uris(op_id, std::slice::from_ref(&playlist_uri))
-                        .await
-                    {
-                        tracing::warn!(error = %err, "failed to persist playlist_create subject uri");
-                    }
-                    client
-                        .add_items_to_playlist(&playlist.id, &uris_for)
-                        .await?;
-                    cache_playlists(&state_for, std::slice::from_ref(&playlist)).await;
-                    state_for.emit_event(DaemonEvent::PlaylistsChanged {
-                        action: "playlist-create".to_string(),
-                        playlist: Some(playlist.id.clone()),
-                    });
-                    let message =
-                        format!("Created playlist `{name_for}` with {} item(s)", uris_for.len());
-                    emit_mutation_finished(&state_for, "playlist-create", &message);
-                    Ok(ResponseData::PlaylistCreate {
-                        receipt: PlaylistCreateReceipt {
-                            ok: true,
-                            action: "playlist-create".to_string(),
-                            playlist_uri,
-                            playlist_id: playlist.id,
-                            name: playlist.name,
-                            added_item_count: uris_for.len(),
-                            message,
-                        },
-                    })
-                },
-            )
-            .await
-        }
-        Request::PlaylistUnfollow { playlist } => {
-            let state_for = state.clone();
-            let playlist_for = playlist.clone();
-            let playlist_uri = selection::playlist_uri(&playlist);
-            spawn_optimistic_mutation(
-                &state,
-                OperationKind::PlaylistUnfollow,
-                operation_source,
-                vec![playlist_uri.clone()],
-                "playlist-unfollow",
-                request_json.clone(),
-                None,
-                None,
-                mutation_lane,
-                move |_op_id| async move {
-                    let mut client = state_for.spotify_client().await?;
-                    client.unfollow_playlist(&playlist_for).await?;
-                    let message = format!("Unfollowed playlist {playlist_for}");
-                    state_for.emit_event(DaemonEvent::PlaylistsChanged {
-                        action: "playlist-unfollow".to_string(),
-                        playlist: Some(playlist_for.clone()),
-                    });
-                    emit_mutation_finished(&state_for, "playlist-unfollow", &message);
-                    Ok(())
-                },
-            )
-            .await
-        }
-        Request::PlaylistSetImage {
-            playlist,
-            image_base64,
-        } => {
-            // Spotify caps the base64-encoded body at 256 KB. The CLI
-            // checks too, but a fast bail here protects MCP callers and
-            // any future direct-IPC clients.
-            const MAX_IMAGE_BASE64_BYTES: usize = 256 * 1024;
-            if image_base64.is_empty() {
-                anyhow::bail!("playlist-set-image: image_base64 is empty");
-            }
-            if image_base64.len() > MAX_IMAGE_BASE64_BYTES {
-                anyhow::bail!(
-                    "playlist-set-image: encoded image is {} bytes, exceeds Spotify's 256 KB cap",
-                    image_base64.len()
-                );
-            }
-            let state_for = state.clone();
-            let playlist_for = playlist.clone();
-            let playlist_uri = selection::playlist_uri(&playlist);
-            let image_for = image_base64.clone();
-            spawn_optimistic_mutation(
-                &state,
-                OperationKind::PlaylistSetImage,
-                operation_source,
-                vec![playlist_uri.clone()],
-                "playlist-set-image",
-                request_json.clone(),
-                None,
-                None,
-                mutation_lane,
-                move |_op_id| async move {
-                    let mut client = state_for.spotify_client().await?;
-                    client.set_playlist_image(&playlist_for, &image_for).await?;
-                    let message = format!("Updated cover for playlist {playlist_for}");
-                    state_for.emit_event(DaemonEvent::PlaylistsChanged {
-                        action: "playlist-set-image".to_string(),
-                        playlist: Some(playlist_for.clone()),
-                    });
-                    emit_mutation_finished(&state_for, "playlist-set-image", &message);
-                    Ok(())
-                },
-            )
-            .await
-        }
-        Request::LibrarySave { uri, current } => {
-            let state_for = state.clone();
-            let uri_for = uri.clone();
-            spawn_optimistic_mutation(
-                &state,
-                OperationKind::LibrarySave,
-                operation_source,
-                uri.iter().cloned().collect(),
-                "save",
-                request_json.clone(),
-                None,
-                None,
-                mutation_lane,
-                move |op_id| async move {
-                    let mut client = state_for.spotify_client().await?;
-                    // Resolve the URI early so we can register a real
-                    // reversal plan. SaveCurrent uses the daemon-owned
-                    // playback snapshot instead of hitting GET /me/player.
-                    let resolved_uri = match uri_for.clone() {
-                        Some(u) => Some(u),
-                        None if current => state_for.snapshot_playback().item.map(|item| item.uri),
-                        None => None,
-                    };
-                    let event_uris = resolved_uri.iter().cloned().collect::<Vec<_>>();
-                    if let Some(ref real_uri) = resolved_uri {
-                        let pre_state = spotuify_protocol::PreState::LibrarySave {
-                            uri: real_uri.clone(),
-                            prior_was_saved: false,
-                        };
-                        let plan = spotuify_protocol::ReversalPlan::LibraryUnsave {
-                            uri: real_uri.clone(),
-                        };
-                        if let Err(err) = state_for
-                            .store()
-                            .update_operation_plan(op_id, Some(&pre_state), Some(&plan))
-                            .await
-                        {
-                            tracing::warn!(error = %err, "failed to persist library_save pre-state");
-                        }
-                        if let Err(err) = state_for
-                            .store()
-                            .update_operation_subject_uris(op_id, std::slice::from_ref(real_uri))
-                            .await
-                        {
-                            tracing::warn!(error = %err, "failed to persist library_save subject uri");
-                        }
-                    }
-                    let command = {
-                        let u = resolved_uri
-                            .clone()
-                            .ok_or_else(|| anyhow::anyhow!("nothing is playing"))?;
-                        CommandKind::SaveItem {
-                            item: media_item_from_uri(&u)?,
-                        }
-                    };
-                    let result = actions::execute(&mut client, command).await?;
-                    let message = result.message.unwrap_or_else(|| "save".to_string());
-                    state_for.emit_event(DaemonEvent::LibraryChanged {
-                        action: "save".to_string(),
-                        uris: event_uris,
-                    });
-                    emit_mutation_finished(&state_for, "save", &message);
-                    Ok(())
-                },
-            )
-            .await
-        }
-        Request::LibraryUnsave { uri } => {
-            let state_for = state.clone();
-            spawn_optimistic_mutation(
-                &state,
-                OperationKind::LibraryUnsave,
-                operation_source,
-                vec![uri.clone()],
-                "unsave",
-                request_json.clone(),
-                Some(spotuify_protocol::PreState::LibrarySave {
-                    uri: uri.clone(),
-                    prior_was_saved: true,
-                }),
-                Some(spotuify_protocol::ReversalPlan::LibrarySave {
-                    uri: uri.clone(),
-                    prior_added_at_ms: None,
-                }),
-                mutation_lane,
-                move |_op_id| async move {
-                    let mut client = state_for.spotify_client().await?;
-                    client.library_unsave_by_uri(&uri).await?;
-                    let message = format!("Unsaved {uri}");
-                    state_for.emit_event(DaemonEvent::LibraryChanged {
-                        action: "unsave".to_string(),
-                        uris: vec![uri.clone()],
-                    });
-                    emit_mutation_finished(&state_for, "unsave", &message);
-                    Ok(())
-                },
-            )
-            .await
-        }
-        Request::ArtistFollow { artist } => {
-            let state_for = state.clone();
-            let artist_for = artist.clone();
-            spawn_optimistic_mutation(
-                &state,
-                OperationKind::ArtistFollow,
-                operation_source,
-                vec![artist.clone()],
-                "artist-follow",
-                request_json.clone(),
-                None,
-                None,
-                mutation_lane,
-                move |_op_id| async move {
-                    let mut client = state_for.spotify_client().await?;
-                    client.follow_artist(&artist_for).await?;
-                    if let Err(err) = state_for
-                        .store()
-                        .set_artist_followed(&artist_for, true)
-                        .await
-                    {
-                        tracing::warn!(error = %err, "failed to mark artist followed in cache");
-                    }
-                    let message = format!("Followed {artist_for}");
-                    state_for.emit_event(DaemonEvent::LibraryChanged {
-                        action: "artist-follow".to_string(),
-                        uris: vec![artist_for.clone()],
-                    });
-                    emit_mutation_finished(&state_for, "artist-follow", &message);
-                    Ok(())
-                },
-            )
-            .await
-        }
-        Request::ArtistUnfollow { artist } => {
-            let state_for = state.clone();
-            let artist_for = artist.clone();
-            spawn_optimistic_mutation(
-                &state,
-                OperationKind::ArtistUnfollow,
-                operation_source,
-                vec![artist.clone()],
-                "artist-unfollow",
-                request_json.clone(),
-                None,
-                None,
-                mutation_lane,
-                move |_op_id| async move {
-                    let mut client = state_for.spotify_client().await?;
-                    client.unfollow_artist(&artist_for).await?;
-                    if let Err(err) = state_for
-                        .store()
-                        .set_artist_followed(&artist_for, false)
-                        .await
-                    {
-                        tracing::warn!(error = %err, "failed to clear artist followed in cache");
-                    }
-                    let message = format!("Unfollowed {artist_for}");
-                    state_for.emit_event(DaemonEvent::LibraryChanged {
-                        action: "artist-unfollow".to_string(),
-                        uris: vec![artist_for.clone()],
-                    });
-                    emit_mutation_finished(&state_for, "artist-unfollow", &message);
-                    Ok(())
-                },
-            )
-            .await
-        }
-        Request::ListenSessions { limit } => {
-            // Cache-backed; refresh recently-played in the background so the
-            // merged history picks up other-device plays next time.
-            let sessions = state.store().list_listen_sessions(limit).await?;
-            spawn_recent_refresh(state.clone());
-            Ok(ResponseData::ListenSessions { sessions })
-        }
-        Request::LyricsGet {
-            track_uri,
-            force_refresh,
-        } => lyrics_get(state, track_uri, force_refresh).await,
-        Request::LyricsOffsetSet {
-            track_uri,
-            offset_ms,
-        } => {
-            state
-                .store()
-                .set_lyrics_offset_ms(&track_uri, offset_ms)
-                .await?;
-            Ok(ResponseData::LyricsOffset {
-                track_uri,
-                offset_ms,
-            })
-        }
-        Request::Shutdown => {
-            state.request_shutdown();
-            Ok(ResponseData::Shutdown)
-        }
-
-        // Phase 10 (P10.6) analytics dispatch.
-        Request::AnalyticsRebuild { since_ms } => Ok(ResponseData::AnalyticsRebuildReport {
-            report: state
-                .store()
-                .rebuild_derivations_from_events(since_ms)
-                .await?,
-        }),
-        Request::AnalyticsTop {
-            kind,
-            since_window,
-            limit,
-        } => Ok(ResponseData::AnalyticsTop {
-            entries: state.store().top_entries(kind, since_window, limit).await?,
-        }),
-        Request::AnalyticsHabits { window, since_ms } => Ok(ResponseData::AnalyticsHabits {
-            buckets: state.store().habit_buckets(window, since_ms).await?,
-        }),
-        Request::AnalyticsSearch { mode, limit } => Ok(ResponseData::AnalyticsSearch {
-            entries: state
-                .store()
-                .search_history(
-                    matches!(mode, spotuify_protocol::SearchMode::Normalized),
-                    limit,
-                )
-                .await?,
-        }),
-        Request::AnalyticsRediscovery { gap_days } => Ok(ResponseData::AnalyticsRediscovery {
-            candidates: state.store().rediscovery_candidates(gap_days, 50).await?,
-        }),
-        Request::AnalyticsPrune { apply } => {
-            // Prune raw playback_progress (90d) + analytics_events (365d)
-            // + operations (90d) older than the configured retention
-            // windows. Dry-run by default. Read the windows from config
-            // when available; fall back to blueprint defaults.
-            let now = now_ms();
-            let analytics = Config::load().ok().map(|config| config.analytics);
-            let cutoffs = retention_cutoffs(now, analytics.as_ref());
-
-            if !apply {
-                // Dry-run: count rows that *would* be deleted via
-                // COUNT() rather than DELETE. Best-effort: errors here
-                // fall back to zero so the daemon never panics from a
-                // diagnostic query.
-                let count_progress: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM playback_progress WHERE sampled_at_ms < ?",
-                )
-                .bind(cutoffs.progress_ms)
-                .fetch_one(state.store().reader())
-                .await
-                .unwrap_or(0);
-                let count_events = match AnalyticsStore::open_default().await {
-                    Ok(store) => store
-                        .count_events_older_than(cutoffs.events_ms)
-                        .await
-                        .unwrap_or(0),
-                    Err(_) => 0,
-                };
-                let count_ops: i64 =
-                    sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE occurred_at_ms < ?")
-                        .bind(cutoffs.operations_ms)
-                        .fetch_one(state.store().reader())
-                        .await
-                        .unwrap_or(0);
-                return Ok(ResponseData::AnalyticsPruneReport {
-                    rows_pruned: count_progress.max(0) as u64
-                        + count_events
-                        + count_ops.max(0) as u64,
-                    dry_run: true,
-                });
-            }
-
-            let pruned_progress = state
-                .store()
-                .prune_playback_progress(cutoffs.progress_ms)
-                .await
-                .unwrap_or(0);
-            let pruned_events = match AnalyticsStore::open_default().await {
-                Ok(store) => store
-                    .prune_events_older_than(cutoffs.events_ms)
-                    .await
-                    .unwrap_or(0),
-                Err(_) => 0,
-            };
-            let pruned_ops = state
-                .store()
-                .prune_operations_older_than(cutoffs.operations_ms)
-                .await
-                .unwrap_or(0);
-            Ok(ResponseData::AnalyticsPruneReport {
-                rows_pruned: pruned_progress + pruned_events + pruned_ops,
-                dry_run: false,
-            })
-        }
-        Request::OpsLog {
-            limit,
-            since_ms,
-            source,
-        } => Ok(ResponseData::Operations {
-            ops: state
-                .store()
-                .list_operations(limit, since_ms, source)
-                .await?,
-        }),
-        Request::OpsShow {
-            operation_id,
-            with_diff,
-        } => {
-            let op = state.store().get_operation(operation_id).await?;
-            let diff = if with_diff {
-                op.reversal_plan
-                    .as_ref()
-                    .zip(op.pre_state.as_ref())
-                    .map(|(plan, pre)| crate::undo::render_plan_summary(plan, pre))
-            } else {
-                None
-            };
-            Ok(ResponseData::OperationDetail { op, diff })
-        }
-        Request::OpsUndo {
-            operation_id,
-            dry_run,
-            force,
-            bulk_since_ms,
-        } => {
-            let _mutation_guard = match mutation_lane {
-                Some(lane) => Some(lane.lock_owned().await),
-                None => None,
-            };
-            handle_ops_undo(
-                &state,
-                operation_id,
-                operation_source,
-                dry_run,
-                force,
-                bulk_since_ms,
-            )
-            .await
-        }
-        Request::OpsRedo { operation_id } => {
-            let _mutation_guard = match mutation_lane {
-                Some(lane) => Some(lane.lock_owned().await),
-                None => None,
-            };
-            handle_ops_redo(&state, operation_id, operation_source).await
-        }
-
-        // --- Phase 13 — QoL / spec-compliance handlers ---
-        Request::Reload => match spotuify_spotify::config::Config::load() {
-            Ok(config) => {
-                state.apply_runtime_config(&config).await;
-                state.emit_event(DaemonEvent::ConfigReloaded);
-                Ok(ResponseData::Ack {
-                    message: "config reloaded; runtime viz settings applied".to_string(),
-                })
-            }
-            Err(err) => anyhow::bail!("reload failed: {err}"),
-        },
-        Request::Reconnect => {
-            tracing::info!("daemon reconnect requested");
-            let device_name = DaemonState::configured_device_name();
-            state.reconnect_player(&device_name).await?;
-            state.emit_event(DaemonEvent::ConfigReloaded);
-            Ok(ResponseData::Ack {
-                message: "player backend reconnected".to_string(),
-            })
-        }
-        Request::ReloadAuth => {
-            tracing::info!("daemon reload-auth requested");
-            state.reload_auth().await;
-            Ok(ResponseData::Ack {
-                message: "auth reloaded".to_string(),
-            })
-        }
-        Request::WebApiToken { force } => Ok(ResponseData::WebApiToken {
-            token: state.web_api_bearer(force).await,
-        }),
-        Request::CheckUpdate { force } => {
-            let current = crate::update::current_version().to_string();
-            let now = now_ms();
-            // Six-hour freshness window mirrors the background loop's cadence.
-            let stale = state
-                .cached_release()
-                .map(|r| now - r.checked_at_ms > 6 * 3_600_000)
-                .unwrap_or(true);
-            if force {
-                // Block on a fresh check so `update --force` reflects reality.
-                crate::server::run_update_check_once(&state).await;
-            } else if stale {
-                // Warm the cache in the background; return whatever we have now.
-                let bg = state.clone();
-                state.spawn_background("update-check", async move {
-                    crate::server::run_update_check_once(&bg).await;
-                });
-            }
-            let cached = state.cached_release();
-            let latest_version = cached.as_ref().map(|r| r.latest_version.clone());
-            let release_url = cached.as_ref().and_then(|r| r.release_url.clone());
-            let checked_at_ms = cached.as_ref().map(|r| r.checked_at_ms);
-            let update_available = latest_version
-                .as_deref()
-                .map(|latest| crate::update::is_newer(&current, latest))
-                .unwrap_or(false);
-            let method = crate::update::detect_upgrade_method(&crate::update::current_exe_path());
-            let upgrade = crate::update::upgrade_hint(
-                method,
-                latest_version.as_deref().unwrap_or(&current),
-                release_url.as_deref(),
-            );
-            Ok(ResponseData::UpdateStatus {
-                update_available,
-                current_version: current,
-                latest_version,
-                release_url,
-                upgrade,
-                checked_at_ms,
-            })
-        }
-        Request::SearchCachePrune { older_than_ms } => {
-            let cutoff = older_than_ms.unwrap_or_else(|| now_ms() - 30 * 86_400_000);
-            let pruned_runs = state
-                .store()
-                .prune_search_runs_older_than(cutoff)
-                .await
-                .unwrap_or(0);
-            Ok(ResponseData::SearchCachePruned {
-                pruned_runs,
-                pruned_results: 0,
-            })
-        }
-        Request::SetVizEnabled { enabled } => {
-            state.viz_coordinator().set_enabled(enabled).await;
-            Ok(ResponseData::Ack {
-                message: format!(
-                    "visualization {}",
-                    if enabled { "enabled" } else { "disabled" }
-                ),
-            })
-        }
-        Request::SetVizSource { kind } => {
-            state.viz_coordinator().set_source(kind).await;
-            Ok(ResponseData::Ack {
-                message: format!("visualization source set to {}", kind.as_str()),
-            })
-        }
-        Request::GetVizStatus => Ok(ResponseData::VizStatus {
-            diagnostics: state.viz_coordinator().diagnostics().await,
-        }),
-        Request::SetVizFocus { focused } => {
-            state.viz_coordinator().set_focused(focused).await;
-            Ok(ResponseData::Ack {
-                message: format!("viz focus = {focused}"),
-            })
+        crate::handlers::Cat::Viz => crate::handlers::viz::dispatch(state, request, source).await,
+        crate::handlers::Cat::Media => {
+            crate::handlers::media::dispatch(state, request, source).await
         }
     }
 }
 
-async fn handle_ops_undo(
+pub(crate) async fn handle_ops_undo(
     state: &std::sync::Arc<DaemonState>,
     operation_id: Option<spotuify_protocol::OperationId>,
     source: OperationSource,
@@ -1985,7 +163,7 @@ async fn handle_ops_undo(
     })
 }
 
-async fn undo_single(
+pub(crate) async fn undo_single(
     state: &std::sync::Arc<DaemonState>,
     op: &spotuify_protocol::Operation,
     undo_op_id: OperationId,
@@ -2056,7 +234,7 @@ async fn undo_single(
     Ok(true)
 }
 
-async fn apply_reversal(
+pub(crate) async fn apply_reversal(
     state: &std::sync::Arc<DaemonState>,
     plan: &spotuify_protocol::ReversalPlan,
 ) -> anyhow::Result<()> {
@@ -2158,7 +336,7 @@ async fn apply_reversal(
     }
 }
 
-async fn handle_ops_redo(
+pub(crate) async fn handle_ops_redo(
     state: &std::sync::Arc<DaemonState>,
     operation_id: Option<spotuify_protocol::OperationId>,
     source: OperationSource,
@@ -2232,7 +410,7 @@ async fn handle_ops_redo(
     })
 }
 
-async fn lyrics_get(
+pub(crate) async fn lyrics_get(
     state: Arc<DaemonState>,
     track_uri: Option<String>,
     force_refresh: bool,
@@ -2274,7 +452,7 @@ async fn lyrics_get(
     })
 }
 
-async fn resolve_lyrics_target(
+pub(crate) async fn resolve_lyrics_target(
     state: &Arc<DaemonState>,
     track_uri: Option<String>,
 ) -> anyhow::Result<Option<(String, Option<MediaItem>)>> {
@@ -2311,7 +489,7 @@ async fn resolve_lyrics_target(
     Ok(playback.item.map(|item| (item.uri.clone(), Some(item))))
 }
 
-async fn fetch_lyrics(
+pub(crate) async fn fetch_lyrics(
     state: &Arc<DaemonState>,
     track_uri: &str,
     item: Option<&MediaItem>,
@@ -2360,9 +538,9 @@ async fn fetch_lyrics(
 /// instead of "search failed: 404 Not Found". The local path doesn't
 /// have this constraint, but we apply the same cap so behaviour is
 /// consistent regardless of source.
-const MAX_SEARCH_QUERY_CHARS: usize = 144;
+pub(crate) const MAX_SEARCH_QUERY_CHARS: usize = 144;
 
-async fn search_with_source(
+pub(crate) async fn search_with_source(
     state: Arc<DaemonState>,
     query: String,
     scope: SearchScopeData,
@@ -2424,7 +602,7 @@ async fn search_with_source(
 
 /// Order search results in place. `Relevance` (and `None`) preserves Spotify's
 /// own ordering; the others use a stable sort so ties keep relevance order.
-fn apply_search_sort(items: &mut [MediaItem], sort: Option<SearchSortData>) {
+pub(crate) fn apply_search_sort(items: &mut [MediaItem], sort: Option<SearchSortData>) {
     match sort {
         None | Some(SearchSortData::Relevance) => {}
         Some(SearchSortData::Name) => items.sort_by_key(|item| item.name.to_lowercase()),
@@ -2440,19 +618,19 @@ fn apply_search_sort(items: &mut [MediaItem], sort: Option<SearchSortData>) {
 
 /// How many followed shows the episode feed fans out over (newest-first shows
 /// from the cache). Bounds the GitHub-of-podcasts blast radius.
-const EPISODE_FEED_SHOW_CAP: u32 = 40;
+pub(crate) const EPISODE_FEED_SHOW_CAP: u32 = 40;
 /// First N episodes pulled per show (Spotify returns them newest-first).
-const EPISODE_FEED_PER_SHOW: u8 = 8;
+pub(crate) const EPISODE_FEED_PER_SHOW: u8 = 8;
 /// Max concurrent `show-episodes` fetches.
-const EPISODE_FEED_CONCURRENCY: usize = 8;
+pub(crate) const EPISODE_FEED_CONCURRENCY: usize = 8;
 /// How long a merged feed stays fresh before a re-fetch.
-const EPISODE_FEED_TTL_MS: i64 = 15 * 60_000;
+pub(crate) const EPISODE_FEED_TTL_MS: i64 = 15 * 60_000;
 
 /// A flat, date-ordered episode feed merged across all followed shows. Fans out
 /// `show_episodes` over the saved shows (bounded concurrency), merges, caches
 /// the raw merged set (sort + limit applied per call), and re-fetches when the
 /// cache is older than [`EPISODE_FEED_TTL_MS`] or `refresh` is set.
-async fn episode_feed(
+pub(crate) async fn episode_feed(
     state: &Arc<DaemonState>,
     limit: u32,
     sort: EpisodeSort,
@@ -2531,7 +709,7 @@ async fn episode_feed(
 }
 
 /// Sort + cap a merged episode list for a given [`EpisodeSort`].
-fn finalize_episode_feed(
+pub(crate) fn finalize_episode_feed(
     mut items: Vec<MediaItem>,
     sort: EpisodeSort,
     limit: u32,
@@ -2550,7 +728,7 @@ fn finalize_episode_feed(
     items
 }
 
-async fn local_cached_search(
+pub(crate) async fn local_cached_search(
     state: &DaemonState,
     query: &str,
     scope: SearchScopeData,
@@ -2571,7 +749,7 @@ async fn local_cached_search(
     state.store().local_search(query, scope, limit).await
 }
 
-async fn spotify_search_and_cache(
+pub(crate) async fn spotify_search_and_cache(
     state: Arc<DaemonState>,
     query: String,
     scope: SearchScopeData,
@@ -2650,10 +828,10 @@ async fn spotify_search_and_cache(
 /// for `scope=All` that's 6 total requests). More pages load on scroll.
 /// The fanout is detached from the request handler so the IPC reply is
 /// not blocked.
-const SEARCH_INITIAL_PAGES: u32 = 1;
-const SEARCH_PAGE_SIZE: u32 = 10;
+pub(crate) const SEARCH_INITIAL_PAGES: u32 = 1;
+pub(crate) const SEARCH_PAGE_SIZE: u32 = 10;
 
-fn spawn_search_stream(
+pub(crate) fn spawn_search_stream(
     state: Arc<DaemonState>,
     query: String,
     scope: SearchScopeData,
@@ -2735,7 +913,7 @@ fn spawn_search_stream(
     });
 }
 
-fn spawn_search_page(
+pub(crate) fn spawn_search_page(
     state: Arc<DaemonState>,
     query: String,
     kind: MediaKind,
@@ -2761,7 +939,7 @@ fn spawn_search_page(
     });
 }
 
-async fn fetch_and_emit_page(
+pub(crate) async fn fetch_and_emit_page(
     state: Arc<DaemonState>,
     query: String,
     kind: MediaKind,
@@ -2854,7 +1032,7 @@ async fn fetch_and_emit_page(
     }
 }
 
-fn group_items_by_kind(items: Vec<MediaItem>) -> Vec<(MediaKind, Vec<MediaItem>)> {
+pub(crate) fn group_items_by_kind(items: Vec<MediaItem>) -> Vec<(MediaKind, Vec<MediaItem>)> {
     let mut buckets: Vec<(MediaKind, Vec<MediaItem>)> = Vec::new();
     for item in items {
         let kind = item.kind.clone();
@@ -2868,7 +1046,7 @@ fn group_items_by_kind(items: Vec<MediaItem>) -> Vec<(MediaKind, Vec<MediaItem>)
 }
 
 #[cfg(test)]
-async fn queueable_uris_for_selection(
+pub(crate) async fn queueable_uris_for_selection(
     client: &mut SpotifyClient,
     uri: &str,
 ) -> anyhow::Result<Vec<String>> {
@@ -2876,7 +1054,7 @@ async fn queueable_uris_for_selection(
     Ok(items.into_iter().map(|item| item.uri).collect())
 }
 
-async fn queueable_items_for_selection(
+pub(crate) async fn queueable_items_for_selection(
     state: &DaemonState,
     client: &mut SpotifyClient,
     uri: &str,
@@ -2890,7 +1068,7 @@ async fn queueable_items_for_selection(
     Ok(items)
 }
 
-async fn queueable_items_for_selection_without_cache(
+pub(crate) async fn queueable_items_for_selection_without_cache(
     client: &mut SpotifyClient,
     uri: &str,
 ) -> anyhow::Result<Vec<MediaItem>> {
@@ -2918,7 +1096,7 @@ async fn queueable_items_for_selection_without_cache(
     }
 }
 
-fn idle_context_start_label(kind: &MediaKind) -> Option<&'static str> {
+pub(crate) fn idle_context_start_label(kind: &MediaKind) -> Option<&'static str> {
     match kind {
         MediaKind::Album => Some("album"),
         MediaKind::Playlist => Some("playlist"),
@@ -2926,7 +1104,7 @@ fn idle_context_start_label(kind: &MediaKind) -> Option<&'static str> {
     }
 }
 
-async fn optimistic_queue_with_appends(
+pub(crate) async fn optimistic_queue_with_appends(
     state: &DaemonState,
     queued_items: Vec<MediaItem>,
 ) -> Option<spotuify_core::Queue> {
@@ -2953,7 +1131,7 @@ async fn optimistic_queue_with_appends(
     Some(queue_with_appended_items(base, queued_items, as_of_ms))
 }
 
-async fn context_queue_snapshot_for_play_uri(
+pub(crate) async fn context_queue_snapshot_for_play_uri(
     state: &DaemonState,
     uri: &str,
 ) -> Option<spotuify_core::Queue> {
@@ -2978,7 +1156,7 @@ async fn context_queue_snapshot_for_play_uri(
     queue_for_started_context(items, now_ms())
 }
 
-fn queue_for_started_context(
+pub(crate) fn queue_for_started_context(
     mut context_items: Vec<MediaItem>,
     as_of_ms: i64,
 ) -> Option<spotuify_core::Queue> {
@@ -2995,7 +1173,7 @@ fn queue_for_started_context(
     })
 }
 
-fn queue_with_appended_items(
+pub(crate) fn queue_with_appended_items(
     mut queue: spotuify_core::Queue,
     queued_items: Vec<MediaItem>,
     as_of_ms: i64,
@@ -3006,7 +1184,7 @@ fn queue_with_appended_items(
     queue
 }
 
-fn scope_media_kinds(scope: SearchScopeData) -> Vec<MediaKind> {
+pub(crate) fn scope_media_kinds(scope: SearchScopeData) -> Vec<MediaKind> {
     match scope {
         SearchScopeData::All => vec![
             MediaKind::Track,
@@ -3025,7 +1203,10 @@ fn scope_media_kinds(scope: SearchScopeData) -> Vec<MediaKind> {
     }
 }
 
-async fn cache_playback(state: &DaemonState, playback: &spotuify_spotify::client::Playback) {
+pub(crate) async fn cache_playback(
+    state: &DaemonState,
+    playback: &spotuify_spotify::client::Playback,
+) {
     if let Err(err) = state.store().persist_playback(playback).await {
         tracing::warn!(error = %err, "failed to cache playback snapshot");
     }
@@ -3039,7 +1220,7 @@ async fn cache_playback(state: &DaemonState, playback: &spotuify_spotify::client
 /// stale. The caller uses the return to decide whether to broadcast
 /// a `PlaybackChanged` event — there's no point notifying clients to
 /// re-fetch if we threw the result away.
-async fn cache_playback_if_fresh(
+pub(crate) async fn cache_playback_if_fresh(
     state: &DaemonState,
     playback: &spotuify_spotify::client::Playback,
     captured_seq: u64,
@@ -3052,7 +1233,7 @@ async fn cache_playback_if_fresh(
     true
 }
 
-async fn skip_refresh_due_to_rate_limit(
+pub(crate) async fn skip_refresh_due_to_rate_limit(
     state: &DaemonState,
     domain: &str,
     refresh: &'static str,
@@ -3080,7 +1261,7 @@ async fn skip_refresh_due_to_rate_limit(
     }
 }
 
-fn spawn_playback_refresh(state: Arc<DaemonState>) {
+pub(crate) fn spawn_playback_refresh(state: Arc<DaemonState>) {
     let task_state = state.clone();
     let captured_seq = state.current_mutation_seq();
     state.spawn_background("playback-refresh", async move {
@@ -3174,7 +1355,7 @@ fn spawn_playback_refresh(state: Arc<DaemonState>) {
     });
 }
 
-async fn cache_queue(state: &DaemonState, queue: &spotuify_spotify::client::Queue) {
+pub(crate) async fn cache_queue(state: &DaemonState, queue: &spotuify_spotify::client::Queue) {
     if let Err(err) = state.store().persist_queue(queue).await {
         tracing::warn!(error = %err, "failed to cache queue");
     }
@@ -3186,7 +1367,7 @@ async fn cache_queue(state: &DaemonState, queue: &spotuify_spotify::client::Queu
 /// is structurally empty (`currently_playing: None`, `items: []`) — in
 /// that case we deliberately skip the store write so history remains
 /// recoverable, but clients receive an empty non-actionable live queue.
-async fn cache_queue_if_fresh(
+pub(crate) async fn cache_queue_if_fresh(
     state: &DaemonState,
     queue: &spotuify_spotify::client::Queue,
     captured_seq: u64,
@@ -3204,7 +1385,7 @@ async fn cache_queue_if_fresh(
     Some(queue)
 }
 
-fn spawn_queue_refresh(state: Arc<DaemonState>) {
+pub(crate) fn spawn_queue_refresh(state: Arc<DaemonState>) {
     let task_state = state.clone();
     let captured_seq = state.current_mutation_seq();
     state.spawn_background("queue-refresh", async move {
@@ -3263,7 +1444,10 @@ fn spawn_queue_refresh(state: Arc<DaemonState>) {
     });
 }
 
-async fn cache_devices(state: &DaemonState, devices: &[spotuify_spotify::client::Device]) {
+pub(crate) async fn cache_devices(
+    state: &DaemonState,
+    devices: &[spotuify_spotify::client::Device],
+) {
     // Full-refresh path: this is the entire `/v1/me/player/devices`
     // snapshot, so call `replace_devices` to prune any cached row
     // Spotify didn't return. Drops stale "spotuify" namesakes left
@@ -3274,7 +1458,7 @@ async fn cache_devices(state: &DaemonState, devices: &[spotuify_spotify::client:
     }
 }
 
-async fn cached_devices_with_own_device(
+pub(crate) async fn cached_devices_with_own_device(
     state: &DaemonState,
 ) -> anyhow::Result<Vec<spotuify_core::Device>> {
     let mut devices = state.store().list_devices().await?;
@@ -3287,7 +1471,7 @@ async fn cached_devices_with_own_device(
     Ok(devices)
 }
 
-async fn cache_devices_if_fresh(
+pub(crate) async fn cache_devices_if_fresh(
     state: &DaemonState,
     devices: &[spotuify_spotify::client::Device],
     captured_seq: u64,
@@ -3309,7 +1493,7 @@ async fn cache_devices_if_fresh(
 /// follow-up mutation that bumps the seq won't be clobbered by our
 /// older response. Returns the set of state classes that were persisted
 /// (for span fields); empty when nothing applied.
-async fn persist_command_result(
+pub(crate) async fn persist_command_result(
     state: &DaemonState,
     captured_seq: u64,
     result: &spotuify_spotify::actions::CommandResult,
@@ -3373,25 +1557,28 @@ async fn persist_command_result(
 }
 
 #[derive(Debug, Default, Clone)]
-struct CommandResultPersistOutcome {
-    playback: Option<PostCommandPlayback>,
-    queue_items: Option<usize>,
-    devices: Option<usize>,
+pub(crate) struct CommandResultPersistOutcome {
+    pub(crate) playback: Option<PostCommandPlayback>,
+    pub(crate) queue_items: Option<usize>,
+    pub(crate) devices: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
-struct PostCommandPlayback {
-    is_playing: bool,
-    uri: Option<String>,
+pub(crate) struct PostCommandPlayback {
+    pub(crate) is_playing: bool,
+    pub(crate) uri: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
-struct ExpectedPlayback {
-    uri: Option<String>,
-    is_playing: Option<bool>,
+pub(crate) struct ExpectedPlayback {
+    pub(crate) uri: Option<String>,
+    pub(crate) is_playing: Option<bool>,
 }
 
-fn post_command_playback_matches(playback: &Playback, expected: Option<&ExpectedPlayback>) -> bool {
+pub(crate) fn post_command_playback_matches(
+    playback: &Playback,
+    expected: Option<&ExpectedPlayback>,
+) -> bool {
     let Some(expected) = expected else {
         return true;
     };
@@ -3409,11 +1596,11 @@ fn post_command_playback_matches(playback: &Playback, expected: Option<&Expected
     true
 }
 
-fn playback_has_live_signal(playback: &Playback) -> bool {
+pub(crate) fn playback_has_live_signal(playback: &Playback) -> bool {
     playback.item.is_some() || playback.device.is_some() || playback.is_playing
 }
 
-fn spawn_devices_refresh(state: Arc<DaemonState>) {
+pub(crate) fn spawn_devices_refresh(state: Arc<DaemonState>) {
     let task_state = state.clone();
     let captured_seq = state.current_mutation_seq();
     state.spawn_background("devices-refresh", async move {
@@ -3461,13 +1648,13 @@ fn spawn_devices_refresh(state: Arc<DaemonState>) {
     });
 }
 
-async fn cache_recent_items(state: &DaemonState, items: &[MediaItem]) {
+pub(crate) async fn cache_recent_items(state: &DaemonState, items: &[MediaItem]) {
     if let Err(err) = state.store().persist_recent_items(items).await {
         tracing::warn!(error = %err, "failed to cache recent items");
     }
 }
 
-fn spawn_recent_refresh(state: Arc<DaemonState>) {
+pub(crate) fn spawn_recent_refresh(state: Arc<DaemonState>) {
     let task_state = state.clone();
     state.spawn_background("recent-refresh", async move {
         if skip_refresh_due_to_rate_limit(&task_state, "recent", "recent-refresh").await {
@@ -3497,13 +1684,16 @@ fn spawn_recent_refresh(state: Arc<DaemonState>) {
     });
 }
 
-async fn cache_playlists(state: &DaemonState, playlists: &[spotuify_spotify::client::Playlist]) {
+pub(crate) async fn cache_playlists(
+    state: &DaemonState,
+    playlists: &[spotuify_spotify::client::Playlist],
+) {
     if let Err(err) = state.store().persist_playlists(playlists).await {
         tracing::warn!(error = %err, "failed to cache playlists");
     }
 }
 
-fn spawn_playlists_refresh(state: Arc<DaemonState>) {
+pub(crate) fn spawn_playlists_refresh(state: Arc<DaemonState>) {
     let task_state = state.clone();
     state.spawn_background("playlists-refresh", async move {
         if skip_refresh_due_to_rate_limit(&task_state, "playlists", "playlists-refresh").await {
@@ -3527,7 +1717,11 @@ fn spawn_playlists_refresh(state: Arc<DaemonState>) {
     });
 }
 
-async fn cache_playlist_items(state: &DaemonState, playlist_id: &str, items: &[MediaItem]) {
+pub(crate) async fn cache_playlist_items(
+    state: &DaemonState,
+    playlist_id: &str,
+    items: &[MediaItem],
+) {
     if let Err(err) = state
         .store()
         .persist_playlist_items(playlist_id, items)
@@ -3537,7 +1731,7 @@ async fn cache_playlist_items(state: &DaemonState, playlist_id: &str, items: &[M
     }
 }
 
-fn spawn_playlist_tracks_refresh(state: Arc<DaemonState>, playlist_id: String) {
+pub(crate) fn spawn_playlist_tracks_refresh(state: Arc<DaemonState>, playlist_id: String) {
     let task_state = state.clone();
     let playlist_for_event = playlist_id.clone();
     state.spawn_background("playlist-tracks-refresh", async move {
@@ -3575,7 +1769,7 @@ fn spawn_playlist_tracks_refresh(state: Arc<DaemonState>, playlist_id: String) {
     });
 }
 
-fn expected_playback_after_command(
+pub(crate) fn expected_playback_after_command(
     command: &PlaybackCommand,
     predicted: Option<&Playback>,
 ) -> Option<ExpectedPlayback> {
@@ -3623,7 +1817,7 @@ fn expected_playback_after_command(
     }
 }
 
-fn playback_command_kind(command: PlaybackCommand) -> CommandKind {
+pub(crate) fn playback_command_kind(command: PlaybackCommand) -> CommandKind {
     match command {
         PlaybackCommand::Pause => CommandKind::Pause,
         PlaybackCommand::Resume => CommandKind::Resume,
@@ -3644,7 +1838,7 @@ fn playback_command_kind(command: PlaybackCommand) -> CommandKind {
     }
 }
 
-fn playback_command_action(command: &PlaybackCommand) -> &'static str {
+pub(crate) fn playback_command_action(command: &PlaybackCommand) -> &'static str {
     match command {
         PlaybackCommand::Pause => "pause",
         PlaybackCommand::Resume => "resume",
@@ -3660,7 +1854,7 @@ fn playback_command_action(command: &PlaybackCommand) -> &'static str {
     }
 }
 
-fn playback_command_viz_state(command: &PlaybackCommand) -> Option<bool> {
+pub(crate) fn playback_command_viz_state(command: &PlaybackCommand) -> Option<bool> {
     match command {
         PlaybackCommand::Pause => Some(false),
         PlaybackCommand::Resume | PlaybackCommand::PlayUri { .. } => Some(true),
@@ -3668,7 +1862,7 @@ fn playback_command_viz_state(command: &PlaybackCommand) -> Option<bool> {
     }
 }
 
-fn playback_command_operation_kind(command: &PlaybackCommand) -> OperationKind {
+pub(crate) fn playback_command_operation_kind(command: &PlaybackCommand) -> OperationKind {
     match command {
         PlaybackCommand::Pause => OperationKind::Pause,
         PlaybackCommand::Resume => OperationKind::Resume,
@@ -3683,14 +1877,14 @@ fn playback_command_operation_kind(command: &PlaybackCommand) -> OperationKind {
     }
 }
 
-fn emit_mutation_finished(state: &DaemonState, action: &str, message: &str) {
+pub(crate) fn emit_mutation_finished(state: &DaemonState, action: &str, message: &str) {
     state.emit_event(DaemonEvent::MutationFinished {
         action: action.to_string(),
         message: message.to_string(),
     });
 }
 
-fn reject_if_auth_blocked(state: &DaemonState) -> anyhow::Result<()> {
+pub(crate) fn reject_if_auth_blocked(state: &DaemonState) -> anyhow::Result<()> {
     if let Some(err) = state.auth_gate_error() {
         return Err(anyhow::Error::new(err));
     }
@@ -3711,7 +1905,7 @@ fn reject_if_auth_blocked(state: &DaemonState) -> anyhow::Result<()> {
 /// is actually playing (`current_uri`). A mismatch means the cache is
 /// historical (a dead session), so we return `None` and skip the prediction
 /// rather than flash a stale title.
-fn optimistic_next_from_queue(
+pub(crate) fn optimistic_next_from_queue(
     queue: &spotuify_core::Queue,
     current_uri: &str,
 ) -> Option<spotuify_core::MediaItem> {
@@ -3725,7 +1919,7 @@ fn optimistic_next_from_queue(
     queue.items.first().cloned()
 }
 
-async fn compute_optimistic_playback(
+pub(crate) async fn compute_optimistic_playback(
     state: &DaemonState,
     command: &PlaybackCommand,
 ) -> Option<spotuify_core::Playback> {
@@ -3842,7 +2036,7 @@ async fn compute_optimistic_playback(
     Some(predicted)
 }
 
-fn playback_has_active_device(playback: &spotuify_core::Playback) -> bool {
+pub(crate) fn playback_has_active_device(playback: &spotuify_core::Playback) -> bool {
     playback
         .device
         .as_ref()
@@ -3854,7 +2048,7 @@ fn playback_has_active_device(playback: &spotuify_core::Playback) -> bool {
 /// title / artist / image_url immediately, before Spotify's playback
 /// state catches up. Returns `None` when the URI isn't in any cache —
 /// the caller falls back to a stub.
-async fn lookup_known_media_item(
+pub(crate) async fn lookup_known_media_item(
     state: &DaemonState,
     uri: &str,
 ) -> Option<spotuify_core::MediaItem> {
@@ -3877,7 +2071,7 @@ async fn lookup_known_media_item(
 /// front; reversible mutations (playlist_add, transfer, library_save)
 /// fill in real pre-state inside the body.
 #[allow(clippy::too_many_arguments)]
-async fn record_operation<F, Fut, T>(
+pub(crate) async fn record_operation<F, Fut, T>(
     state: &std::sync::Arc<DaemonState>,
     kind: OperationKind,
     source: OperationSource,
@@ -4049,7 +2243,7 @@ where
 /// + receipt recovery keep working unchanged. The only difference is
 ///   *when* the response returns: optimistic, before the body runs.
 #[allow(clippy::too_many_arguments)]
-async fn spawn_optimistic_mutation<F, Fut>(
+pub(crate) async fn spawn_optimistic_mutation<F, Fut>(
     state: &Arc<DaemonState>,
     kind: OperationKind,
     source: OperationSource,
@@ -4232,7 +2426,7 @@ where
 /// lists any devices Spotify *does* know about, with the actionable
 /// next step (`spotuify devices transfer <name>` or open the Spotify
 /// app).
-async fn execute_with_device_recovery(
+pub(crate) async fn execute_with_device_recovery(
     state: &Arc<DaemonState>,
     client: &mut spotuify_spotify::SpotifyClient,
     command: CommandKind,
@@ -4293,7 +2487,7 @@ async fn execute_with_device_recovery(
     }
 }
 
-async fn try_embedded_transport(
+pub(crate) async fn try_embedded_transport(
     state: &Arc<DaemonState>,
     command: &CommandKind,
 ) -> Option<spotuify_spotify::actions::CommandResult> {
@@ -4358,7 +2552,7 @@ async fn try_embedded_transport(
     None
 }
 
-fn local_transport_playback_snapshot(
+pub(crate) fn local_transport_playback_snapshot(
     state: &DaemonState,
     command: &CommandKind,
 ) -> Option<Playback> {
@@ -4407,7 +2601,7 @@ fn local_transport_playback_snapshot(
     Some(playback)
 }
 
-async fn apply_fast_transport(
+pub(crate) async fn apply_fast_transport(
     state: &Arc<DaemonState>,
     cmd: crate::state::TransportCmd,
     effective_command: &CommandKind,
@@ -4443,7 +2637,7 @@ async fn apply_fast_transport(
 /// reported success that didn't hold, so bump the mutation seq and
 /// refresh playback to overwrite the stale optimistic snapshot with
 /// authoritative state.
-fn spawn_fast_transport_ack_watcher(
+pub(crate) fn spawn_fast_transport_ack_watcher(
     state: Arc<DaemonState>,
     ack: tokio::sync::oneshot::Receiver<spotuify_player::PlayerResult<()>>,
     action: String,
@@ -4463,7 +2657,7 @@ fn spawn_fast_transport_ack_watcher(
     });
 }
 
-fn local_transport_command_result(
+pub(crate) fn local_transport_command_result(
     state: &DaemonState,
     effective_command: &CommandKind,
 ) -> spotuify_spotify::actions::CommandResult {
@@ -4474,7 +2668,7 @@ fn local_transport_command_result(
     }
 }
 
-async fn wait_for_preferred_device(client: &mut SpotifyClient) -> bool {
+pub(crate) async fn wait_for_preferred_device(client: &mut SpotifyClient) -> bool {
     let started = Instant::now();
     loop {
         match actions::devices(client).await {
@@ -4496,7 +2690,7 @@ async fn wait_for_preferred_device(client: &mut SpotifyClient) -> bool {
     }
 }
 
-fn transport_cmd_for_command_kind(
+pub(crate) fn transport_cmd_for_command_kind(
     kind: &CommandKind,
     playback: &Playback,
 ) -> Option<(crate::state::TransportCmd, CommandKind)> {
@@ -4580,14 +2774,14 @@ fn transport_cmd_for_command_kind(
     }
 }
 
-fn playback_can_resume_locally(playback: &Playback) -> bool {
+pub(crate) fn playback_can_resume_locally(playback: &Playback) -> bool {
     let Some(item) = playback.item.as_ref() else {
         return false;
     };
     item.duration_ms == 0 || playback.progress_ms.saturating_add(750) < item.duration_ms
 }
 
-fn is_no_active_device_error(err: &spotuify_spotify::SpotifyError) -> bool {
+pub(crate) fn is_no_active_device_error(err: &spotuify_spotify::SpotifyError) -> bool {
     use spotuify_spotify::SpotifyError;
     match err {
         SpotifyError::Api {
@@ -4620,7 +2814,7 @@ fn is_no_active_device_error(err: &spotuify_spotify::SpotifyError) -> bool {
 /// Outcome of a single queue-add attempt. `NoActiveDevice` is Spotify's
 /// idle-session 404 surfaced as a value (not an error) so the caller can
 /// recover by starting playback rather than failing the whole operation.
-enum QueueAttempt {
+pub(crate) enum QueueAttempt {
     Queued,
     NoActiveDevice,
 }
@@ -4628,7 +2822,7 @@ enum QueueAttempt {
 /// One queue-add: embedded Spirc first (instant), Web API fallback when
 /// librespot 0.8.0 can't originate it. Maps Spotify's "no active device"
 /// 404 to [`QueueAttempt::NoActiveDevice`]; all other failures are errors.
-async fn queue_one(
+pub(crate) async fn queue_one(
     state: &DaemonState,
     client: &mut SpotifyClient,
     uri: &str,
@@ -4653,7 +2847,7 @@ async fn queue_one(
     }
 }
 
-fn is_playlist_tracks_forbidden(err: &spotuify_spotify::SpotifyError) -> bool {
+pub(crate) fn is_playlist_tracks_forbidden(err: &spotuify_spotify::SpotifyError) -> bool {
     matches!(
         err,
         spotuify_spotify::SpotifyError::Api {
@@ -4664,7 +2858,7 @@ fn is_playlist_tracks_forbidden(err: &spotuify_spotify::SpotifyError) -> bool {
     )
 }
 
-fn is_recoverable_device_error(err: &spotuify_spotify::SpotifyError) -> bool {
+pub(crate) fn is_recoverable_device_error(err: &spotuify_spotify::SpotifyError) -> bool {
     if is_no_active_device_error(err) {
         return true;
     }
@@ -4675,7 +2869,7 @@ fn is_recoverable_device_error(err: &spotuify_spotify::SpotifyError) -> bool {
     )
 }
 
-async fn friendly_no_active_device_error(
+pub(crate) async fn friendly_no_active_device_error(
     client: &mut spotuify_spotify::SpotifyClient,
     original: &spotuify_spotify::SpotifyError,
 ) -> anyhow::Error {
@@ -4699,7 +2893,7 @@ async fn friendly_no_active_device_error(
 /// Display snapshot for a reminder: cache-first (media_items), else derive the
 /// kind from the URI with a URI-tail label fallback so a reminder still renders
 /// sensibly even for an item that was never cached.
-async fn resolve_reminder_snapshot(
+pub(crate) async fn resolve_reminder_snapshot(
     state: &DaemonState,
     uri: &str,
 ) -> anyhow::Result<(MediaKind, String, String, Option<String>)> {
@@ -4713,7 +2907,7 @@ async fn resolve_reminder_snapshot(
     Ok((kind, label, String::new(), None))
 }
 
-fn media_item_from_uri(uri: &str) -> anyhow::Result<MediaItem> {
+pub(crate) fn media_item_from_uri(uri: &str) -> anyhow::Result<MediaItem> {
     let kind = selection::media_kind_from_uri(uri)?;
     let id = uri.rsplit(':').next().map(str::to_string);
     Ok(MediaItem {

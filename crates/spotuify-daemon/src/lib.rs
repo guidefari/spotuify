@@ -11,6 +11,7 @@ pub mod analytics;
 pub mod clock;
 pub mod diagnostics;
 pub mod handler;
+mod handlers;
 pub mod hook_executor;
 pub mod logging;
 pub mod player_factory;

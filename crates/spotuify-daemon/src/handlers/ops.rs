@@ -1,0 +1,87 @@
+//! `ops` request handlers (split out of the dispatch god-function).
+
+#![allow(unused_imports)]
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use spotuify_core::{now_ms, search_performed_event, Playback};
+use spotuify_protocol::{
+    CommandReceipt, DaemonEvent, EpisodeSort, Operation, OperationId, OperationKind,
+    OperationSource, OperationStatus, PlaybackCommand, PlaylistCreateReceipt, ReceiptId, Request,
+    Response, ResponseData, SearchScopeData, SearchSortData, SearchSourceData,
+};
+use spotuify_spotify::actions::{self, CommandKind};
+use spotuify_spotify::client::{MediaItem, MediaKind, SpotifyClient};
+use spotuify_spotify::config::Config;
+use spotuify_spotify::selection;
+
+use crate::analytics::AnalyticsStore;
+use crate::handler::*;
+use crate::retention::retention_cutoffs;
+use crate::state::{DaemonState, FastTransportStatus};
+
+pub(crate) async fn dispatch(
+    state: Arc<DaemonState>,
+    request: Request,
+    source: Option<OperationSource>,
+) -> anyhow::Result<ResponseData> {
+    let operation_source = source.unwrap_or(OperationSource::DaemonInternal);
+    let mutation_lane = state.mutation_lane(&request).await;
+    match request {
+        Request::OpsLog {
+            limit,
+            since_ms,
+            source,
+        } => Ok(ResponseData::Operations {
+            ops: state
+                .store()
+                .list_operations(limit, since_ms, source)
+                .await?,
+        }),
+        Request::OpsShow {
+            operation_id,
+            with_diff,
+        } => {
+            let op = state.store().get_operation(operation_id).await?;
+            let diff = if with_diff {
+                op.reversal_plan
+                    .as_ref()
+                    .zip(op.pre_state.as_ref())
+                    .map(|(plan, pre)| crate::undo::render_plan_summary(plan, pre))
+            } else {
+                None
+            };
+            Ok(ResponseData::OperationDetail { op, diff })
+        }
+        Request::OpsUndo {
+            operation_id,
+            dry_run,
+            force,
+            bulk_since_ms,
+        } => {
+            let _mutation_guard = match mutation_lane {
+                Some(lane) => Some(lane.lock_owned().await),
+                None => None,
+            };
+            handle_ops_undo(
+                &state,
+                operation_id,
+                operation_source,
+                dry_run,
+                force,
+                bulk_since_ms,
+            )
+            .await
+        }
+        Request::OpsRedo { operation_id } => {
+            let _mutation_guard = match mutation_lane {
+                Some(lane) => Some(lane.lock_owned().await),
+                None => None,
+            };
+            handle_ops_redo(&state, operation_id, operation_source).await
+        }
+
+        // --- Phase 13 — QoL / spec-compliance handlers ---
+        _ => unreachable!("non-ops request routed to ops dispatcher"),
+    }
+}
