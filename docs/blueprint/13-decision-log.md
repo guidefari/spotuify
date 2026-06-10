@@ -446,3 +446,22 @@ Accepted as-is (with code comments, no change):
   large `ClientSeed` payloads are legitimate, and the socket is local-only 0600.
 - Stale tantivy lock removal is not fsynced: the startup preflight re-runs every
   launch, so a resurrected lock is cleared on the next start.
+
+## D020: Per-request IPC timeouts; dispatch split stays incremental (2026-06-10)
+
+Decision: bound every IPC request at the daemon layer. `guard_ipc_response`
+now wraps each handler in a category-aware `tokio::time::timeout`
+(`DEFAULT_REQUEST_DEADLINE` 30s; `MAINTENANCE_REQUEST_DEADLINE` 600s for
+reindex / sync / analytics-rebuild). A tripped deadline returns the new typed
+`IpcErrorKind::Timeout` (retryable) instead of pinning the connection task
+forever. Protocol bumped additively (new error kind; clients decode it as a
+string with fallback, so no client break).
+
+Decision: the `dispatch` god-function (~1750 lines, 70 arms) is NOT split in
+this pass. The split was scheduled to unlock per-request timeouts, per-request
+tests, and instrumentation — all three now exist without it (the timeout wraps
+the whole handler; `handler::routing_tests` covers the whole dispatch). The
+remaining work is a pure code-move, 57 of 70 arms coupled to the shared
+optimistic-mutation scaffolding, with no behavioral benefit and a large blast
+radius. It stays on the idiomatic backlog, now safer to do arm-by-arm because
+the routing tests guard the request→response mapping.

@@ -720,6 +720,14 @@ async fn guard_ipc_response(
         IpcPayload::Event(_) => ("event", None, None),
     };
 
+    // Bound every request at the daemon layer so a wedged handler
+    // (stuck Spotify call, contended lock, hung provider) returns a
+    // typed Timeout instead of pinning the connection task forever.
+    let deadline = match &payload {
+        IpcPayload::Request(req) => request_deadline(req),
+        _ => DEFAULT_REQUEST_DEADLINE,
+    };
+
     let span = tracing::info_span!(
         target: "spotuify_daemon::ipc",
         "ipc.request",
@@ -737,14 +745,18 @@ async fn guard_ipc_response(
     let response = async move {
         match payload {
             IpcPayload::Request(request) => {
-                match AssertUnwindSafe(handle_request_with_source(state, request, source))
-                    .catch_unwind()
-                    .await
-                {
-                    Ok(response) => response,
-                    Err(_) => {
+                let handler =
+                    AssertUnwindSafe(handle_request_with_source(state, request, source))
+                        .catch_unwind();
+                match tokio::time::timeout(deadline, handler).await {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(_)) => {
                         Response::error_with_kind("IPC handler panicked", IpcErrorKind::Internal)
                     }
+                    Err(_) => Response::error_with_kind(
+                        "request timed out in the daemon",
+                        IpcErrorKind::Timeout,
+                    ),
                 }
             }
             _ => Response::error_with_kind(
@@ -791,6 +803,26 @@ async fn guard_ipc_response(
 /// The daemon's hot-path target is sub-10ms (cache read + clock snapshot);
 /// 250ms is a generous slop for warm caches + a single Spotify call.
 const SLOW_IPC_WARN_MS: u64 = 250;
+
+/// Wall-clock ceiling for a normal request. Well above the warm-cache +
+/// one-Spotify-call path (seconds), so it only ever trips on a genuinely
+/// wedged handler.
+const DEFAULT_REQUEST_DEADLINE: Duration = Duration::from_secs(30);
+/// Maintenance requests that legitimately run for minutes (full library
+/// reindex, sync sweep, analytics rebuild). Still bounded so a hung
+/// indexer can't pin a connection forever.
+const MAINTENANCE_REQUEST_DEADLINE: Duration = Duration::from_secs(600);
+
+/// Per-request wall-clock ceiling. Long-running maintenance gets a
+/// generous cap; everything else is held to the tight default.
+fn request_deadline(req: &Request) -> Duration {
+    match req {
+        Request::Reindex | Request::Sync { .. } | Request::AnalyticsRebuild { .. } => {
+            MAINTENANCE_REQUEST_DEADLINE
+        }
+        _ => DEFAULT_REQUEST_DEADLINE,
+    }
+}
 
 async fn drain_connection_tasks(connections: &mut JoinSet<()>, timeout: Duration) {
     let deadline = tokio::time::Instant::now() + timeout;

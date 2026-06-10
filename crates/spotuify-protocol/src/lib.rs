@@ -896,6 +896,10 @@ pub enum IpcErrorKind {
     Provider,
     RateLimited,
     Unsupported,
+    /// The daemon abandoned the request after its category deadline.
+    /// Retryable: a transient stall (slow Spotify call, contended lock)
+    /// may clear on a second attempt.
+    Timeout,
     #[default]
     Internal,
 }
@@ -910,12 +914,16 @@ impl IpcErrorKind {
             Self::Provider => "provider",
             Self::RateLimited => "rate_limited",
             Self::Unsupported => "unsupported",
+            Self::Timeout => "timeout",
             Self::Internal => "internal",
         }
     }
 
     pub fn is_retryable(self) -> bool {
-        matches!(self, IpcErrorKind::Network | IpcErrorKind::RateLimited)
+        matches!(
+            self,
+            IpcErrorKind::Network | IpcErrorKind::RateLimited | IpcErrorKind::Timeout
+        )
     }
 }
 
