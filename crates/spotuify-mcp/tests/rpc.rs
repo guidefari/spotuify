@@ -225,6 +225,32 @@ fn mercury_tools_are_advertised_as_callable() {
 }
 
 #[test]
+fn resources_subscribe_accepts_known_uri_and_rejects_unknown() {
+    // The capability advertises resources.subscribe:true; the handlers
+    // must exist (no method-not-found) and validate the URI.
+    let ok = dispatch(request(
+        "resources/subscribe",
+        json!({"uri": "spotuify://playback"}),
+        20,
+    ));
+    assert!(ok.error.is_none(), "subscribing a known resource succeeds");
+
+    let bad = dispatch(request(
+        "resources/subscribe",
+        json!({"uri": "spotuify://nope"}),
+        21,
+    ));
+    assert!(bad.error.is_some(), "unknown resource uri is rejected");
+
+    let unsub = dispatch(request(
+        "resources/unsubscribe",
+        json!({"uri": "spotuify://playback"}),
+        22,
+    ));
+    assert!(unsub.error.is_none(), "unsubscribe succeeds");
+}
+
+#[test]
 fn null_id_round_trips_in_response() {
     let req = RpcRequest {
         jsonrpc: "2.0".to_string(),

@@ -103,12 +103,64 @@ pub fn dispatch(request: RpcRequest) -> RpcResponse {
         "tools/call" => tools_call(id, request.params),
         "resources/list" => resources_list(id),
         "resources/read" => resources_read(id, request.params),
+        "resources/subscribe" => resources_subscribe(id, request.params),
+        "resources/unsubscribe" => resources_unsubscribe(id, request.params),
         "ping" => ok_response(id, json!({})),
         other => error_response(
             id,
             RpcError::method_not_found(format!("unknown method `{other}`")),
         ),
     }
+}
+
+/// Process-global resource subscription set (stdio is single-client).
+/// `resources/subscribe` adds, `unsubscribe` removes; the stdio event
+/// thread reads it to decide which `notifications/resources/updated` to
+/// push.
+fn subscriptions() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static SUBS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    SUBS.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Snapshot of currently-subscribed resource URIs.
+pub fn subscribed_uris() -> std::collections::HashSet<String> {
+    subscriptions()
+        .lock()
+        .map(|set| set.clone())
+        .unwrap_or_default()
+}
+
+fn resources_subscribe(id: Value, params: Value) -> RpcResponse {
+    let Some(uri) = params.get("uri").and_then(Value::as_str) else {
+        return error_response(
+            id,
+            RpcError::invalid_params("resources/subscribe: missing `uri`"),
+        );
+    };
+    if crate::resources::ResourceCatalogue::by_uri(uri).is_none() {
+        return error_response(
+            id,
+            RpcError::invalid_params(format!("resources/subscribe: unknown uri `{uri}`")),
+        );
+    }
+    if let Ok(mut set) = subscriptions().lock() {
+        set.insert(uri.to_string());
+    }
+    ok_response(id, json!({}))
+}
+
+fn resources_unsubscribe(id: Value, params: Value) -> RpcResponse {
+    let Some(uri) = params.get("uri").and_then(Value::as_str) else {
+        return error_response(
+            id,
+            RpcError::invalid_params("resources/unsubscribe: missing `uri`"),
+        );
+    };
+    if let Ok(mut set) = subscriptions().lock() {
+        set.remove(uri);
+    }
+    ok_response(id, json!({}))
 }
 
 fn ok_response(id: Value, result: Value) -> RpcResponse {

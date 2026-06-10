@@ -92,6 +92,12 @@ spotuify://doctor
 
 Read a resource when the agent needs current state instead of issuing another command.
 
+Over the stdio transport the server also pushes `notifications/resources/updated`
+for resources the client has `resources/subscribe`d to (`spotuify://playback`,
+`spotuify://devices`, `spotuify://playlists`), so an agent can react to live
+changes without polling. The HTTP transport has no SSE, so push is stdio-only;
+HTTP clients re-read on their own cadence.
+
 ## Safe playlist loop
 
 ```bash
