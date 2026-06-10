@@ -25,6 +25,9 @@ pub mod notifications;
 #[cfg(feature = "media-controls")]
 pub mod media_controls;
 
+#[cfg(all(feature = "media-controls", target_os = "windows"))]
+mod media_controls_win;
+
 #[cfg(feature = "discord-rpc")]
 pub mod discord;
 

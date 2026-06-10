@@ -11,9 +11,11 @@
 //! deployment without a UI process emits
 //! `DaemonEvent::MediaControlsUnavailable` and degrades gracefully.
 
+#[cfg(not(target_os = "windows"))]
 use std::sync::Mutex;
 use std::time::Duration;
 
+#[cfg(not(target_os = "windows"))]
 use anyhow::Context;
 use spotuify_protocol::{DaemonEvent, PlaybackCommand};
 use tokio::sync::mpsc;
@@ -40,7 +42,13 @@ pub struct MediaControlsHandle {
     config: MediaControlsConfig,
     bus_name: String,
     commands_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<PlaybackCommand>>,
+    /// On Linux/macOS souvlaki runs in-process (MPRIS / MediaRemote). On
+    /// Windows the SMTC must live on its hidden-window thread, so the
+    /// controls are owned there and reached via `win` instead.
+    #[cfg(not(target_os = "windows"))]
     controls: Mutex<souvlaki::MediaControls>,
+    #[cfg(target_os = "windows")]
+    win: crate::media_controls_win::WindowsMediaControls,
 }
 
 impl MediaControlsHandle {
@@ -48,40 +56,51 @@ impl MediaControlsHandle {
         let bus_name = format!("spotuify.instance{}", std::process::id());
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
 
-        #[cfg(target_os = "windows")]
-        let hwnd = {
-            if config.allow_hidden_window {
-                anyhow::bail!("Windows media controls need the hidden-window driver");
-            }
-            anyhow::bail!("Windows media controls disabled without a window handle");
-        };
-
         #[cfg(not(target_os = "windows"))]
-        let hwnd = None;
-
-        let mut controls = souvlaki::MediaControls::new(souvlaki::PlatformConfig {
-            display_name: "spotuify",
-            dbus_name: &bus_name,
-            hwnd,
-        })
-        .context("failed to create souvlaki media controls")?;
-        controls
-            .attach(move |event| {
-                if let Some(command) =
-                    souvlaki_event_to_action(event).and_then(map_media_control_event)
-                {
-                    let _ = commands_tx.send(command);
-                }
+        {
+            let mut controls = souvlaki::MediaControls::new(souvlaki::PlatformConfig {
+                display_name: "spotuify",
+                dbus_name: &bus_name,
+                hwnd: None,
             })
-            .context("failed to attach souvlaki media controls")?;
+            .context("failed to create souvlaki media controls")?;
+            controls
+                .attach(move |event| {
+                    if let Some(command) =
+                        souvlaki_event_to_action(event).and_then(map_media_control_event)
+                    {
+                        let _ = commands_tx.send(command);
+                    }
+                })
+                .context("failed to attach souvlaki media controls")?;
+            Ok(Self {
+                config,
+                bus_name,
+                commands_rx: tokio::sync::Mutex::new(commands_rx),
+                controls: Mutex::new(controls),
+            })
+        }
 
-        let handle = Self {
-            config,
-            bus_name,
-            commands_rx: tokio::sync::Mutex::new(commands_rx),
-            controls: Mutex::new(controls),
-        };
-        Ok(handle)
+        #[cfg(target_os = "windows")]
+        {
+            // The daemon has no UI; the SMTC needs a real window. Honour
+            // the `--no-media-controls` opt-out by skipping the driver.
+            if !config.allow_hidden_window {
+                anyhow::bail!(
+                    "Windows media controls disabled without a window handle (--no-media-controls)"
+                );
+            }
+            let win = crate::media_controls_win::WindowsMediaControls::new(
+                bus_name.clone(),
+                commands_tx,
+            )?;
+            Ok(Self {
+                config,
+                bus_name,
+                commands_rx: tokio::sync::Mutex::new(commands_rx),
+                win,
+            })
+        }
     }
 
     pub fn bus_name(&self) -> &str {
@@ -103,32 +122,69 @@ impl MediaControlsHandle {
         let DaemonEvent::PlaybackChanged { action, playback } = event else {
             return;
         };
-        let Ok(mut controls) = self.controls.lock() else {
-            return;
-        };
-        if let Some(item) = playback.as_ref().and_then(|p| p.item.as_ref()) {
-            let album = item
-                .album
-                .as_deref()
-                .filter(|a| !a.is_empty())
-                .unwrap_or(item.context.as_str());
-            let metadata = souvlaki::MediaMetadata {
-                title: Some(item.name.as_str()),
-                artist: Some(item.subtitle.as_str()),
-                album: (!album.is_empty()).then_some(album),
-                // souvlaki loads http(s)/file URLs per platform; the
-                // Spotify CDN URL works for MPRIS/SMTC/NowPlaying.
-                cover_url: item.image_url.as_deref(),
-                duration: (item.duration_ms > 0)
-                    .then(|| std::time::Duration::from_millis(item.duration_ms)),
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let Ok(mut controls) = self.controls.lock() else {
+                return;
             };
-            if let Err(err) = controls.set_metadata(metadata) {
-                tracing::warn!(error = %err, "media-controls metadata update failed");
+            if let Some(item) = playback.as_ref().and_then(|p| p.item.as_ref()) {
+                let album = item
+                    .album
+                    .as_deref()
+                    .filter(|a| !a.is_empty())
+                    .unwrap_or(item.context.as_str());
+                let metadata = souvlaki::MediaMetadata {
+                    title: Some(item.name.as_str()),
+                    artist: Some(item.subtitle.as_str()),
+                    album: (!album.is_empty()).then_some(album),
+                    // souvlaki loads http(s)/file URLs per platform; the
+                    // Spotify CDN URL works for MPRIS/SMTC/NowPlaying.
+                    cover_url: item.image_url.as_deref(),
+                    duration: (item.duration_ms > 0)
+                        .then(|| std::time::Duration::from_millis(item.duration_ms)),
+                };
+                if let Err(err) = controls.set_metadata(metadata) {
+                    tracing::warn!(error = %err, "media-controls metadata update failed");
+                }
+            }
+            if let Some(state) = media_playback_state(action, playback.as_ref()) {
+                if let Err(err) = controls.set_playback(state) {
+                    tracing::warn!(error = %err, "media-controls playback update failed");
+                }
             }
         }
-        if let Some(state) = media_playback_state(action, playback.as_ref()) {
-            if let Err(err) = controls.set_playback(state) {
-                tracing::warn!(error = %err, "media-controls playback update failed");
+
+        // Windows owns the souvlaki controls on the SMTC thread; marshal
+        // owned metadata/playback over the event-loop proxy instead.
+        #[cfg(target_os = "windows")]
+        {
+            use crate::media_controls_win::{ControlUpdate, PlaybackKind};
+            if let Some(item) = playback.as_ref().and_then(|p| p.item.as_ref()) {
+                let album = item
+                    .album
+                    .as_deref()
+                    .filter(|a| !a.is_empty())
+                    .unwrap_or(item.context.as_str());
+                self.win.send(ControlUpdate::Metadata {
+                    title: Some(item.name.clone()),
+                    artist: Some(item.subtitle.clone()),
+                    album: (!album.is_empty()).then(|| album.to_string()),
+                    cover_url: item.image_url.clone(),
+                    duration_ms: (item.duration_ms > 0).then_some(item.duration_ms),
+                });
+            }
+            if let Some(state) = media_playback_state(action, playback.as_ref()) {
+                let kind = match state {
+                    souvlaki::MediaPlayback::Playing { progress } => {
+                        PlaybackKind::Playing(progress.map(|p| p.0.as_millis() as u64))
+                    }
+                    souvlaki::MediaPlayback::Paused { progress } => {
+                        PlaybackKind::Paused(progress.map(|p| p.0.as_millis() as u64))
+                    }
+                    souvlaki::MediaPlayback::Stopped => return,
+                };
+                self.win.send(ControlUpdate::Playback(kind));
             }
         }
     }
@@ -185,7 +241,9 @@ pub fn map_media_control_event(action: SouvlakiAction) -> Option<PlaybackCommand
     }
 }
 
-fn souvlaki_event_to_action(event: souvlaki::MediaControlEvent) -> Option<SouvlakiAction> {
+pub(crate) fn souvlaki_event_to_action(
+    event: souvlaki::MediaControlEvent,
+) -> Option<SouvlakiAction> {
     match event {
         souvlaki::MediaControlEvent::Play => Some(SouvlakiAction::Play),
         souvlaki::MediaControlEvent::Pause => Some(SouvlakiAction::Pause),
@@ -286,16 +344,14 @@ mod tests {
 
     #[test]
     fn playback_events_update_souvlaki_state() {
+        // No snapshot rode along (playback = None) → fall back to the
+        // action label.
         assert_eq!(
-            playback_for_event(&DaemonEvent::PlaybackChanged {
-                action: "paused".to_string()
-            }),
+            media_playback_state("paused", None),
             Some(souvlaki::MediaPlayback::Paused { progress: None })
         );
         assert_eq!(
-            playback_for_event(&DaemonEvent::PlaybackChanged {
-                action: "started spotify:track:1".to_string()
-            }),
+            media_playback_state("started spotify:track:1", None),
             Some(souvlaki::MediaPlayback::Playing { progress: None })
         );
     }

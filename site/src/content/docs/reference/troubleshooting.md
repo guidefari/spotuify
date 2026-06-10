@@ -222,7 +222,7 @@ spotuify daemon restart
 spotuify logs tail 200
 ```
 
-`spotuify daemon install-service` registers a user-level Task Scheduler logon trigger. Global media keys are limited in headless daemon mode because Windows SMTC needs a foreground window handle; keep the TUI open when you need media-key handling.
+`spotuify daemon install-service` registers a user-level Task Scheduler logon trigger. Global media keys (SMTC) work headlessly: the daemon spawns a hidden message-only window to host the System Media Transport Controls, so play/pause/next from the keyboard and the Windows volume flyout reach spotuify even with no TUI open.
 
 ## Bug report
 

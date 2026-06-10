@@ -503,22 +503,27 @@ session). The parsers are defensive and the daemon logs "endpoint may have
 changed" when a response doesn't parse; if Spotify rotated the shape, the
 fix is localized to `mercury.rs`. Verify against a live Premium session.
 
-## D023: Windows SMTC + CLI notarization deferred — environment-blocked (2026-06-10)
+## D023: Windows SMTC shipped (cross-verified); CLI notarization deferred (2026-06-10)
 
-Both audit items need a platform/credentials this build environment lacks,
-and shipping them blind would violate "verify before teaching".
-
-**Windows SMTC hidden window (9.C) — deferred.** Working SMTC needs a hidden
-message-only window whose HWND is handed to souvlaki (the spotify-player
-winit-on-a-thread pattern). This macOS dev box can neither run nor even
-`cargo check` Windows code: cross-compiling pulls `ring`, whose C build needs
-the MSVC SDK headers (`assert.h` not found). A substantial winit/HWND driver
-shipped without any compile or runtime check is too risky on the one platform
-we can't test. The daemon already degrades gracefully on Windows today —
-`MediaControlsHandle::new` returns an error, `SystemIntegration::spawn` logs it
-and continues, so the daemon runs without SMTC rather than crashing. The driver
-should be developed + verified on a Windows machine; `MediaControlsConfig`
-already carries `allow_hidden_window` for the `--no-media-controls` opt-out.
+**Windows SMTC hidden window (9.C) — SHIPPED.** Originally deferred as
+environment-blocked, then unblocked by standing up a cross-compile toolchain on
+the macOS dev box: `xwin` for the MSVC CRT/SDK headers + `cargo-xwin` +
+Homebrew LLVM (`clang-cl`/`lld-link`) so `ring`'s C build and the winit Windows
+backend compile for `x86_64-pc-windows-msvc`. `crates/spotuify-system/src/media_controls_win.rs`
+spawns a dedicated thread that creates a hidden message-only `winit` window,
+hands its `HWND` to souvlaki, and runs the event loop forever to pump SMTC
+button presses. The souvlaki controls are owned on that thread (SMTC must be
+same-thread as its window); the main thread pushes owned metadata/playback over
+an `EventLoopProxy`, and button presses flow back over the existing
+`commands_tx`. `MediaControlsHandle` is cfg-split (Unix keeps in-process
+souvlaki; Windows uses the thread). Verified: `cargo xwin check` + `cargo xwin
+clippy -D warnings` for the Windows target are green, and the native build +
+clippy stay green. Runtime caveat: there is no Windows CI runner, so live SMTC
+button behaviour still needs manual QA on a real Windows box — but the failure
+mode is bounded (init error → logged → daemon runs without SMTC, never bricks
+playback). Remaining gap: `MediaControlsConfig.allow_hidden_window` (the
+`--no-media-controls` opt-out) is honoured by the driver but not yet wired to a
+CLI flag in `build_system_config`; that's a small follow-up, not a blocker.
 
 **macOS CLI signing/notarization in CI (9.N) — deferred.** The release DMG is
 already built, Developer-ID-signed, and notarized locally via
