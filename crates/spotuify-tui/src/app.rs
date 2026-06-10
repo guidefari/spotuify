@@ -1057,6 +1057,15 @@ impl App {
                     vec![Request::PlaylistAddItems { playlist, uris }]
                 }
             }
+            TuiAction::DeleteSelectedPlaylist => self
+                .selected_playlist_target()
+                .map(|(playlist, _)| vec![Request::PlaylistUnfollow { playlist }])
+                .unwrap_or_default(),
+            TuiAction::UnsaveSelection => self
+                .selected_target_uris()
+                .into_iter()
+                .map(|uri| Request::LibraryUnsave { uri })
+                .collect(),
             TuiAction::RemindMe => {
                 // TUI quick-schedule: remind about the selection in 1 day. Rich
                 // scheduling (presets/recurrence/custom date) lives in the macOS
@@ -3093,6 +3102,17 @@ fn handle_key(
         return Ok(false);
     }
 
+    // Shift+D: destructive remove on the current screen, behind a confirm
+    // modal. Only intercepts when there's a target (a selected playlist /
+    // marked liked tracks); otherwise it falls through to the keymap so it
+    // never shadows other `D` bindings.
+    if matches!(key.code, KeyCode::Char('D')) {
+        if let Some(modal) = delete_confirm_for_screen(app) {
+            app.confirm_modal = Some(modal);
+            return Ok(false);
+        }
+    }
+
     if app.command_palette.visible {
         if let Some(action) = handle_palette_key(app, key) {
             return apply_tui_action(app, action, async_tx);
@@ -4373,6 +4393,8 @@ fn apply_tui_action(
         TuiAction::LikeSelection => like_selection(app, async_tx),
         TuiAction::RemindMe => remind_selection(app, async_tx),
         TuiAction::AddSelectionToPlaylist => add_selection_to_playlist(app, async_tx),
+        TuiAction::DeleteSelectedPlaylist => delete_selected_playlist(app, async_tx),
+        TuiAction::UnsaveSelection => unsave_selection(app, async_tx),
         TuiAction::TransferDevice => transfer_selected(app, async_tx),
         TuiAction::ToggleMark => toggle_mark_selected(app),
         TuiAction::MarkRange => mark_range(app),
@@ -5214,6 +5236,52 @@ fn like_selection(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) 
     }
     let count = requests.len();
     requests_then_refresh(app, async_tx, requests, format!("Liked {count} item(s)"));
+}
+
+fn delete_selected_playlist(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    let requests = app.requests_for_action(TuiAction::DeleteSelectedPlaylist);
+    if requests.is_empty() {
+        return;
+    }
+    requests_then_refresh(app, async_tx, requests, "Removed playlist".to_string());
+}
+
+fn unsave_selection(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {
+    let requests = app.requests_for_action(TuiAction::UnsaveSelection);
+    if requests.is_empty() {
+        return;
+    }
+    let count = requests.len();
+    requests_then_refresh(app, async_tx, requests, format!("Unsaved {count} track(s)"));
+}
+
+/// Build the confirm modal for the destructive action available on the
+/// current screen: remove-playlist (Playlists) or bulk-unsave (Library).
+/// `None` when there's nothing to act on, so the `D` key falls through.
+fn delete_confirm_for_screen(app: &App) -> Option<ConfirmModal> {
+    match app.screen {
+        Screen::Playlists => {
+            let (_, name) = app.selected_playlist_target()?;
+            Some(ConfirmModal {
+                title: "Remove playlist".to_string(),
+                body: format!(
+                    "Remove \"{name}\" from your library? Undo with `spotuify ops undo`."
+                ),
+                on_confirm: TuiAction::DeleteSelectedPlaylist,
+            })
+        }
+        Screen::Library => {
+            let count = app.selected_target_uris().len();
+            (count > 0).then(|| ConfirmModal {
+                title: "Unsave tracks".to_string(),
+                body: format!(
+                    "Remove {count} track(s) from Liked Songs? Undo with `spotuify ops undo`."
+                ),
+                on_confirm: TuiAction::UnsaveSelection,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn add_selection_to_playlist(app: &mut App, async_tx: &mpsc::UnboundedSender<AsyncResult>) {

@@ -46,6 +46,10 @@ pub enum TuiAction {
     LikeSelection,
     RemindMe,
     AddSelectionToPlaylist,
+    /// Remove the selected playlist from the library (confirm-gated).
+    DeleteSelectedPlaylist,
+    /// Unsave the marked/selected liked tracks (confirm-gated).
+    UnsaveSelection,
     TransferDevice,
     ToggleMark,
     MarkRange,
@@ -709,6 +713,8 @@ pub fn tui_only_reason(action: TuiAction) -> Option<&'static str> {
         | TuiAction::LikeSelection
         | TuiAction::RemindMe
         | TuiAction::AddSelectionToPlaylist
+        | TuiAction::DeleteSelectedPlaylist
+        | TuiAction::UnsaveSelection
         | TuiAction::TransferDevice
         | TuiAction::UndoLastOperation
         | TuiAction::ToggleQueueRail

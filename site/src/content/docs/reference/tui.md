@@ -56,6 +56,10 @@ panes, `Enter` to play, and `Esc` to close. See
 Press `O` to choose which local audio output the embedded player renders to
 (see [Keybindings](/reference/keybindings/)).
 
+Press `Shift+D` to remove the selected playlist (Playlists) or unsave the
+marked/selected liked tracks (Library). Both go through a `y`/`n`
+confirmation; either is reversible with `spotuify ops undo`.
+
 ```bash
 spotuify status
 ```
