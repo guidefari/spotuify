@@ -457,29 +457,40 @@ reindex / sync / analytics-rebuild). A tripped deadline returns the new typed
 forever. Protocol bumped additively (new error kind; clients decode it as a
 string with fallback, so no client break).
 
-Decision: the `dispatch` god-function (~1750 lines, 70 arms) is NOT split in
-this pass. The split was scheduled to unlock per-request timeouts, per-request
-tests, and instrumentation — all three now exist without it (the timeout wraps
-the whole handler; `handler::routing_tests` covers the whole dispatch). The
-remaining work is a pure code-move, 57 of 70 arms coupled to the shared
-optimistic-mutation scaffolding, with no behavioral benefit and a large blast
-radius. It stays on the idiomatic backlog, now safer to do arm-by-arm because
-the routing tests guard the request→response mapping.
+Update (2026-06-11): the `dispatch` god-function split was deferred here, then
+done. `dispatch` is now a 33-line router: `handlers::categorize(&request)`
+picks a category and delegates to one of 10 per-category modules under
+`daemon/src/handlers/`. Arm bodies moved verbatim (no behaviour change); the
+helpers + shared types/consts they reference are now `pub(crate)`. Verified by
+the routing tests (`dispatch_routes_each_request_to_its_response_variant`), the
+full daemon suite, clippy `-D warnings`, and smoke.sh. Original rationale for
+deferring (below) no longer applies.
 
-## D021: spotuify-launcher crate extraction deferred (2026-06-10)
+Decision (original): the `dispatch` god-function (~1750 lines, 70 arms) is NOT
+split in this pass. The split was scheduled to unlock per-request timeouts,
+per-request tests, and instrumentation — all three now exist without it (the
+timeout wraps the whole handler; `handler::routing_tests` covers the whole
+dispatch). The remaining work is a pure code-move, coupled to the shared
+optimistic-mutation scaffolding, with no behavioral benefit and a large blast
+radius.
+
+## D021: spotuify-launcher crate extraction — deferred, then shipped (2026-06-10 → 06-11)
 
 The audit flagged `spotuify-cli`'s dependency on `spotuify-daemon` (for
 `ensure_daemon_running`) as a boundary violation (cli must not depend on daemon
 internals). The clean fix is a leaf `spotuify-launcher` crate (protocol + tokio)
-holding the client-side launcher logic — `ensure_daemon_running`, background
-spawn, `daemon_status`, `current_build_id`, compat check, socket probes — while
-`run_daemon` (the foreground branch of `start_daemon`) stays in the daemon.
+holding the client-side launcher logic.
 
-Deferred this pass: it is ~400 lines of moves through the daemon startup path —
-the app's most critical surface ("player first") — for a P2 layering benefit
-with no user-facing or correctness change. Tracked on the idiomatic backlog;
-the only real coupling is `start_daemon`'s `foreground => run_daemon()` branch,
-so the split is mechanical when scheduled with a smoke-test gate.
+Done (2026-06-11): `crates/spotuify-launcher` now holds `ensure_daemon_running`,
+`start_daemon_background`, `restart`/`stop`/`daemon_status`, the socket-state
+probes, and the build-id + compatibility checks. `run_daemon` stays in the
+daemon; `start_daemon(foreground)` is a thin wrapper (foreground → `run_daemon`,
+background → `launcher::start_daemon_background`). `server.rs` re-exports the
+launcher fns so the binary/TUI/`state.rs` keep calling `server::…` unchanged
+(build-id is now single-source). `spotuify-cli` dropped its `spotuify-daemon`
+dependency entirely. Verified by the smoke test (daemon start/status/stop
+through the new path), workspace compile, and clippy. The deferral rationale
+(below) held until a smoke-gated pass made the move safe.
 
 ## D022: Mercury radio + related artists shipped (2026-06-10)
 
@@ -503,7 +514,7 @@ session). The parsers are defensive and the daemon logs "endpoint may have
 changed" when a response doesn't parse; if Spotify rotated the shape, the
 fix is localized to `mercury.rs`. Verify against a live Premium session.
 
-## D023: Windows SMTC shipped (cross-verified); CLI notarization deferred (2026-06-10)
+## D023: Windows SMTC + macOS CLI notarization both shipped (2026-06-10)
 
 **Windows SMTC hidden window (9.C) — SHIPPED.** Originally deferred as
 environment-blocked, then unblocked by standing up a cross-compile toolchain on
@@ -525,12 +536,20 @@ playback). Remaining gap: `MediaControlsConfig.allow_hidden_window` (the
 `--no-media-controls` opt-out) is honoured by the driver but not yet wired to a
 CLI flag in `build_system_config`; that's a small follow-up, not a blocker.
 
-**macOS CLI signing/notarization in CI (9.N) — deferred.** The release DMG is
-already built, Developer-ID-signed, and notarized locally via
-`clients/macos/scripts/build-dmg.sh` (CI can't build it — needs the macOS 26
-SDK; see D-macos-dmg). Adding CLI-binary notarization to the GitHub release
-workflow needs Apple Developer credentials as repo secrets plus a macOS runner
-with the signing identity + `notarytool` — none of which can be created or
-verified from here. Writing untested release-pipeline YAML risks breaking a
-working release flow. This stays a release-ops task for the maintainer's
-machine/secrets.
+**macOS CLI signing/notarization in CI (9.N) — wired, guarded.** The release
+DMG was already Developer-ID-signed + notarized locally via
+`clients/macos/scripts/build-dmg.sh`; the gap was the macOS *CLI binary*
+tarball, which shipped unsigned and so triggered Gatekeeper for curl/brew
+users. `release.yml`'s `build-binaries` job now has a `Codesign + notarize CLI
+binary (macOS)` step (between build and packaging) that imports a Developer ID
+cert into a throwaway keychain, signs the binary with hardened runtime + a
+secure timestamp, and notarizes it with `notarytool submit --wait` (a bare CLI
+binary can't be stapled, so Gatekeeper verifies the ticket online). It is fully
+guarded: with no signing secrets the binary ships unsigned exactly as before,
+so forks and unconfigured runs still release. Required repo secrets to enable
+it: `MACOS_SIGN_CERTIFICATE_BASE64`, `MACOS_SIGN_CERTIFICATE_PASSWORD`,
+`MACOS_SIGN_IDENTITY`, `MACOS_NOTARY_KEY_BASE64`, `MACOS_NOTARY_KEY_ID`,
+`MACOS_NOTARY_ISSUER_ID`. Verification limit: the YAML is syntax-validated but
+the signing path itself can only be exercised in a real tagged release with the
+secrets present — it follows the standard Apple/GitHub-Actions notarization
+pattern and the no-secrets branch is a safe no-op.

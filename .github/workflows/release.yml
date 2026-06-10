@@ -138,6 +138,71 @@ jobs:
           fi
           cargo build "${cargo_args[@]}"
 
+      # Developer-ID sign + notarize the macOS CLI binary so a tarball'd
+      # binary downloaded via curl/brew is Gatekeeper-clean. Fully
+      # guarded: with no signing secrets the binary ships unsigned (the
+      # prior behaviour), so forks and unconfigured runs still release.
+      # Required repo secrets to enable it:
+      #   MACOS_SIGN_CERTIFICATE_BASE64  base64 of a "Developer ID Application" .p12
+      #   MACOS_SIGN_CERTIFICATE_PASSWORD  the .p12 password
+      #   MACOS_SIGN_IDENTITY            e.g. "Developer ID Application: Name (TEAMID)"
+      #   MACOS_NOTARY_KEY_BASE64        base64 of an App Store Connect API key (.p8)
+      #   MACOS_NOTARY_KEY_ID            the API key id
+      #   MACOS_NOTARY_ISSUER_ID         the API key issuer UUID
+      - name: Codesign + notarize CLI binary (macOS)
+        if: matrix.platform_family == 'macos'
+        shell: bash
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
+          MACOS_SIGN_CERTIFICATE_BASE64: ${{ secrets.MACOS_SIGN_CERTIFICATE_BASE64 }}
+          MACOS_SIGN_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGN_CERTIFICATE_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          BIN="target/${MATRIX_TARGET}/release/spotuify"
+          if [[ -z "${MACOS_SIGN_CERTIFICATE_BASE64:-}" || -z "${MACOS_SIGN_IDENTITY:-}" ]]; then
+            echo "==> macOS signing secrets not set; shipping the CLI binary unsigned."
+            echo "    Set MACOS_SIGN_* / MACOS_NOTARY_* repo secrets for Gatekeeper-clean binaries."
+            exit 0
+          fi
+          # Import the Developer ID cert into a throwaway keychain.
+          KEYCHAIN="$RUNNER_TEMP/spotuify-signing.keychain-db"
+          KEYCHAIN_PWD="$(openssl rand -hex 20)"
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          echo "$MACOS_SIGN_CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_SIGN_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PWD" "$KEYCHAIN" >/dev/null
+          security default-keychain -s "$KEYCHAIN"
+          # Sign with hardened runtime + a secure timestamp.
+          codesign --force --options runtime --timestamp \
+            --sign "$MACOS_SIGN_IDENTITY" "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+          # Notarize. A bare CLI binary can't be stapled, so Gatekeeper
+          # verifies the ticket online; submit + wait is enough. Skipped
+          # when the notary key isn't configured.
+          if [[ -n "${MACOS_NOTARY_KEY_BASE64:-}" && -n "${MACOS_NOTARY_KEY_ID:-}" && -n "${MACOS_NOTARY_ISSUER_ID:-}" ]]; then
+            echo "$MACOS_NOTARY_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+            ditto -c -k --keepParent "$BIN" "$RUNNER_TEMP/spotuify-notarize.zip"
+            xcrun notarytool submit "$RUNNER_TEMP/spotuify-notarize.zip" \
+              --key "$RUNNER_TEMP/notary.p8" \
+              --key-id "$MACOS_NOTARY_KEY_ID" \
+              --issuer "$MACOS_NOTARY_ISSUER_ID" \
+              --wait
+            rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/spotuify-notarize.zip"
+            echo "==> notarized $BIN"
+          else
+            echo "==> signed but not notarized (MACOS_NOTARY_* secrets not set)."
+          fi
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security delete-keychain "$KEYCHAIN"
+
       - name: Package CLI archive (unix)
         if: matrix.archive_kind == 'tar'
         shell: bash
