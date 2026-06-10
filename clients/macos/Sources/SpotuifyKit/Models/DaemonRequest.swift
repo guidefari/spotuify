@@ -21,6 +21,56 @@ public enum RepeatMode: String, Sendable, CaseIterable {
     case off, context, track
 }
 
+/// `analytics top` grouping (mirrors protocol `TopKind`, snake_case).
+public enum AnalyticsTopKind: String, Sendable, CaseIterable {
+    case tracks, artists, albums, playlists
+}
+
+/// `analytics habits` bucket (mirrors core `HabitWindow`, snake_case).
+public enum AnalyticsHabitWindow: String, Sendable, CaseIterable {
+    case day, week, month
+}
+
+/// `analytics search` redaction mode (mirrors `SearchMode`, snake_case).
+public enum AnalyticsSearchMode: String, Sendable, CaseIterable {
+    case raw, normalized
+}
+
+/// `analytics top` time window. Wire shape is `{ "days": N }` or `"all"`
+/// (externally-tagged serde enum).
+public enum AnalyticsSinceWindow: Sendable, Encodable {
+    case days(UInt32)
+    case all
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .all:
+            var c = encoder.singleValueContainer()
+            try c.encode("all")
+        case .days(let n):
+            var c = encoder.container(keyedBy: AnyKey.self)
+            try c.encode(n, forKey: AnyKey("days"))
+        }
+    }
+}
+
+/// Visualizer capture source (mirrors `VizSourceKindData`, lowercase).
+public enum VizSourceKind: String, Sendable, CaseIterable {
+    case auto, sink, loopback, none
+}
+
+/// Sync target (mirrors `SyncTargetData`, lowercase).
+public enum SyncTarget: String, Sendable, CaseIterable {
+    case all, playback, queue, devices, playlists, recent, library
+}
+
+/// Origin attributed to a recorded operation (mirrors `OperationSource`,
+/// kebab-case).
+public enum OperationSource: String, Sendable, CaseIterable {
+    case cli, tui, mcp, agent
+    case daemonInternal = "daemon-internal"
+}
+
 /// A playback mutation. Externally tagged kebab-case on the wire: unit cases
 /// serialize as a bare string ("pause"), data cases as a single-key object
 /// (`{"seek":{"position_ms":N}}`).
@@ -117,6 +167,42 @@ public enum DaemonRequest: Encodable, Sendable {
     case notificationAct(id: String, action: String, snoozeUntilMs: Int64?)
     case checkUpdate(force: Bool)
     case episodeFeed(limit: UInt32, sort: EpisodeSort, refresh: Bool)
+    // --- admin / maintenance ---
+    case shutdown
+    case getDoctorReport
+    case reindex
+    case cacheStatus
+    case logsTail(lines: UInt64)
+    case sync(target: SyncTarget)
+    case image(url: String)
+    case reconnect
+    case reload
+    case reloadAuth
+    case webApiToken(force: Bool)
+    case searchCachePrune(olderThanMs: Int64? = nil)
+    // --- playlist mutations ---
+    case playlistCreate(name: String, description: String? = nil, uris: [String])
+    case playlistRemoveItems(playlist: String, uris: [String])
+    case playlistSetImage(playlist: String, imageBase64: String)
+    case playlistUnfollow(playlist: String)
+    // --- visualizer ---
+    case getVizStatus
+    case setVizSource(kind: VizSourceKind)
+    case setVizFocus(focused: Bool)
+    // --- operations log ---
+    case opsLog(limit: UInt32, sinceMs: Int64? = nil, source: OperationSource? = nil)
+    case opsShow(operationId: String, withDiff: Bool)
+    case opsUndo(
+        operationId: String? = nil, dryRun: Bool = false, force: Bool = false,
+        bulkSinceMs: Int64? = nil)
+    case opsRedo(operationId: String? = nil)
+    // --- analytics ---
+    case analyticsTop(kind: AnalyticsTopKind, sinceWindow: AnalyticsSinceWindow, limit: UInt32)
+    case analyticsHabits(window: AnalyticsHabitWindow, sinceMs: Int64? = nil)
+    case analyticsSearch(mode: AnalyticsSearchMode, limit: UInt32)
+    case analyticsRediscovery(gapDays: UInt32)
+    case analyticsRebuild(sinceMs: Int64? = nil)
+    case analyticsPrune(apply: Bool)
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: AnyKey.self)
@@ -267,6 +353,155 @@ public enum DaemonRequest: Encodable, Sendable {
             try c.encode(limit, forKey: AnyKey("limit"))
             try c.encode(sort.rawValue, forKey: AnyKey("sort"))
             try c.encode(refresh, forKey: AnyKey("refresh"))
+        case .shutdown:
+            try c.encode("shutdown", forKey: AnyKey("cmd"))
+        case .getDoctorReport:
+            try c.encode("get-doctor-report", forKey: AnyKey("cmd"))
+        case .reindex:
+            try c.encode("reindex", forKey: AnyKey("cmd"))
+        case .cacheStatus:
+            try c.encode("cache-status", forKey: AnyKey("cmd"))
+        case .logsTail(let lines):
+            try c.encode("logs-tail", forKey: AnyKey("cmd"))
+            try c.encode(lines, forKey: AnyKey("lines"))
+        case .sync(let target):
+            try c.encode("sync", forKey: AnyKey("cmd"))
+            try c.encode(target.rawValue, forKey: AnyKey("target"))
+        case .image(let url):
+            try c.encode("image", forKey: AnyKey("cmd"))
+            try c.encode(url, forKey: AnyKey("url"))
+        case .reconnect:
+            try c.encode("reconnect", forKey: AnyKey("cmd"))
+        case .reload:
+            try c.encode("reload", forKey: AnyKey("cmd"))
+        case .reloadAuth:
+            try c.encode("reload-auth", forKey: AnyKey("cmd"))
+        case .webApiToken(let force):
+            try c.encode("web-api-token", forKey: AnyKey("cmd"))
+            try c.encode(force, forKey: AnyKey("force"))
+        case .searchCachePrune(let olderThanMs):
+            try c.encode("search-cache-prune", forKey: AnyKey("cmd"))
+            try c.encodeIfPresent(olderThanMs, forKey: AnyKey("older_than_ms"))
+        case .playlistCreate(let name, let description, let uris):
+            try c.encode("playlist-create", forKey: AnyKey("cmd"))
+            try c.encode(name, forKey: AnyKey("name"))
+            try c.encodeIfPresent(description, forKey: AnyKey("description"))
+            try c.encode(uris, forKey: AnyKey("uris"))
+        case .playlistRemoveItems(let playlist, let uris):
+            try c.encode("playlist-remove-items", forKey: AnyKey("cmd"))
+            try c.encode(playlist, forKey: AnyKey("playlist"))
+            try c.encode(uris, forKey: AnyKey("uris"))
+        case .playlistSetImage(let playlist, let imageBase64):
+            try c.encode("playlist-set-image", forKey: AnyKey("cmd"))
+            try c.encode(playlist, forKey: AnyKey("playlist"))
+            try c.encode(imageBase64, forKey: AnyKey("image_base64"))
+        case .playlistUnfollow(let playlist):
+            try c.encode("playlist-unfollow", forKey: AnyKey("cmd"))
+            try c.encode(playlist, forKey: AnyKey("playlist"))
+        case .getVizStatus:
+            try c.encode("get-viz-status", forKey: AnyKey("cmd"))
+        case .setVizSource(let kind):
+            try c.encode("set-viz-source", forKey: AnyKey("cmd"))
+            try c.encode(kind.rawValue, forKey: AnyKey("kind"))
+        case .setVizFocus(let focused):
+            try c.encode("set-viz-focus", forKey: AnyKey("cmd"))
+            try c.encode(focused, forKey: AnyKey("focused"))
+        case .opsLog(let limit, let sinceMs, let source):
+            try c.encode("ops-log", forKey: AnyKey("cmd"))
+            try c.encode(limit, forKey: AnyKey("limit"))
+            try c.encodeIfPresent(sinceMs, forKey: AnyKey("since_ms"))
+            try c.encodeIfPresent(source?.rawValue, forKey: AnyKey("source"))
+        case .opsShow(let operationId, let withDiff):
+            try c.encode("ops-show", forKey: AnyKey("cmd"))
+            try c.encode(operationId, forKey: AnyKey("operation_id"))
+            try c.encode(withDiff, forKey: AnyKey("with_diff"))
+        case .opsUndo(let operationId, let dryRun, let force, let bulkSinceMs):
+            try c.encode("ops-undo", forKey: AnyKey("cmd"))
+            try c.encodeIfPresent(operationId, forKey: AnyKey("operation_id"))
+            try c.encode(dryRun, forKey: AnyKey("dry_run"))
+            try c.encode(force, forKey: AnyKey("force"))
+            try c.encodeIfPresent(bulkSinceMs, forKey: AnyKey("bulk_since_ms"))
+        case .opsRedo(let operationId):
+            try c.encode("ops-redo", forKey: AnyKey("cmd"))
+            try c.encodeIfPresent(operationId, forKey: AnyKey("operation_id"))
+        case .analyticsTop(let kind, let sinceWindow, let limit):
+            try c.encode("analytics-top", forKey: AnyKey("cmd"))
+            try c.encode(kind.rawValue, forKey: AnyKey("kind"))
+            try c.encode(sinceWindow, forKey: AnyKey("since_window"))
+            try c.encode(limit, forKey: AnyKey("limit"))
+        case .analyticsHabits(let window, let sinceMs):
+            try c.encode("analytics-habits", forKey: AnyKey("cmd"))
+            try c.encode(window.rawValue, forKey: AnyKey("window"))
+            try c.encodeIfPresent(sinceMs, forKey: AnyKey("since_ms"))
+        case .analyticsSearch(let mode, let limit):
+            try c.encode("analytics-search", forKey: AnyKey("cmd"))
+            try c.encode(mode.rawValue, forKey: AnyKey("mode"))
+            try c.encode(limit, forKey: AnyKey("limit"))
+        case .analyticsRediscovery(let gapDays):
+            try c.encode("analytics-rediscovery", forKey: AnyKey("cmd"))
+            try c.encode(gapDays, forKey: AnyKey("gap_days"))
+        case .analyticsRebuild(let sinceMs):
+            try c.encode("analytics-rebuild", forKey: AnyKey("cmd"))
+            try c.encodeIfPresent(sinceMs, forKey: AnyKey("since_ms"))
+        case .analyticsPrune(let apply):
+            try c.encode("analytics-prune", forKey: AnyKey("cmd"))
+            try c.encode(apply, forKey: AnyKey("apply"))
         }
+    }
+
+    /// One sample per case, used by the protocol-parity test to extract
+    /// the full set of `cmd` strings this client can emit and compare it
+    /// against the Rust roster fixture. Exhaustiveness is enforced by the
+    /// parity test (a missing case shows up as a roster mismatch), not by
+    /// the compiler.
+    public static var allSamples: [DaemonRequest] {
+        [
+            .ping, .getDaemonStatus, .subscribeEvents, .clientSeed, .playbackGet,
+            .queueGet, .devicesList, .playlistsList, .recentlyPlayed,
+            .libraryList(limit: 1), .playbackCommand(.pause), .deviceTransfer(device: "d"),
+            .search(query: "q", scope: .track, source: .local, limit: 1),
+            .searchStream(query: "q", scope: .track, source: .local, version: 1),
+            .searchPage(query: "q", kind: .track, offset: 0, version: 1),
+            .queueAdd(uri: "u"), .queueAddMany(uris: ["u"]),
+            .savedTracks(limit: 1, offset: 0), .savedShows(limit: 1),
+            .showEpisodes(show: "s", limit: 1, offset: 0), .albumTracks(album: "a"),
+            .artistAlbums(artist: "a"), .followedArtists(limit: 1),
+            .artistFollow(artist: "a"), .artistUnfollow(artist: "a"),
+            .listenSessions(limit: 1), .playlistTracks(playlist: "p", wait: false),
+            .playlistAddItems(playlist: "p", uris: ["u"]),
+            .librarySave(uri: nil, current: true), .libraryUnsave(uri: "u"),
+            .lyricsGet(trackURI: nil, forceRefresh: false),
+            .lyricsOffsetSet(trackURI: "u", offsetMs: 0), .coverArt(url: "u"),
+            .setVizEnabled(true),
+            .reminderCreate(uri: "u", anchorAtMs: 0, recurrence: .none, tz: "UTC", message: nil),
+            .remindersList(includeInactive: false), .reminderCancel(id: "i"),
+            .notificationsList(includeArchived: false),
+            .notificationAct(id: "i", action: "a", snoozeUntilMs: nil),
+            .checkUpdate(force: false), .episodeFeed(limit: 1, sort: .newest, refresh: false),
+            .shutdown, .getDoctorReport, .reindex, .cacheStatus, .logsTail(lines: 1),
+            .sync(target: .all), .image(url: "u"), .reconnect, .reload, .reloadAuth,
+            .webApiToken(force: false), .searchCachePrune(olderThanMs: nil),
+            .playlistCreate(name: "n", description: nil, uris: ["u"]),
+            .playlistRemoveItems(playlist: "p", uris: ["u"]),
+            .playlistSetImage(playlist: "p", imageBase64: "x"),
+            .playlistUnfollow(playlist: "p"),
+            .getVizStatus, .setVizSource(kind: .auto), .setVizFocus(focused: true),
+            .opsLog(limit: 1, sinceMs: nil, source: nil),
+            .opsShow(operationId: "i", withDiff: false), .opsUndo(), .opsRedo(),
+            .analyticsTop(kind: .tracks, sinceWindow: .days(30), limit: 1),
+            .analyticsHabits(window: .week, sinceMs: nil),
+            .analyticsSearch(mode: .raw, limit: 1),
+            .analyticsRediscovery(gapDays: 90), .analyticsRebuild(sinceMs: nil),
+            .analyticsPrune(apply: false),
+        ]
+    }
+
+    /// The `cmd` string this request encodes to. Decoding our own
+    /// encoded form keeps it in lockstep with `encode(to:)` rather than
+    /// duplicating the kebab table.
+    public var commandName: String {
+        let data = (try? JSONEncoder().encode(self)) ?? Data()
+        let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        return (obj?["cmd"] as? String) ?? ""
     }
 }

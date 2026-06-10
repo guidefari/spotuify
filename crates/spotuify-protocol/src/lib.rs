@@ -622,6 +622,87 @@ impl Request {
             Self::EpisodeFeed { .. } => "episode-feed",
         }
     }
+
+    /// Every `kind_label()` value, sorted. The authoritative roster of
+    /// request kinds the protocol exposes, used to enforce client
+    /// parity (e.g. the macOS `DaemonRequest` enum). Keep in sync with
+    /// `kind_label` — a new variant breaks `kind_label`'s exhaustive
+    /// match at compile time, and `request_kinds_roster_matches_kind_label`
+    /// fails until it is added here too.
+    pub fn all_kind_labels() -> &'static [&'static str] {
+        &[
+            "album-tracks",
+            "analytics-habits",
+            "analytics-prune",
+            "analytics-rebuild",
+            "analytics-rediscovery",
+            "analytics-search",
+            "analytics-top",
+            "artist-albums",
+            "artist-follow",
+            "artist-unfollow",
+            "cache-status",
+            "check-update",
+            "client-seed",
+            "cover-art",
+            "device-transfer",
+            "devices-list",
+            "episode-feed",
+            "followed-artists",
+            "get-daemon-status",
+            "get-doctor-report",
+            "get-viz-status",
+            "image",
+            "library-list",
+            "library-save",
+            "library-unsave",
+            "listen-sessions",
+            "logs-tail",
+            "lyrics-get",
+            "lyrics-offset-set",
+            "notification-act",
+            "notifications-list",
+            "ops-log",
+            "ops-redo",
+            "ops-show",
+            "ops-undo",
+            "ping",
+            "playback-command",
+            "playback-get",
+            "playlist-add-items",
+            "playlist-create",
+            "playlist-remove-items",
+            "playlist-set-image",
+            "playlist-tracks",
+            "playlist-unfollow",
+            "playlists-list",
+            "queue-add",
+            "queue-add-many",
+            "queue-get",
+            "recently-played",
+            "reconnect",
+            "reindex",
+            "reload",
+            "reload-auth",
+            "reminder-cancel",
+            "reminder-create",
+            "reminders-list",
+            "saved-shows",
+            "saved-tracks",
+            "search",
+            "search-cache-prune",
+            "search-page",
+            "search-stream",
+            "set-viz-enabled",
+            "set-viz-focus",
+            "set-viz-source",
+            "show-episodes",
+            "shutdown",
+            "subscribe-events",
+            "sync",
+            "web-api-token",
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
