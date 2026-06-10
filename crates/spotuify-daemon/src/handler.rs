@@ -6186,3 +6186,198 @@ mod post_command_persist_tests {
         state.shutdown_player().await;
     }
 }
+
+/// Phase: dispatch routing coverage. The `dispatch` god-function routes
+/// ~90 request variants; before extracting it into per-area handler
+/// modules we lock the request→response-variant mapping so a careless
+/// move (re-ordered arm, wrong response variant, accidental default)
+/// is caught. Uses the fake Spotify provider; assertions are on the
+/// response *shape*, not provider data.
+#[cfg(test)]
+mod routing_tests {
+    use std::sync::Arc;
+
+    use spotuify_protocol::{
+        Request, ResponseData, SearchScopeData, SearchSourceData, SinceWindow, TopKind,
+    };
+    use tempfile::TempDir;
+
+    use super::{handle_request_with_source, DaemonState};
+
+    struct TestEnv {
+        _temp: TempDir,
+    }
+
+    impl TestEnv {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().expect("tempdir");
+            std::env::set_var("SPOTUIFY_FAKE_SPOTIFY", "1");
+            std::env::set_var("SPOTUIFY_CACHE_DB", temp.path().join("cache.sqlite3"));
+            std::env::set_var("SPOTUIFY_SEARCH_INDEX", temp.path().join("search-index"));
+            std::env::set_var("SPOTUIFY_RUNTIME_DIR", temp.path().join("runtime"));
+            std::env::set_var("SPOTUIFY_DATA_DIR", temp.path().join("data"));
+            std::env::set_var("SPOTUIFY_CONFIG", temp.path().join("spotuify.toml"));
+            std::fs::write(
+                temp.path().join("spotuify.toml"),
+                "client_id = \"test-client\"\nredirect_uri = \"http://127.0.0.1:8888/callback\"\n",
+            )
+            .expect("config write");
+            Self { _temp: temp }
+        }
+    }
+
+    impl Drop for TestEnv {
+        fn drop(&mut self) {
+            for key in [
+                "SPOTUIFY_FAKE_SPOTIFY",
+                "SPOTUIFY_CACHE_DB",
+                "SPOTUIFY_SEARCH_INDEX",
+                "SPOTUIFY_RUNTIME_DIR",
+                "SPOTUIFY_DATA_DIR",
+                "SPOTUIFY_CONFIG",
+            ] {
+                std::env::remove_var(key);
+            }
+        }
+    }
+
+    /// Dispatch `request` and return the OK `ResponseData`, panicking with
+    /// the error message if the daemon returned `Response::Error`.
+    async fn ok_data(state: &Arc<DaemonState>, label: &str, request: Request) -> ResponseData {
+        match handle_request_with_source(state.clone(), request, None).await {
+            spotuify_protocol::Response::Ok { data } => data,
+            spotuify_protocol::Response::Error { message, .. } => {
+                panic!("{label} should route to an Ok response, got error: {message}")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_each_request_to_its_response_variant() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+
+        // (label, request, predicate the response variant must satisfy)
+        macro_rules! case {
+            ($label:literal, $req:expr, $pat:pat) => {{
+                let data = ok_data(&state, $label, $req).await;
+                assert!(
+                    matches!(data, $pat),
+                    "{} routed to the wrong response variant: {:?}",
+                    $label,
+                    data
+                );
+            }};
+        }
+
+        case!("ping", Request::Ping, ResponseData::Pong);
+        case!(
+            "subscribe",
+            Request::SubscribeEvents,
+            ResponseData::Ack { .. }
+        );
+        case!(
+            "status",
+            Request::GetDaemonStatus,
+            ResponseData::DaemonStatus { .. }
+        );
+        case!(
+            "playback-get",
+            Request::PlaybackGet,
+            ResponseData::Playback { .. }
+        );
+        case!(
+            "client-seed",
+            Request::ClientSeed,
+            ResponseData::ClientSeed { .. }
+        );
+        case!("queue-get", Request::QueueGet, ResponseData::Queue { .. });
+        case!(
+            "devices-list",
+            Request::DevicesList,
+            ResponseData::Devices { .. }
+        );
+        case!(
+            "playlists-list",
+            Request::PlaylistsList,
+            ResponseData::Playlists { .. }
+        );
+        case!(
+            "reminders-list",
+            Request::RemindersList {
+                include_inactive: false
+            },
+            ResponseData::Reminders { .. }
+        );
+        case!(
+            "viz-status",
+            Request::GetVizStatus,
+            ResponseData::VizStatus { .. }
+        );
+        case!(
+            "cache-status",
+            Request::CacheStatus,
+            ResponseData::CacheStatus { .. }
+        );
+        case!(
+            "ops-log",
+            Request::OpsLog {
+                limit: 10,
+                since_ms: None,
+                source: None,
+            },
+            ResponseData::Operations { .. }
+        );
+        case!(
+            "analytics-top",
+            Request::AnalyticsTop {
+                kind: TopKind::Tracks,
+                since_window: SinceWindow::Days(30),
+                limit: 10,
+            },
+            ResponseData::AnalyticsTop { .. }
+        );
+        case!(
+            "search-local",
+            Request::Search {
+                query: "anything".to_string(),
+                scope: SearchScopeData::Track,
+                source: SearchSourceData::Local,
+                limit: 5,
+                kinds: None,
+                sort: None,
+            },
+            ResponseData::SearchResults { .. }
+        );
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
+    async fn dispatch_maps_invalid_request_to_error_response() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let state = Arc::new(DaemonState::new().await.expect("daemon state"));
+
+        // Relative seek with no active track is the canonical typed
+        // InvalidRequest path; it must surface as Response::Error, not a
+        // panic and not a silent Ok.
+        let response = handle_request_with_source(
+            state.clone(),
+            Request::PlaybackCommand {
+                command: spotuify_protocol::PlaybackCommand::SeekRelative { offset_ms: 15_000 },
+            },
+            None,
+        )
+        .await;
+        assert!(
+            matches!(response, spotuify_protocol::Response::Error { .. }),
+            "invalid request must route to an error response, got {response:?}"
+        );
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+}
