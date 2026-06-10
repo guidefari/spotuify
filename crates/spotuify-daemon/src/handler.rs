@@ -6195,6 +6195,8 @@ mod post_command_persist_tests {
 /// response *shape*, not provider data.
 #[cfg(test)]
 mod routing_tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
     use std::sync::Arc;
 
     use spotuify_protocol::{
