@@ -279,6 +279,20 @@ pub fn translate(tool: &str, args: &Value) -> Result<TranslatedCall, BridgeError
             Ok(TranslatedCall::Request(R::LibraryUnsave { uri }))
         }
         // Phase 10 — analytics tools route to typed daemon Requests.
+        "related_artists" => {
+            let artist = required_str(args, tool, "artist")?;
+            let artist = if artist.starts_with("spotify:") {
+                artist.to_string()
+            } else {
+                format!("spotify:artist:{artist}")
+            };
+            Ok(TranslatedCall::Request(R::RelatedArtists { artist }))
+        }
+        "radio_start" => {
+            let seed_uri = required_str(args, tool, "seed_uri")?.to_string();
+            let dry_run = optional_bool(args, "dry_run").unwrap_or(false);
+            Ok(TranslatedCall::Request(R::RadioStart { seed_uri, dry_run }))
+        }
         "analytics_top" => {
             use spotuify_protocol::{Request as R, SinceWindow, TopKind};
             let kind = match optional_str(args, "kind").unwrap_or("tracks") {

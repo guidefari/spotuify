@@ -480,3 +480,25 @@ the app's most critical surface ("player first") — for a P2 layering benefit
 with no user-facing or correctness change. Tracked on the idiomatic backlog;
 the only real coupling is `start_daemon`'s `foreground => run_daemon()` branch,
 so the split is mechanical when scheduled with a smoke-test gate.
+
+## D022: Mercury radio + related artists shipped (2026-06-10)
+
+Reverses the Phase-8 deferral ("radio_start / related_artists deliberately
+absent until typed daemon requests and verified mercury parsing exist").
+Built end to end on the user's call to ship without a live spike:
+
+- `spotuify-spotify/src/mercury.rs`: base62↔gid conversion + defensive
+  parsers for the `hm://artist/v1/{gid}/desktop` and
+  `hm://radio-apollo/v3/stations/{uri}` responses. A rotated/unknown shape
+  degrades to empty results rather than erroring.
+- `Request::RelatedArtists` / `RadioStart` (CoreMusic), daemon handlers via
+  the in-session `mercury_get` with an 8s timeout, CLI (`artist related`,
+  `radio start --dry-run`), MCP tools (`related_artists`, `radio_start`),
+  and the macOS `DaemonRequest` cases (parity test forces them).
+
+Caveat: the `hm://` endpoints are reverse-engineered and unversioned, and
+the Web API equivalents were deprecated Nov 2024. This shipped WITHOUT a
+live verification (mercury isn't curl-able; a spike needs a logged-in
+session). The parsers are defensive and the daemon logs "endpoint may have
+changed" when a response doesn't parse; if Spotify rotated the shape, the
+fix is localized to `mercury.rs`. Verify against a live Premium session.

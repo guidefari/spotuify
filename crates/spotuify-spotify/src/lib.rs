@@ -17,6 +17,7 @@ pub mod config;
 pub mod endpoints;
 pub mod error;
 pub mod first_party;
+pub mod mercury;
 pub mod rate_limit;
 pub mod refresh_planner;
 pub mod selection;

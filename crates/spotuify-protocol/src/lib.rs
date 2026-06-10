@@ -298,6 +298,17 @@ pub enum Request {
         apply: bool,
     },
 
+    // --- Mercury-backed discovery (related artists + radio) ---
+    RelatedArtists {
+        artist: String,
+    },
+    RadioStart {
+        seed_uri: String,
+        /// Preview the resolved station without starting playback.
+        #[serde(default)]
+        dry_run: bool,
+    },
+
     // --- Phase 12: operation log + undo ---
     OpsLog {
         limit: u32,
@@ -525,6 +536,8 @@ impl Request {
             | Self::FollowedArtists { .. }
             | Self::ArtistFollow { .. }
             | Self::ArtistUnfollow { .. }
+            | Self::RelatedArtists { .. }
+            | Self::RadioStart { .. }
             | Self::ListenSessions { .. }
             | Self::AlbumTracks { .. }
             | Self::PlaylistAddItems { .. }
@@ -600,6 +613,8 @@ impl Request {
             Self::AnalyticsSearch { .. } => "analytics-search",
             Self::AnalyticsRediscovery { .. } => "analytics-rediscovery",
             Self::AnalyticsPrune { .. } => "analytics-prune",
+            Self::RelatedArtists { .. } => "related-artists",
+            Self::RadioStart { .. } => "radio-start",
             Self::OpsLog { .. } => "ops-log",
             Self::OpsShow { .. } => "ops-show",
             Self::OpsUndo { .. } => "ops-undo",
@@ -679,9 +694,11 @@ impl Request {
             "queue-add",
             "queue-add-many",
             "queue-get",
+            "radio-start",
             "recently-played",
             "reconnect",
             "reindex",
+            "related-artists",
             "reload",
             "reload-auth",
             "reminder-cancel",

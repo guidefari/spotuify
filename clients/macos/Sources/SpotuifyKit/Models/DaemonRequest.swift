@@ -203,6 +203,9 @@ public enum DaemonRequest: Encodable, Sendable {
     case analyticsRediscovery(gapDays: UInt32)
     case analyticsRebuild(sinceMs: Int64? = nil)
     case analyticsPrune(apply: Bool)
+    // --- Mercury-backed discovery ---
+    case relatedArtists(artist: String)
+    case radioStart(seedUri: String, dryRun: Bool = false)
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: AnyKey.self)
@@ -446,6 +449,13 @@ public enum DaemonRequest: Encodable, Sendable {
         case .analyticsPrune(let apply):
             try c.encode("analytics-prune", forKey: AnyKey("cmd"))
             try c.encode(apply, forKey: AnyKey("apply"))
+        case .relatedArtists(let artist):
+            try c.encode("related-artists", forKey: AnyKey("cmd"))
+            try c.encode(artist, forKey: AnyKey("artist"))
+        case .radioStart(let seedUri, let dryRun):
+            try c.encode("radio-start", forKey: AnyKey("cmd"))
+            try c.encode(seedUri, forKey: AnyKey("seed_uri"))
+            try c.encode(dryRun, forKey: AnyKey("dry_run"))
         }
     }
 
@@ -493,6 +503,8 @@ public enum DaemonRequest: Encodable, Sendable {
             .analyticsSearch(mode: .raw, limit: 1),
             .analyticsRediscovery(gapDays: 90), .analyticsRebuild(sinceMs: nil),
             .analyticsPrune(apply: false),
+            .relatedArtists(artist: "spotify:artist:1"),
+            .radioStart(seedUri: "spotify:track:1", dryRun: false),
         ]
     }
 

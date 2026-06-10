@@ -23,6 +23,8 @@ const LYRICS_NEGATIVE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// whole lyrics fetch (and the client spinner) until the 5-min client
 /// timeout. On timeout we fall through to the LRCLIB provider.
 const MERCURY_LYRICS_TIMEOUT: Duration = Duration::from_secs(6);
+/// Cap for Mercury discovery requests (related artists, radio stations).
+const MERCURY_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
 const MUTATION_BODY_TIMEOUT: Duration = Duration::from_secs(30);
 const TRANSPORT_BACKEND_TIMEOUT: Duration = Duration::from_secs(5);
 const FAST_TRANSPORT_TIMEOUT: Duration = Duration::from_millis(250);
@@ -1100,6 +1102,80 @@ async fn dispatch(
         Request::AlbumTracks { album } => {
             let mut client = state.spotify_client().await?;
             let items = client.album_tracks(&album).await?;
+            Ok(ResponseData::MediaItems { items })
+        }
+        Request::RelatedArtists { artist } => {
+            // Mercury-backed (the Web API related-artists endpoint was
+            // deprecated Nov 2024). Needs the in-daemon librespot session.
+            let Some(mercury_uri) = spotuify_spotify::mercury::related_artists_mercury_uri(&artist)
+            else {
+                anyhow::bail!(
+                    "invalid request: related-artists needs a `spotify:artist:` URI, got `{artist}`"
+                );
+            };
+            let bytes =
+                tokio::time::timeout(MERCURY_DISCOVERY_TIMEOUT, state.mercury_get(&mercury_uri))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("related-artists request timed out"))??;
+            let items = spotuify_spotify::mercury::parse_related_artists(&bytes);
+            if items.is_empty() {
+                tracing::warn!(
+                    %artist,
+                    "related-artists returned no parseable results; the Mercury endpoint \
+                     may have changed"
+                );
+            }
+            Ok(ResponseData::MediaItems { items })
+        }
+        Request::RadioStart { seed_uri, dry_run } => {
+            if !seed_uri.starts_with("spotify:") {
+                anyhow::bail!(
+                    "invalid request: radio-start needs a `spotify:` URI, got `{seed_uri}`"
+                );
+            }
+            let mercury_uri = spotuify_spotify::mercury::radio_station_mercury_uri(&seed_uri);
+            let bytes =
+                tokio::time::timeout(MERCURY_DISCOVERY_TIMEOUT, state.mercury_get(&mercury_uri))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("radio station request timed out"))??;
+            let track_uris = spotuify_spotify::mercury::parse_radio_station(&bytes);
+            if track_uris.is_empty() {
+                anyhow::bail!(
+                    "radio station returned no tracks; the Mercury endpoint may have changed \
+                     or `{seed_uri}` has no station"
+                );
+            }
+            // Enrich for a useful preview; unresolved URIs fall back to bare items.
+            let mut items = state
+                .store()
+                .media_items_by_uris(&track_uris)
+                .await
+                .unwrap_or_default();
+            if items.len() != track_uris.len() {
+                let known: std::collections::HashSet<String> =
+                    items.iter().map(|item| item.uri.clone()).collect();
+                for uri in &track_uris {
+                    if !known.contains(uri) {
+                        items.push(MediaItem {
+                            id: uri.rsplit(':').next().map(str::to_string),
+                            uri: uri.clone(),
+                            kind: MediaKind::Track,
+                            source: Some("mercury".to_string()),
+                            ..MediaItem::default()
+                        });
+                    }
+                }
+            }
+            if !dry_run {
+                // Populate the active device's queue so playback flows into
+                // the station. Best-effort per track; queue is a set so
+                // duplicates move up rather than duplicate.
+                for uri in &track_uris {
+                    if let Err(err) = state.queue_add(uri).await {
+                        tracing::debug!(error = %err, %uri, "radio queue add failed");
+                    }
+                }
+            }
             Ok(ResponseData::MediaItems { items })
         }
         Request::PlaylistAddItems { playlist, uris } => {

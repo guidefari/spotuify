@@ -196,15 +196,32 @@ fn ping_returns_empty_ok() {
 }
 
 #[test]
-fn future_mercury_tools_are_not_advertised_as_callable() {
+fn mercury_tools_are_advertised_as_callable() {
+    // Reversed from the old deferral: related_artists + radio_start are
+    // live tools now. They appear in the catalogue, and calling them with
+    // a missing required arg is an arg error — not "tool not found".
+    let result = ok_value(request("tools/list", json!({}), 2));
+    let names: Vec<&str> = result
+        .get("tools")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .filter_map(|t| t.get("name").and_then(Value::as_str))
+        .collect();
+    assert!(names.contains(&"related_artists"));
+    assert!(names.contains(&"radio_start"));
+
     let resp = dispatch(request(
         "tools/call",
         json!({"name": "radio_start", "arguments": {}}),
         14,
     ));
-    let err = resp.error.expect("unknown future tool should error");
-    assert_eq!(err.code, -32600);
-    assert!(err.message.contains("not found"));
+    let err = resp.error.expect("missing required arg should error");
+    assert!(
+        !err.message.contains("not found"),
+        "radio_start is a known tool now, got: {}",
+        err.message
+    );
 }
 
 #[test]

@@ -20,9 +20,9 @@ fn fixture_path() -> PathBuf {
 #[test]
 fn all_kind_labels_is_sorted_unique_and_complete() {
     let labels = Request::all_kind_labels();
-    // 70 distinct request kinds as of the last roster update; bump when
+    // 72 distinct request kinds as of the last roster update; bump when
     // the protocol genuinely grows (and add the Swift case + fixture).
-    assert_eq!(labels.len(), 70, "request kind count changed");
+    assert_eq!(labels.len(), 72, "request kind count changed");
 
     let mut sorted = labels.to_vec();
     sorted.sort_unstable();
@@ -55,8 +55,7 @@ fn rust_roster_matches_macos_fixture() {
     });
     let on_disk: Vec<String> = serde_json::from_str(&on_disk).unwrap();
     assert_eq!(
-        on_disk,
-        labels,
+        on_disk, labels,
         "macOS request-kinds fixture is stale; regenerate with \
          UPDATE_REQUEST_KINDS_FIXTURE=1 and add any missing DaemonRequest case"
     );

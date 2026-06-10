@@ -222,6 +222,19 @@ pub const TOOLS: &[Tool] = &[
         kind: ToolKind::Mercury,
         destructive: false,
     },
+    // Discovery (Mercury-backed)
+    Tool {
+        name: "related_artists",
+        description: "Artists related to a given artist (Mercury-backed; needs the daemon's librespot session).",
+        kind: ToolKind::Read,
+        destructive: false,
+    },
+    Tool {
+        name: "radio_start",
+        description: "Resolve a radio station seeded by any Spotify URI; queues it onto the active device unless dry_run is set.",
+        kind: ToolKind::Transport,
+        destructive: false,
+    },
     // Analytics (Phase 10)
     Tool {
         name: "analytics_top",

@@ -1153,6 +1153,34 @@ pub async fn ipc_artist(command: crate::ArtistCommand) -> Result<()> {
             .await?;
             print_mutation(data, format)
         }
+        crate::ArtistCommand::Related { artist, format } => {
+            match daemon_request(Request::RelatedArtists {
+                artist: normalize_artist_uri(&artist),
+            })
+            .await?
+            {
+                ResponseData::MediaItems { items } => output::print_media_items(&items, format),
+                _ => unexpected_response(),
+            }
+        }
+    }
+}
+
+pub async fn ipc_radio(command: crate::RadioCommand) -> Result<()> {
+    match command {
+        crate::RadioCommand::Start {
+            seed,
+            dry_run,
+            format,
+        } => match daemon_request(Request::RadioStart {
+            seed_uri: seed,
+            dry_run,
+        })
+        .await?
+        {
+            ResponseData::MediaItems { items } => output::print_media_items(&items, format),
+            _ => unexpected_response(),
+        },
     }
 }
 

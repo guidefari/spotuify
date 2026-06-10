@@ -156,6 +156,30 @@ pub enum ArtistCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Artists related to the given one (Mercury-backed; needs the daemon's
+    /// librespot session, since the Web API endpoint was deprecated).
+    Related {
+        /// Artist ID or URI.
+        artist: String,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+}
+
+/// Radio stations seeded by any Spotify URI (Mercury-backed).
+#[derive(clap::Subcommand)]
+pub enum RadioCommand {
+    /// Start a station seeded by a track/artist/album/playlist URI. By
+    /// default it queues the resolved tracks onto the active device.
+    Start {
+        /// Seed URI (`spotify:track:…`, `spotify:artist:…`, etc.).
+        seed: String,
+        /// Resolve and print the station without queueing anything.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 /// Spotify's per-artist album grouping (`album_group`).

@@ -36,7 +36,7 @@ use crate::output::OutputFormat;
 use crate::spotify::SpotifyClient;
 use spotuify_cli::cli_args::{
     AlbumCommand, ArtistCommand, LibraryCommand, LyricsCommand, MprisCommand, NotificationCommand,
-    PlaylistCommand, QueueCommand, ReminderCommand, ShowCommand, VizCommand,
+    PlaylistCommand, QueueCommand, RadioCommand, ReminderCommand, ShowCommand, VizCommand,
 };
 
 #[derive(Parser)]
@@ -317,6 +317,11 @@ enum Command {
     Artist {
         #[command(subcommand)]
         command: ArtistCommand,
+    },
+    /// Mercury-backed radio stations.
+    Radio {
+        #[command(subcommand)]
+        command: RadioCommand,
     },
     /// Synced lyrics operations.
     Lyrics {
@@ -1259,6 +1264,7 @@ async fn run() -> Result<()> {
         Some(Command::Show { command }) => commands::ipc_show(command).await,
         Some(Command::Album { command }) => commands::ipc_album(command).await,
         Some(Command::Artist { command }) => commands::ipc_artist(command).await,
+        Some(Command::Radio { command }) => commands::ipc_radio(command).await,
         Some(Command::Lyrics { command }) => commands::ipc_lyrics(command).await,
         Some(Command::Reminder { command }) => commands::ipc_reminder(command).await,
         Some(Command::Notifications { command }) => commands::ipc_notifications(command).await,

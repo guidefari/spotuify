@@ -1,6 +1,5 @@
 ---
 source: crates/spotuify-mcp/tests/manifest.rs
-assertion_line: 9
 expression: manifest
 ---
 spec_version: 2024-11-05
@@ -121,6 +120,14 @@ tools:
   - name: lyrics
     description: "Get synced lyrics for the current or specified track, using cached Spotify mercury/LRCLIB data when available."
     kind: mercury
+    destructive: false
+  - name: related_artists
+    description: "Artists related to a given artist (Mercury-backed; needs the daemon's librespot session)."
+    kind: read
+    destructive: false
+  - name: radio_start
+    description: Resolve a radio station seeded by any Spotify URI; queues it onto the active device unless dry_run is set.
+    kind: transport
     destructive: false
   - name: analytics_top
     description: "Top tracks/artists/albums by listening time (local data, no API call)."
