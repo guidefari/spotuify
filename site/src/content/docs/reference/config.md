@@ -35,7 +35,7 @@ These keys are accepted by `spotuify config get` and `spotuify config set`.
 | `cache.cover_cache_ttl_days` | number | `30` | cover-art TTL |
 | `notifications.enabled` | bool | `false` | master switch for desktop notifications (needs the `notifications` build feature) |
 | `notifications.summary` | string | `{track}` | summary template (`{track}` `{artist}` `{album}` tokens) |
-| `notifications.body` | string | `{artist} — {album}` | body template |
+| `notifications.body` | string | `{artist} - {album}` | body template |
 | `notifications.on_track_change` | bool | `true` | notify when the playing track changes |
 | `notifications.on_pause` | bool | `false` | notify on pause |
 | `notifications.on_resume` | bool | `false` | notify on resume |
@@ -54,7 +54,7 @@ spotuify config get client_secret --reveal-secret
 The `notifications.summary` / `notifications.body` templates expand these
 tokens from the current track: `{track}`, `{artist}`, `{album}`,
 `{duration}` (`m:ss`), and `{progress}` (`m:ss`). Defaults are
-`{track}` / `{artist} — {album}`.
+`{track}` / `{artist} - {album}`.
 
 :::note[Legacy `[spotifyd]` migration]
 Old configs with `[spotifyd] device_name = "..."` are still honored as a

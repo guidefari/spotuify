@@ -60,6 +60,27 @@ spotuify artist albums spotify:artist:36QJpDe2go2KgaRleHCDTp --group album --gro
 Both flags are local filters over the data the daemon already returned, so they
 do not trigger another Spotify call.
 
+## Discovery: related artists and radio
+
+Two Mercury-backed discovery commands ride the daemon's librespot session
+(the Web API equivalents were deprecated in 2024):
+
+```bash
+# Artists related to a given one
+spotuify artist related spotify:artist:4uLU6hMCjMI75M1A2tKUQC --format json
+
+# Radio station seeded by any track/artist/album/playlist URI.
+# --dry-run previews the resolved tracks without queueing them.
+spotuify radio start spotify:track:... --dry-run
+spotuify radio start spotify:artist:...
+```
+
+Without `--dry-run`, `radio start` queues the resolved station onto the active
+device. These endpoints are reverse-engineered; if Spotify changes them the
+commands return an "endpoint may have changed" error rather than failing
+loudly. Agents reach the same via the MCP `related_artists` / `radio_start`
+tools.
+
 ## Machine-readable output
 
 ```bash

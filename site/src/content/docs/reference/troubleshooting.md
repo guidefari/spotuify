@@ -95,7 +95,7 @@ SPOTUIFY_FAKE_SPOTIFY=1 SPOTUIFY_CLIENT_ID=fake-client-id spotuify
 ### Login redirect fails with `localhost`
 
 Spotify's November 2025 OAuth migration only accepts the literal
-`http://127.0.0.1:<port>/callback` loopback redirect — `localhost` and
+`http://127.0.0.1:<port>/callback` loopback redirect - `localhost` and
 `::1` are rejected. The default config already uses `127.0.0.1`; if you
 overrode `redirect_uri`, fix it and update the redirect URI registered
 in your Spotify Developer app to match:
@@ -157,7 +157,7 @@ spotuify daemon restart
 ```
 
 Manual lock removal under the instance's `search_index` directory is only
-needed if the daemon itself refuses to start — and only after stopping that
+needed if the daemon itself refuses to start - and only after stopping that
 instance's daemon.
 
 ## Cache looks broken
@@ -209,7 +209,7 @@ On macOS loopback capture needs a virtual device such as BlackHole unless the em
 showing your `TERM`, the cover-art image protocol it expects to use (kitty
 graphics, iterm2 inline images, sixel, or unicode half-blocks), and whether
 truecolor is available. If it says "unicode half-blocks", your terminal
-doesn't advertise an inline-image protocol — switch to kitty, WezTerm, or
+doesn't advertise an inline-image protocol - switch to kitty, WezTerm, or
 iTerm2 for real album art. The line is omitted when output is piped.
 
 ## Windows notes

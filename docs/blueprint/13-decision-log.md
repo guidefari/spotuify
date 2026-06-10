@@ -502,3 +502,30 @@ live verification (mercury isn't curl-able; a spike needs a logged-in
 session). The parsers are defensive and the daemon logs "endpoint may have
 changed" when a response doesn't parse; if Spotify rotated the shape, the
 fix is localized to `mercury.rs`. Verify against a live Premium session.
+
+## D023: Windows SMTC + CLI notarization deferred — environment-blocked (2026-06-10)
+
+Both audit items need a platform/credentials this build environment lacks,
+and shipping them blind would violate "verify before teaching".
+
+**Windows SMTC hidden window (9.C) — deferred.** Working SMTC needs a hidden
+message-only window whose HWND is handed to souvlaki (the spotify-player
+winit-on-a-thread pattern). This macOS dev box can neither run nor even
+`cargo check` Windows code: cross-compiling pulls `ring`, whose C build needs
+the MSVC SDK headers (`assert.h` not found). A substantial winit/HWND driver
+shipped without any compile or runtime check is too risky on the one platform
+we can't test. The daemon already degrades gracefully on Windows today —
+`MediaControlsHandle::new` returns an error, `SystemIntegration::spawn` logs it
+and continues, so the daemon runs without SMTC rather than crashing. The driver
+should be developed + verified on a Windows machine; `MediaControlsConfig`
+already carries `allow_hidden_window` for the `--no-media-controls` opt-out.
+
+**macOS CLI signing/notarization in CI (9.N) — deferred.** The release DMG is
+already built, Developer-ID-signed, and notarized locally via
+`clients/macos/scripts/build-dmg.sh` (CI can't build it — needs the macOS 26
+SDK; see D-macos-dmg). Adding CLI-binary notarization to the GitHub release
+workflow needs Apple Developer credentials as repo secrets plus a macOS runner
+with the signing identity + `notarytool` — none of which can be created or
+verified from here. Writing untested release-pipeline YAML risks breaking a
+working release flow. This stays a release-ops task for the maintainer's
+machine/secrets.

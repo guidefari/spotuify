@@ -70,7 +70,7 @@ Hook commands are executed by the shell exactly as configured. Track data is pas
 
 ## Scrobbling to external services
 
-Spotuify does not ship an in-tree provider export/import bridge — it would mean
+Spotuify does not ship an in-tree provider export/import bridge - it would mean
 storing third-party credentials and tracking provider API drift. Instead, the
 shell-hook above is the supported path for live ListenBrainz, Last.fm, Discord,
 or custom integrations. Ready-to-use scripts live in `docs/recipes/`

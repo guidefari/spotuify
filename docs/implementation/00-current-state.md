@@ -148,6 +148,26 @@ Implemented Spotify API capabilities:
 - Implementation docs are now execution ledgers: checked items either
   have code/test evidence or are explicitly closed as pivots/follow-ups.
 
+## Audit pass (2026-06)
+
+A full-codebase audit shipped reliability + feature work; decisions and
+deferrals are in `docs/blueprint/13-decision-log.md` (D019–D023). Highlights:
+
+- Reliability: per-request IPC timeouts (`IpcErrorKind::Timeout`), search-service
+  timeouts, player session-health probe + auto-reconnect, atomic daemon startup
+  flock, IPC peer-credential check, broadcast-close connection teardown,
+  fast-transport late-ack reconcile.
+- Features: Mercury `artist related` + `radio start` (CLI/MCP/Swift), rich
+  notifications/media-controls/hooks + Discord Rich Presence from playback,
+  sink-accurate `audible_ms`, playlist-level analytics top-k (migration 17),
+  TUI delete-playlist/bulk-unsave, MCP stdio resource push, `doctor`
+  terminal/cover-art section, full macOS `DaemonRequest` parity (fixture test).
+- Removed: never-functional `analytics export/import` stubs.
+- Deferred: `dispatch` split + `spotuify-launcher` crate (pure-layering);
+  Windows SMTC + CLI notarization (need Windows / Apple CI creds).
+- Tooling: `scripts/cargo-nextest` + `.config/nextest.toml` for a fast,
+  per-test-isolated dev loop.
+
 ## Immediate risk
 
 The broad surface can regress if plan docs drift from code. Current

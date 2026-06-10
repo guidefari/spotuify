@@ -36,6 +36,27 @@ scripts/cargo-test -p spotuify-cli --tests
 | 16 | Lyrics | synced lyrics and offset tuning |
 | 17 | Audio visualization | FFT spectrum via sink tap or loopback |
 
+## Recent audit pass
+
+A full-codebase audit (2026-06) shipped reliability + feature work across the
+phases above: per-request IPC timeouts, search-service timeouts, a player
+session-health/auto-reconnect loop, an atomic daemon startup lock + IPC
+peer-credential check, OAuth localhost-redirect warnings, full macOS
+`DaemonRequest` protocol parity (enforced by a fixture test), rich
+notifications/media-controls/hooks + Discord Rich Presence from playback
+events, Mercury-backed related-artists + radio (`spotuify artist related`,
+`spotuify radio start`), sink-accurate audible time for analytics,
+playlist-level top-k, TUI delete-playlist/bulk-unsave, MCP live resource
+push (stdio), and a terminal/cover-art section in `doctor`.
+
+Deliberately not done (see `docs/blueprint/13-decision-log.md` D019–D023):
+removed the never-functional `analytics export/import` stubs; deferred the
+`dispatch` god-function split and the `spotuify-launcher` crate extraction
+(pure-layering refactors); Windows SMTC and CLI notarization (need a Windows
+machine / Apple CI credentials). Row thumbnails, manual lyrics-provider
+selection, native PipeWire capture, AUR/Scoop, and MCP-over-HTTP push remain
+explicit won't-dos.
+
 ## Do not skip the CLI
 
 Every new user-visible capability needs a real command:
