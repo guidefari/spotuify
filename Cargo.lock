@@ -5620,7 +5620,9 @@ dependencies = [
  "spotuify-protocol",
  "spotuify-store",
  "tantivy",
+ "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

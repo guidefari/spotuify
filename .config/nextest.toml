@@ -1,0 +1,19 @@
+# Nextest profiles for spotuify (used by scripts/cargo-nextest).
+#
+# Each test runs in its own process, so one hung test (keychain prompt,
+# stuck daemon, tantivy lock) can no longer wedge the whole run — it gets
+# terminated and reported instead.
+
+[profile.default]
+# Warn at 30s, kill after 2 periods (60s). Daemon-spawning integration
+# tests finish well under this; anything slower is hung.
+slow-timeout = { period = "30s", terminate-after = 2 }
+# Keep running other tests after a failure: the dev loop wants the full
+# failure list from one run, not one failure per run.
+fail-fast = false
+
+[profile.full]
+# End-of-wave / pre-merge profile: more headroom for the heavier
+# integration suites, still bounded.
+slow-timeout = { period = "60s", terminate-after = 5 }
+fail-fast = false

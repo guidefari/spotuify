@@ -410,6 +410,16 @@ fn device_summary(device: &Device) -> DeviceSummary {
     }
 }
 
+/// Returns the host when a configured OAuth redirect URI uses a
+/// loopback alias Spotify no longer accepts (`localhost`, `::1`);
+/// only the literal `127.0.0.1` works since the Nov 2025 migration.
+fn redirect_host_rejected_by_spotify(redirect_uri: &str) -> Option<String> {
+    let host = url::Url::parse(redirect_uri).ok()?.host_str()?.to_string();
+    let rejected = host.eq_ignore_ascii_case("localhost")
+        || host.trim_start_matches('[').trim_end_matches(']') == "::1";
+    rejected.then_some(host)
+}
+
 fn build_findings(report: &DoctorReport) -> Vec<DoctorFinding> {
     let mut findings = Vec::new();
     if !report.config_ok {
@@ -441,6 +451,23 @@ fn build_findings(report: &DoctorReport) -> Vec<DoctorFinding> {
             severity: DoctorFindingSeverity::Error,
             message: format!("auth token: {}", report.keychain_token.message),
             remediation: vec!["spotuify login".to_string()],
+        });
+    }
+    if let Some(host) = report
+        .redirect_uri
+        .as_deref()
+        .and_then(redirect_host_rejected_by_spotify)
+    {
+        findings.push(DoctorFinding {
+            category: DoctorFindingCategory::Auth,
+            severity: DoctorFindingSeverity::Warning,
+            message: format!(
+                "OAuth redirect host `{host}` is rejected by Spotify since the \
+                 Nov 2025 OAuth migration; only the literal 127.0.0.1 loopback works"
+            ),
+            remediation: vec![
+                "spotuify config set redirect_uri http://127.0.0.1:8888/callback".to_string(),
+            ],
         });
     }
     if let Some(devices) = &report.device_diagnostics {

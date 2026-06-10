@@ -10,3 +10,7 @@ target-cli/
 /spotuify-v*.tar.gz
 /spotuify-v*.zip
 /spotuify-v*.sha256
+
+# Track the shared nextest profile even though ~/.gitignore_global ignores .config/
+!/.config/
+!/.config/nextest.toml

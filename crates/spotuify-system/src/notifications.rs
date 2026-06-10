@@ -10,6 +10,7 @@
 //! stacking them. macOS / Windows use notify-rust's native backend
 //! (NSUserNotification / WinRT toast).
 
+use spotuify_core::Playback;
 use spotuify_protocol::DaemonEvent;
 
 use std::collections::HashSet;
@@ -42,9 +43,33 @@ impl Default for NotificationsConfig {
     }
 }
 
+/// The user-facing playback notice an event maps to. Each maps to one
+/// per-event toggle in [`NotificationsConfig`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaybackNotice {
+    TrackChange,
+    Pause,
+    Resume,
+    Skip,
+}
+
+/// Dedup state: the daemon emits a `PlaybackChanged` twice for one user
+/// action — once with the command-authoritative action label (`pause`,
+/// `play-uri`) and once with the librespot state event (`paused`,
+/// `started {uri}`). Without dedup, every enabled toggle would fire two
+/// notifications per action.
+#[derive(Default)]
+struct NotifyDedup {
+    /// Last track URI we raised a track-change notice for.
+    last_track_uri: Option<String>,
+    /// Last pause/resume notice raised.
+    last_transport: Option<PlaybackNotice>,
+}
+
 pub struct NotificationsHandle {
     config: NotificationsConfig,
     notified_auth_errors: Arc<parking_lot::Mutex<HashSet<String>>>,
+    dedup: Arc<parking_lot::Mutex<NotifyDedup>>,
 }
 
 impl NotificationsHandle {
@@ -52,7 +77,17 @@ impl NotificationsHandle {
         Ok(Self {
             config,
             notified_auth_errors: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+            dedup: Arc::new(parking_lot::Mutex::new(NotifyDedup::default())),
         })
+    }
+
+    fn notice_enabled(&self, notice: PlaybackNotice) -> bool {
+        match notice {
+            PlaybackNotice::TrackChange => self.config.on_track_change,
+            PlaybackNotice::Pause => self.config.on_pause,
+            PlaybackNotice::Resume => self.config.on_resume,
+            PlaybackNotice::Skip => self.config.on_skip,
+        }
     }
 
     pub fn enabled(&self) -> bool {
@@ -91,7 +126,36 @@ impl NotificationsHandle {
 
     fn render(&self, event: &DaemonEvent) -> Option<(String, String)> {
         match event {
-            DaemonEvent::PlaybackChanged { action, .. } if self.config.on_track_change => {
+            DaemonEvent::PlaybackChanged { action, playback } => {
+                let notice = classify_playback_action(action)?;
+                if !self.notice_enabled(notice) {
+                    return None;
+                }
+                let mut dedup = self.dedup.lock();
+                match notice {
+                    PlaybackNotice::TrackChange => {
+                        // Fire once per distinct track. If the URI is
+                        // unknown (a play-* command with no payload),
+                        // suppress and let the URI-bearing librespot
+                        // `started`/`track changed` event fire instead.
+                        let uri = track_uri_from_event(action, playback.as_ref())?;
+                        if dedup.last_track_uri.as_deref() == Some(uri.as_str()) {
+                            return None;
+                        }
+                        dedup.last_track_uri = Some(uri);
+                        dedup.last_transport = None;
+                    }
+                    PlaybackNotice::Pause | PlaybackNotice::Resume => {
+                        if dedup.last_transport == Some(notice) {
+                            return None;
+                        }
+                        dedup.last_transport = Some(notice);
+                    }
+                    PlaybackNotice::Skip => {
+                        dedup.last_transport = Some(notice);
+                    }
+                }
+                drop(dedup);
                 let s = expand_tokens(&self.config.summary, action);
                 let b = expand_tokens(&self.config.body, action);
                 Some((s, b))
@@ -121,6 +185,46 @@ impl NotificationsHandle {
             _ => None,
         }
     }
+}
+
+/// Classify a `PlaybackChanged` action label into the notice it may
+/// raise. `optimistic-*` actions are ignored — the daemon emits them
+/// for instant client feedback and always follows with an authoritative
+/// event, so notifying on both would double-fire. Action labels that
+/// are neither a transport change nor a track change (volume, seek,
+/// shuffle, repeat, queue, warmed, snapshot, refreshed, transfer) raise
+/// nothing.
+fn classify_playback_action(action: &str) -> Option<PlaybackNotice> {
+    if action.starts_with("optimistic-") {
+        return None;
+    }
+    // librespot embeds the URI after the verb: "started spotify:track:x",
+    // "track changed spotify:track:x".
+    if action.starts_with("track changed") || action.starts_with("started") {
+        return Some(PlaybackNotice::TrackChange);
+    }
+    match action {
+        "pause" | "paused" => Some(PlaybackNotice::Pause),
+        "resume" | "resumed" => Some(PlaybackNotice::Resume),
+        "next" | "previous" => Some(PlaybackNotice::Skip),
+        "play-uri" | "play-context" | "play-item" => Some(PlaybackNotice::TrackChange),
+        _ => None,
+    }
+}
+
+/// Resolve the playing track URI for a `PlaybackChanged`, preferring the
+/// event payload and falling back to the trailing URI token librespot
+/// embeds in its action labels. Used to dedup track-change notices.
+fn track_uri_from_event(action: &str, playback: Option<&Playback>) -> Option<String> {
+    if let Some(item) = playback.and_then(|p| p.item.as_ref()) {
+        if !item.uri.is_empty() {
+            return Some(item.uri.clone());
+        }
+    }
+    action
+        .rsplit_once(' ')
+        .map(|(_, uri)| uri.to_string())
+        .filter(|uri| uri.starts_with("spotify:"))
 }
 
 /// Pure-function token expansion. PlaybackChanged events don't carry
@@ -160,17 +264,120 @@ mod tests {
             ..NotificationsConfig::default()
         })
         .expect("notifications handle should construct");
-        // PlaybackChanged would normally fire, but the gate is at the
-        // top of handle(); render() is called only after the gate.
-        // Calling render() directly still returns Some — render() is
-        // pure; the gate lives in handle(). This test locks the gate.
+        // A track-change event renders Some (on_track_change defaults
+        // true), proving the suppression when disabled lives in the
+        // `enabled` gate at the top of handle(), not in render().
         let ev = DaemonEvent::PlaybackChanged {
-            action: "next".into(),
+            action: "started spotify:track:1".into(),
             playback: None,
         };
         assert!(h.render(&ev).is_some());
         // The actual `handle()` invocation skips the notification when
         // disabled; we don't exercise the notify-rust backend in tests.
+    }
+
+    fn enabled_config() -> NotificationsConfig {
+        NotificationsConfig {
+            enabled: true,
+            ..NotificationsConfig::default()
+        }
+    }
+
+    fn playback_changed(action: &str) -> DaemonEvent {
+        DaemonEvent::PlaybackChanged {
+            action: action.into(),
+            playback: None,
+        }
+    }
+
+    #[test]
+    fn optimistic_actions_never_notify() {
+        assert!(classify_playback_action("optimistic-pause").is_none());
+        assert!(classify_playback_action("optimistic-next").is_none());
+        assert!(classify_playback_action("optimistic-play-uri").is_none());
+    }
+
+    #[test]
+    fn non_transport_actions_never_notify() {
+        for action in [
+            "volume 40",
+            "seek",
+            "shuffle",
+            "warmed",
+            "snapshot",
+            "refreshed",
+            "transfer",
+            "queue",
+        ] {
+            assert!(
+                classify_playback_action(action).is_none(),
+                "{action} should not notify"
+            );
+        }
+    }
+
+    #[test]
+    fn pause_resume_skip_gated_by_their_own_flags() {
+        // Default config: only on_track_change is true.
+        let h = NotificationsHandle::new(enabled_config()).expect("handle");
+        assert!(
+            h.render(&playback_changed("paused")).is_none(),
+            "on_pause defaults off"
+        );
+        assert!(
+            h.render(&playback_changed("resumed")).is_none(),
+            "on_resume defaults off"
+        );
+        assert!(
+            h.render(&playback_changed("next")).is_none(),
+            "on_skip defaults off"
+        );
+
+        let h = NotificationsHandle::new(NotificationsConfig {
+            on_pause: true,
+            on_resume: true,
+            on_skip: true,
+            ..enabled_config()
+        })
+        .expect("handle");
+        assert!(h.render(&playback_changed("paused")).is_some());
+        assert!(h.render(&playback_changed("resumed")).is_some());
+        assert!(h.render(&playback_changed("next")).is_some());
+    }
+
+    #[test]
+    fn pause_dedups_command_then_librespot_emit() {
+        let h = NotificationsHandle::new(NotificationsConfig {
+            on_pause: true,
+            ..enabled_config()
+        })
+        .expect("handle");
+        // Command-authoritative "pause" then librespot "paused" for one
+        // user action: only the first should notify.
+        assert!(h.render(&playback_changed("pause")).is_some());
+        assert!(
+            h.render(&playback_changed("paused")).is_none(),
+            "second pause emit should be deduped"
+        );
+    }
+
+    #[test]
+    fn track_change_dedups_by_uri() {
+        let h = NotificationsHandle::new(enabled_config()).expect("handle");
+        // Command "play-uri" carries no URI in the action and no payload
+        // → suppressed; the librespot "started {uri}" fires.
+        assert!(h.render(&playback_changed("play-uri")).is_none());
+        assert!(h
+            .render(&playback_changed("started spotify:track:abc"))
+            .is_some());
+        // Same track again → deduped.
+        assert!(h
+            .render(&playback_changed("track changed spotify:track:abc"))
+            .is_none());
+        // New track → fires.
+        assert!(h
+            .render(&playback_changed("track changed spotify:track:def"))
+            .is_some());
     }
 
     #[test]

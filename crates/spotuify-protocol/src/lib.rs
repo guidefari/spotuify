@@ -1934,6 +1934,16 @@ pub struct SystemDiagnostics {
     pub discord_application_id: Option<String>,
 }
 
+/// Maximum size of a single length-delimited IPC frame.
+///
+/// 16 MiB is deliberately above tokio-util's 8 MB default: legitimate
+/// frames carry album-art byte payloads (`Image`/`CoverArt`) and
+/// `ClientSeed` snapshots with hundreds of queue items. The socket is
+/// local-only (0600, owner-only), so the larger cap is not a
+/// memory-DoS surface; oversize frames are still rejected by the
+/// codec before any allocation of the payload.
+pub const MAX_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
 pub struct IpcCodec {
     inner: LengthDelimitedCodec,
 }
@@ -1943,7 +1953,7 @@ impl IpcCodec {
         Self {
             inner: LengthDelimitedCodec::builder()
                 .length_field_length(4)
-                .max_frame_length(16 * 1024 * 1024)
+                .max_frame_length(MAX_IPC_FRAME_BYTES)
                 .new_codec(),
         }
     }
@@ -1988,6 +1998,32 @@ mod tests {
         IpcPayload, PlaybackCommand, Request, Response, ResponseData, SearchSortData, UpgradeHint,
         UpgradeMethod,
     };
+
+    #[test]
+    fn codec_rejects_frames_larger_than_the_documented_limit() {
+        // The 4-byte length prefix is attacker-influencable on a shared
+        // socket; the codec must refuse oversize frames up front instead
+        // of allocating for them.
+        use tokio_util::codec::Decoder as _;
+        let mut codec = super::IpcCodec::new();
+        let oversize = (super::MAX_IPC_FRAME_BYTES as u32) + 1;
+        let mut src = bytes::BytesMut::new();
+        src.extend_from_slice(&oversize.to_be_bytes());
+        src.extend_from_slice(&[0_u8; 16]);
+        let err = codec.decode(&mut src).expect_err("oversize frame accepted");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        // A frame at the boundary still decodes (truncated payload just
+        // yields Ok(None) while the codec waits for more bytes).
+        let mut codec = super::IpcCodec::new();
+        let mut src = bytes::BytesMut::new();
+        src.extend_from_slice(&(super::MAX_IPC_FRAME_BYTES as u32).to_be_bytes());
+        src.extend_from_slice(&[0_u8; 16]);
+        assert!(codec
+            .decode(&mut src)
+            .expect("boundary frame rejected")
+            .is_none());
+    }
 
     #[test]
     fn error_kind_roundtrips_and_typed_constructor_sets_code_and_retryability() {

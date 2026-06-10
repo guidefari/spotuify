@@ -26,6 +26,9 @@ const MERCURY_LYRICS_TIMEOUT: Duration = Duration::from_secs(6);
 const MUTATION_BODY_TIMEOUT: Duration = Duration::from_secs(30);
 const TRANSPORT_BACKEND_TIMEOUT: Duration = Duration::from_secs(5);
 const FAST_TRANSPORT_TIMEOUT: Duration = Duration::from_millis(250);
+/// After the fast deadline elapses we keep watching the player actor's
+/// ack for this long so a late failure can reconcile.
+const FAST_TRANSPORT_ACK_GRACE: Duration = Duration::from_secs(10);
 const DEVICE_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const DEVICE_REGISTRY_TIMEOUT: Duration = Duration::from_secs(8);
 const DEVICE_REGISTRY_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -3286,13 +3289,6 @@ struct ExpectedPlayback {
     is_playing: Option<bool>,
 }
 
-impl CommandResultPersistOutcome {
-    #[allow(dead_code)]
-    pub(crate) fn applied_any(&self) -> bool {
-        self.playback.is_some() || self.queue_items.is_some() || self.devices.is_some()
-    }
-}
-
 fn post_command_playback_matches(playback: &Playback, expected: Option<&ExpectedPlayback>) -> bool {
     let Some(expected) = expected else {
         return true;
@@ -3936,89 +3932,6 @@ where
     result
 }
 
-/// Phase 6.6 -- record a pending receipt + emit MutationAccepted, then
-/// finalize after the body runs. Best-effort: if the receipts table is
-/// unavailable for any reason we still execute the mutation and emit
-/// the legacy MutationFinished event, so existing call sites keep
-/// working. Returns the body's result unchanged.
-#[allow(dead_code)]
-async fn record_mutation<T>(
-    state: &std::sync::Arc<DaemonState>,
-    action: &str,
-    request_summary: &str,
-    body: impl std::future::Future<Output = anyhow::Result<T>>,
-) -> anyhow::Result<T> {
-    let receipt_id = spotuify_protocol::ReceiptId::new_v7();
-    record_mutation_with_id(state, receipt_id, action, request_summary, body).await
-}
-
-/// Same as `record_mutation` but with a caller-provided receipt id, so
-/// `record_operation` can link receipt and operation rows together.
-async fn record_mutation_with_id<T>(
-    state: &std::sync::Arc<DaemonState>,
-    receipt_id: spotuify_protocol::ReceiptId,
-    action: &str,
-    request_summary: &str,
-    body: impl std::future::Future<Output = anyhow::Result<T>>,
-) -> anyhow::Result<T> {
-    let started = crate::analytics::now_ms();
-    let receipt = spotuify_protocol::Receipt {
-        receipt_id,
-        action: action.to_string(),
-        status: spotuify_protocol::ReceiptStatus::Pending,
-        message: "queued".to_string(),
-        started_at_ms: started,
-        finished_at_ms: None,
-        error: None,
-    };
-    let _ = state
-        .store()
-        .insert_pending_receipt(&receipt, request_summary)
-        .await;
-    state.emit_event(spotuify_protocol::DaemonEvent::MutationAccepted {
-        receipt_id,
-        action: action.to_string(),
-    });
-
-    let result = body.await;
-    let finished = crate::analytics::now_ms();
-    let (status, message, error_summary) = match &result {
-        Ok(_) => (
-            spotuify_protocol::ReceiptStatus::Confirmed,
-            format!("{action} confirmed"),
-            None,
-        ),
-        Err(err) => {
-            let msg = err.to_string();
-            (
-                spotuify_protocol::ReceiptStatus::Failed,
-                msg.clone(),
-                Some(spotuify_protocol::ApiErrorSummary {
-                    kind: spotuify_protocol::IpcErrorKind::Provider,
-                    message: msg,
-                    retry_after_secs: None,
-                }),
-            )
-        }
-    };
-    let _ = state
-        .store()
-        .finalize_receipt(
-            receipt_id,
-            status,
-            &message,
-            finished,
-            error_summary.as_ref(),
-        )
-        .await;
-    state.emit_event(spotuify_protocol::DaemonEvent::MutationFinalized {
-        receipt_id,
-        status,
-        message: message.clone(),
-    });
-    result
-}
-
 /// Spawn a mutation body and return an optimistic `Mutation` response
 /// immediately. The IPC caller sees `ok=true` and a "queued" message
 /// before Spotify confirms; subscribers to the daemon event bus see
@@ -4393,7 +4306,7 @@ fn local_transport_playback_snapshot(
 }
 
 async fn apply_fast_transport(
-    state: &DaemonState,
+    state: &Arc<DaemonState>,
     cmd: crate::state::TransportCmd,
     effective_command: &CommandKind,
     action: &str,
@@ -4403,12 +4316,16 @@ async fn apply_fast_transport(
             tracing::debug!(action, "fast local transport applied");
             Some(local_transport_command_result(state, effective_command))
         }
-        Ok(FastTransportStatus::Dispatched) => {
+        Ok(FastTransportStatus::Dispatched { ack }) => {
             tracing::debug!(
                 timeout_ms = FAST_TRANSPORT_TIMEOUT.as_millis(),
                 action,
                 "fast local transport dispatched without waiting for backend ack"
             );
+            // The deadline elapsed before the player acked. We're about
+            // to tell clients the command applied, so watch the late ack
+            // and reconcile if it turns out the backend rejected it.
+            spawn_fast_transport_ack_watcher(state.clone(), ack, action.to_string());
             Some(local_transport_command_result(state, effective_command))
         }
         Err(err) => {
@@ -4416,6 +4333,32 @@ async fn apply_fast_transport(
             None
         }
     }
+}
+
+/// Watch a fast-transport ack that arrived after the fast deadline. A
+/// late success is a no-op (the optimistic state already matches); a
+/// late failure or a dropped ack means the daemon optimistically
+/// reported success that didn't hold, so bump the mutation seq and
+/// refresh playback to overwrite the stale optimistic snapshot with
+/// authoritative state.
+fn spawn_fast_transport_ack_watcher(
+    state: Arc<DaemonState>,
+    ack: tokio::sync::oneshot::Receiver<spotuify_player::PlayerResult<()>>,
+    action: String,
+) {
+    state.clone().spawn_background("fast-transport-ack", async move {
+        let reconcile = |reason: &str| {
+            tracing::warn!(action = %action, reason, "fast transport did not hold; reconciling");
+            state.bump_mutation_seq();
+            spawn_playback_refresh(state.clone());
+        };
+        match tokio::time::timeout(FAST_TRANSPORT_ACK_GRACE, ack).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(err))) => reconcile(&format!("backend error: {err}")),
+            Ok(Err(_)) => reconcile("player actor dropped the ack"),
+            Err(_) => reconcile("ack timed out"),
+        }
+    });
 }
 
 fn local_transport_command_result(

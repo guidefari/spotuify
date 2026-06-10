@@ -16,7 +16,7 @@ The user maintains the live state of their machine and account; you have everyth
 - **Run the failing case:** `./target/release/spotuify <subcommand>` (`search`, `play`, `queue add`, `playlists`, etc.)
 - **Read the daemon log:** `./target/release/spotuify logs path` then tail that file; filter out tantivy noise with `grep -v tantivy`
 - **Auth token for raw Spotify probes:** use `spotuify auth bearer` to print the live Web API bearer, then `curl -H "Authorization: Bearer $(spotuify auth bearer)" https://api.spotify.com/v1/...` to probe upstream directly. Default auth is the user dev-app PKCE path; `<config_dir>/auth/token.json` holds the OAuth token with mode 0600 on Unix. First-party/keymaster auth is opt-in (`SPOTUIFY_USE_FIRST_PARTY=1`) and stores only refresh token + scopes in `<config_dir>/auth/first-party.json`.
-- **Tantivy lockfile stuck:** remove `.tantivy-*.lock` under the current instance `search_index` after stopping that instance's daemon.
+- **Tantivy lockfile stuck:** restart the daemon — its startup preflight clears stale `.tantivy-*.lock` files automatically. Manual removal (under the current instance `search_index`, after stopping that instance's daemon) is only needed if the daemon itself won't start.
 - **Stray daemons:** do not broad-`pkill` `spotuify daemon`; stop the current instance with its own binary/env so dev and prod do not kill each other.
 
 **Only ask the user when the case genuinely needs human judgment:** visual TUI verification, a Spotify-account-state question (e.g. "are you on Premium?"), or a product decision. If you find yourself guessing limit values, parameter shapes, or what an error means — stop, drive the case, and read the actual response. One direct empirical test usually replaces five rounds of guesses.
@@ -222,8 +222,10 @@ Reference docs:
 
 ### Running tests
 
-- Use `scripts/cargo-test` as the canonical test runner. It reaps stale `cargo` processes and points `CARGO_TARGET_DIR` at `target-cli/`, isolating CLI cargo from rust-analyzer's locks on `target/`.
-- Prefer `scripts/cargo-test -p <crate> --tests` over `--workspace`. The workspace is 14 crates; a full test/build commonly runs minutes and overruns agent Bash timeouts, leaving orphaned `cargo` holding the target-dir lock.
+- **Inner dev loop: `scripts/cargo-nextest -p <crate>`.** Same reaping/target-dir isolation as `scripts/cargo-test`, but runs tests in parallel per-test processes and terminates hung tests via `.config/nextest.toml` slow-timeouts (a keychain prompt or stuck daemon fails one test instead of wedging the run). Filter while iterating: `scripts/cargo-nextest -p <crate> -E 'test(<substring>)'`. For type errors alone, `cargo check -p <crate>` (with `CARGO_TARGET_DIR=target-cli`) is faster than any test run.
+- **Pre-merge gate: `scripts/cargo-test --workspace` + `scripts/smoke.sh`.** Nextest skips doctests, so the canonical `cargo test` runner remains the final word. Batch this once per wave/PR, not per edit.
+- `scripts/cargo-test` reaps stale `cargo` processes and points `CARGO_TARGET_DIR` at `target-cli/`, isolating CLI cargo from rust-analyzer's locks on `target/`.
+- Prefer `-p <crate>` over `--workspace` in either runner. The workspace is 14 crates; a full test/build commonly runs minutes and overruns agent Bash timeouts, leaving orphaned `cargo` holding the target-dir lock.
 - Never pipe `cargo test` through `tail`/`head`/`grep` inside an agent Bash invocation. The pipeline can outlive the parent shell when the Bash tool times out; the orphaned `cargo` then blocks the next run. Capture full output, or use `--quiet`, or run via `scripts/cargo-test` which handles cleanup.
 - If a run unexpectedly hangs, `pgrep -f 'cargo test'` first; zombies from prior turns are the most common cause.
 

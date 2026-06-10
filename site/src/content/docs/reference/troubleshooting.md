@@ -92,6 +92,21 @@ Spotify auth at all:
 SPOTUIFY_FAKE_SPOTIFY=1 SPOTUIFY_CLIENT_ID=fake-client-id spotuify
 ```
 
+### Login redirect fails with `localhost`
+
+Spotify's November 2025 OAuth migration only accepts the literal
+`http://127.0.0.1:<port>/callback` loopback redirect — `localhost` and
+`::1` are rejected. The default config already uses `127.0.0.1`; if you
+overrode `redirect_uri`, fix it and update the redirect URI registered
+in your Spotify Developer app to match:
+
+```bash
+spotuify config set redirect_uri http://127.0.0.1:8888/callback
+spotuify login
+```
+
+`spotuify doctor` flags a `localhost`/`::1` redirect host as a warning.
+
 ## No active device
 
 ```bash
@@ -131,6 +146,19 @@ spotuify cache status --format json
 spotuify reindex
 spotuify search "test" --source local
 ```
+
+### Search index reports `LockBusy`
+
+The daemon clears stale Tantivy lock files (`.tantivy-*.lock`) automatically
+during startup preflight, so a restart fixes a stuck index lock:
+
+```bash
+spotuify daemon restart
+```
+
+Manual lock removal under the instance's `search_index` directory is only
+needed if the daemon itself refuses to start — and only after stopping that
+instance's daemon.
 
 ## Cache looks broken
 

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Fast dev-loop test runner: scripts/cargo-test, but via cargo-nextest.
+#
+# Why nextest for the inner loop:
+# - per-test processes run in parallel → 2-3x faster wall clock on the
+#   multi-binary integration suites;
+# - per-test slow-timeouts (.config/nextest.toml) terminate hung tests
+#   (keychain prompts, stuck daemons) instead of wedging the run;
+# - one run reports every failure (fail-fast = false).
+#
+# It does NOT run doctests — the pre-merge gate is still
+# `scripts/cargo-test --workspace` + scripts/smoke.sh.
+#
+# Usage:
+#   scripts/cargo-nextest -p spotuify-daemon                 # one crate
+#   scripts/cargo-nextest -p spotuify-daemon -E 'test(seed)' # filtered
+#   scripts/cargo-nextest --workspace --profile full         # end of wave
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Same stale-process reaping as scripts/cargo-test (see rationale there).
+stale=$(pgrep -f "cargo (test|build|check|nextest) .*${REPO_ROOT}" 2>/dev/null || true)
+if [ -n "${stale}" ]; then
+  echo "reaping stale cargo processes: ${stale}" >&2
+  echo "${stale}" | xargs kill -9 2>/dev/null || true
+fi
+
+stale_daemons=$(pgrep -f "${REPO_ROOT}/target.*debug.*spotuify daemon" 2>/dev/null || true)
+if [ -n "${stale_daemons}" ]; then
+  echo "reaping orphaned test daemons: ${stale_daemons}" >&2
+  echo "${stale_daemons}" | xargs kill -9 2>/dev/null || true
+fi
+
+export CARGO_TARGET_DIR="${REPO_ROOT}/target-cli"
+exec cargo nextest run "$@"

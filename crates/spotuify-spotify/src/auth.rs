@@ -55,13 +55,27 @@ const SCOPES: &[&str] = &[
     "app-remote-control",
 ];
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct StoredToken {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: u64,
     pub scope: String,
     pub token_type: String,
+}
+
+// Manual impl so a stray `{:?}` in logs or error chains can never leak
+// the live access/refresh tokens.
+impl std::fmt::Debug for StoredToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredToken")
+            .field("access_token", &"<redacted>")
+            .field("refresh_token", &"<redacted>")
+            .field("expires_at", &self.expires_at)
+            .field("scope", &self.scope)
+            .field("token_type", &self.token_type)
+            .finish()
+    }
 }
 
 pub fn missing_required_scopes(token: &StoredToken) -> Vec<&'static str> {
@@ -942,7 +956,18 @@ fn bind_redirect_listener(redirect_uri: &str) -> AnyResult<TcpListener> {
         .host_str()
         .ok_or_else(|| anyhow!("redirect URI host missing"))?;
     if !redirect_host_is_loopback(host) {
-        bail!("redirect URI host `{host}` is not loopback; use 127.0.0.1, localhost, or ::1");
+        bail!("redirect URI host `{host}` is not loopback; use 127.0.0.1");
+    }
+    if !host_is_literal_ipv4_loopback(host) {
+        // Spotify's Nov 2025 OAuth migration rejects `localhost`/`::1`
+        // redirect URIs; only the literal 127.0.0.1 is accepted. We still
+        // bind so existing configs keep limping, but the authorize step
+        // will likely fail upstream.
+        tracing::warn!(
+            host,
+            "redirect URI host is a loopback alias Spotify rejects; \
+             use http://127.0.0.1:<port>/callback"
+        );
     }
     let port = url
         .port_or_known_default()
@@ -958,6 +983,12 @@ fn redirect_host_is_loopback(host: &str) -> bool {
         Ok(addr) => addr.is_loopback(),
         Err(_) => false,
     }
+}
+
+/// Spotify only accepts the literal IPv4 loopback in redirect URIs
+/// since the Nov 2025 OAuth migration.
+fn host_is_literal_ipv4_loopback(host: &str) -> bool {
+    matches!(host.parse::<IpAddr>(), Ok(IpAddr::V4(addr)) if addr.is_loopback())
 }
 
 fn wait_for_code(listener: TcpListener, expected_state: &str) -> AnyResult<String> {

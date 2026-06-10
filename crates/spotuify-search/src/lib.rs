@@ -5,6 +5,7 @@
 pub mod reindex;
 
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::Result;
 use tantivy::collector::TopDocs;
@@ -34,6 +35,33 @@ pub struct SearchUpdateBatch {
 #[derive(Clone)]
 pub struct SearchServiceHandle {
     tx: mpsc::Sender<SearchCommand>,
+}
+
+/// Point operations (search / num_docs / clear / shutdown) should
+/// complete in milliseconds against a healthy index. If the blocking
+/// worker is wedged (corrupt segment, stuck merge, a panic that left the
+/// channel un-drained) the caller must not hang the daemon request path
+/// or the sync loop forever.
+const SEARCH_OP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bulk reindex batches legitimately take longer than a point query.
+const APPLY_BATCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Errors surfaced by [`SearchServiceHandle`] before the underlying
+/// Tantivy operation even runs. Tantivy's own failures stay inside the
+/// inner `anyhow::Result` returned by each command.
+#[derive(Debug, thiserror::Error)]
+pub enum SearchServiceError {
+    /// The worker channel is closed — the service was never started or
+    /// has shut down.
+    #[error("search service unavailable: {0}")]
+    Unavailable(String),
+    /// The worker dropped the response sender without replying (e.g. it
+    /// panicked mid-operation).
+    #[error("search service worker stopped")]
+    WorkerStopped,
+    /// The worker did not respond within the operation's deadline.
+    #[error("search service timed out after {0:?} on `{1}`")]
+    Timeout(Duration, &'static str),
 }
 
 pub struct SearchIndex {
@@ -114,18 +142,47 @@ impl SearchServiceHandle {
         (Self { tx }, handle)
     }
 
+    /// Send a command and await its reply under a deadline. Returns the
+    /// raw payload `T` the worker sent back; callers flatten any inner
+    /// `Result`. A timeout is logged distinctly so it is visible in the
+    /// daemon log even when the caller degrades the error to a default.
+    async fn dispatch<T>(
+        &self,
+        op: &'static str,
+        op_timeout: Duration,
+        command: SearchCommand,
+        resp_rx: oneshot::Receiver<T>,
+    ) -> Result<T, SearchServiceError> {
+        self.tx
+            .send(command)
+            .await
+            .map_err(|err| SearchServiceError::Unavailable(err.to_string()))?;
+        match tokio::time::timeout(op_timeout, resp_rx).await {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(_)) => Err(SearchServiceError::WorkerStopped),
+            Err(_) => {
+                tracing::warn!(
+                    op,
+                    timeout_ms = op_timeout.as_millis() as u64,
+                    "search service operation timed out; worker may be wedged"
+                );
+                Err(SearchServiceError::Timeout(op_timeout, op))
+            }
+        }
+    }
+
     pub async fn apply_batch(&self, batch: SearchUpdateBatch) -> Result<()> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(SearchCommand::ApplyBatch {
+        self.dispatch(
+            "apply_batch",
+            APPLY_BATCH_TIMEOUT,
+            SearchCommand::ApplyBatch {
                 batch,
                 resp: resp_tx,
-            })
-            .await
-            .map_err(|err| anyhow::anyhow!("search service unavailable: {err}"))?;
-        resp_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("search service worker stopped"))?
+            },
+            resp_rx,
+        )
+        .await?
     }
 
     pub async fn search(
@@ -135,51 +192,51 @@ impl SearchServiceHandle {
         limit: usize,
     ) -> Result<Vec<SearchHit>> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(SearchCommand::Search {
+        self.dispatch(
+            "search",
+            SEARCH_OP_TIMEOUT,
+            SearchCommand::Search {
                 query: query.to_string(),
                 scope,
                 limit,
                 resp: resp_tx,
-            })
-            .await
-            .map_err(|err| anyhow::anyhow!("search service unavailable: {err}"))?;
-        resp_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("search service worker stopped"))?
+            },
+            resp_rx,
+        )
+        .await?
     }
 
     pub async fn clear(&self) -> Result<()> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(SearchCommand::Clear { resp: resp_tx })
-            .await
-            .map_err(|err| anyhow::anyhow!("search service unavailable: {err}"))?;
-        resp_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("search service worker stopped"))?
+        self.dispatch(
+            "clear",
+            SEARCH_OP_TIMEOUT,
+            SearchCommand::Clear { resp: resp_tx },
+            resp_rx,
+        )
+        .await?
     }
 
     pub async fn num_docs(&self) -> Result<u64> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(SearchCommand::NumDocs { resp: resp_tx })
-            .await
-            .map_err(|err| anyhow::anyhow!("search service unavailable: {err}"))?;
-        resp_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("search service worker stopped"))?
+        self.dispatch(
+            "num_docs",
+            SEARCH_OP_TIMEOUT,
+            SearchCommand::NumDocs { resp: resp_tx },
+            resp_rx,
+        )
+        .await?
     }
 
     pub async fn request_shutdown(&self) -> Result<()> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.tx
-            .send(SearchCommand::Shutdown { resp: resp_tx })
-            .await
-            .map_err(|err| anyhow::anyhow!("search service unavailable: {err}"))?;
-        resp_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("search service worker stopped"))?;
+        self.dispatch(
+            "shutdown",
+            SEARCH_OP_TIMEOUT,
+            SearchCommand::Shutdown { resp: resp_tx },
+            resp_rx,
+        )
+        .await?;
         Ok(())
     }
 }
@@ -472,6 +529,38 @@ mod tests {
         assert!(index.search("old", SearchScopeData::Track, 10)?.is_empty());
         assert_eq!(index.num_docs(), 1);
         Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn search_times_out_when_worker_never_replies() {
+        // Hold the worker receiver but never drain it: the send buffers
+        // successfully, yet no reply is ever produced — the exact shape
+        // of a wedged Tantivy worker. With the clock paused, the 5s
+        // deadline elapses instantly once the task is idle.
+        let (tx, _rx) = mpsc::channel::<SearchCommand>(4);
+        let handle = SearchServiceHandle { tx };
+        let err = handle
+            .search("anything", SearchScopeData::Track, 10)
+            .await
+            .expect_err("search should time out");
+        assert!(
+            err.downcast_ref::<SearchServiceError>()
+                .is_some_and(|e| matches!(e, SearchServiceError::Timeout(..))),
+            "expected Timeout, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_unavailable_when_worker_channel_is_closed() {
+        let (tx, rx) = mpsc::channel::<SearchCommand>(4);
+        drop(rx);
+        let handle = SearchServiceHandle { tx };
+        let err = handle.num_docs().await.expect_err("should be unavailable");
+        assert!(
+            err.downcast_ref::<SearchServiceError>()
+                .is_some_and(|e| matches!(e, SearchServiceError::Unavailable(_))),
+            "expected Unavailable, got {err:?}"
+        );
     }
 
     fn track(uri: &str, name: &str, artist: &str) -> MediaItem {

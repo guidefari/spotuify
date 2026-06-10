@@ -13,7 +13,9 @@ spotuify-store = { workspace = true }
 
 anyhow = { workspace = true }
 tantivy = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

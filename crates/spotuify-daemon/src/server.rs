@@ -555,7 +555,16 @@ async fn serve_client_connection(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        // The daemon's broadcast sender is gone (shutdown).
+                        // We can no longer push events, and leaving the
+                        // connection half-open would silently drop the
+                        // responses to any further requests — the
+                        // `join_next` arm only sends while `can_send`, so
+                        // completed responses fall through to the no-op arm
+                        // and the client hangs. Tear the connection down so
+                        // a push-state client reconnects and re-seeds.
                         can_send = false;
+                        accept_requests = false;
                     }
                 }
             }
@@ -1313,6 +1322,10 @@ fn is_orphaned_spotuify_daemon(target_pid: u32) -> bool {
 /// IndexWriter into reporting `LockBusy`. After we've killed any
 /// stray daemons above, removing the files is safe — no live
 /// process holds them.
+///
+/// The removal is deliberately not fsynced: if a hard crash resurrects
+/// the file, this preflight runs again on the next start and removes
+/// it then, so durability buys nothing here.
 fn clear_stale_tantivy_locks() {
     let Ok(index_dir) = spotuify_store::search_index_path() else {
         return;

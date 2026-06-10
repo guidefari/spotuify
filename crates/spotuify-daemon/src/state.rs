@@ -194,10 +194,16 @@ pub(crate) enum TransportCmd {
     Repeat { mode: RepeatMode },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum FastTransportStatus {
+    /// The player actor acked within the fast deadline.
     Applied,
-    Dispatched,
+    /// The deadline elapsed before the ack. The player actor will still
+    /// reply on `ack`; the caller watches it so a late failure
+    /// reconciles instead of vanishing after we told clients it applied.
+    Dispatched {
+        ack: oneshot::Receiver<PlayerResult<()>>,
+    },
 }
 
 enum PlayerWarmCommand {
@@ -755,7 +761,9 @@ impl DaemonState {
             is_active: false,
             is_restricted: false,
             // Web API reports our own device's volume as `null`; surface the
-            // librespot-reported value the forwarder tracks instead.
+            // librespot-reported value the forwarder tracks instead. The read
+            // can be one VolumeChanged event behind a concurrent update —
+            // a single render tick of staleness, accepted.
             volume_percent: *self.own_device_volume.lock(),
             supports_volume: true,
         })
@@ -812,7 +820,6 @@ impl DaemonState {
     }
 
     /// Backend kind for diagnostics output.
-    #[allow(dead_code)]
     pub(crate) async fn player_kind(&self) -> BackendKind {
         let (resp, rx) = oneshot::channel();
         if self
@@ -866,7 +873,7 @@ impl DaemonState {
         cmd: TransportCmd,
         timeout: Duration,
     ) -> PlayerResult<FastTransportStatus> {
-        let (resp, rx) = oneshot::channel();
+        let (resp, mut rx) = oneshot::channel();
         if self
             .player_transport_tx
             .try_send(PlayerTransportCommand { cmd, resp })
@@ -876,13 +883,16 @@ impl DaemonState {
                 "player transport queue unavailable".to_string(),
             ));
         }
-        match tokio::time::timeout(timeout, rx).await {
+        // Borrow `rx` so the timeout doesn't consume it: on the deadline
+        // we hand the still-open receiver back to the caller to watch
+        // for the late ack instead of dropping the result on the floor.
+        match tokio::time::timeout(timeout, &mut rx).await {
             Ok(Ok(Ok(()))) => Ok(FastTransportStatus::Applied),
             Ok(Ok(Err(err))) => Err(err),
             Ok(Err(_)) => Err(spotuify_player::PlayerError::Playback(
                 "player actor stopped".to_string(),
             )),
-            Err(_) => Ok(FastTransportStatus::Dispatched),
+            Err(_) => Ok(FastTransportStatus::Dispatched { ack: rx }),
         }
     }
 
@@ -915,7 +925,6 @@ impl DaemonState {
     /// Publish a Web API token into the slot every backend reads.
     /// Called by the token-refresh path (Phase 9.4 wires this for
     /// real; in 9.1 we set it once after first successful refresh).
-    #[allow(dead_code)]
     pub(crate) fn update_player_token(&self, token: Option<String>) {
         *self.player_token_slot.write() = token;
     }
@@ -2990,6 +2999,35 @@ mod auth_revocation_tests {
         ));
 
         shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn timeout_borrows_receiver_so_late_ack_survives() {
+        // Regression guard for `transport_fast`: it used to pass the
+        // receiver *by value* into `tokio::time::timeout`, so on the
+        // deadline the receiver was dropped and the player actor's late
+        // ack (success or failure) vanished after we had already told
+        // clients the command applied. Borrowing the receiver keeps it
+        // open; the `Dispatched { ack }` variant then hands it to the
+        // reconcile watcher. This locks the exact channel contract.
+        use tokio::sync::oneshot;
+        let (tx, mut rx) = oneshot::channel::<spotuify_player::PlayerResult<()>>();
+
+        // First poll: the actor hasn't acked yet, so the deadline elapses
+        // without consuming the receiver.
+        let timed_out = tokio::time::timeout(Duration::from_millis(5), &mut rx)
+            .await
+            .is_err();
+        assert!(timed_out, "deadline should elapse before the ack");
+
+        // The actor replies late with a failure; the still-open receiver
+        // delivers it instead of dropping it on the floor.
+        tx.send(Err(spotuify_player::PlayerError::Playback(
+            "spirc rejected".to_string(),
+        )))
+        .expect("receiver must still be open");
+        let late = rx.await.expect("ack channel should stay open");
+        assert!(late.is_err(), "late failure must be observable: {late:?}");
     }
 }
 
