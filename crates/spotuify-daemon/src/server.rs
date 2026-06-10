@@ -46,6 +46,7 @@ const START_DAEMON_STABILITY_DELAY: Duration = Duration::from_millis(250);
 const SOCKET_PROBE_ATTEMPTS: usize = 5;
 const SOCKET_PROBE_DELAY: Duration = Duration::from_millis(100);
 const AUTH_HEALTH_INTERVAL: Duration = Duration::from_secs(60);
+const PLAYER_HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 
 pub async fn run_daemon() -> Result<()> {
     spotuify_protocol::paths::secure_current_instance_dirs()
@@ -132,6 +133,7 @@ pub async fn run_daemon() -> Result<()> {
     let sync_tasks = spotuify_sync::spawn_background_scheduler(state.clone());
     let queue_warm_task = state.start_queue_warm_scheduler();
     spawn_auth_health_loop(state.clone());
+    spawn_player_health_loop(state.clone());
     // Eager warm: fire a playback + queue + devices + recent pull
     // BEFORE the socket starts accepting connections so the very first
     // TUI launch can reconcile live playback/devices quickly without
@@ -249,6 +251,42 @@ pub async fn run_daemon() -> Result<()> {
 /// tokens expire hourly; `refresh_auth_health` refreshes through the
 /// shared daemon token cache when the proactive headroom is reached
 /// and updates the player token bridge used by embedded playback.
+/// Periodically probe the embedded player session and auto-reconnect a
+/// zombie (a session that went invalid without emitting
+/// `SessionDisconnected` — dropped TCP, host sleep/wake). The
+/// event-driven reconnect handles clean disconnects; this catches the
+/// silent ones. The probe + reconnect decision + give-up logic lives on
+/// `DaemonState::probe_player_health`; this loop just drives the cadence.
+fn spawn_player_health_loop(state: Arc<DaemonState>) {
+    let task_state = state.clone();
+    state.spawn_background("player-health", async move {
+        let mut shutdown_rx = task_state.shutdown_receiver();
+        let mut interval = tokio::time::interval(PLAYER_HEALTH_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Skip the immediate first tick: the player is still registering
+        // at startup, so a probe now would be a spurious failure.
+        interval.tick().await;
+
+        loop {
+            tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow_and_update() {
+                        break;
+                    }
+                }
+                _ = interval.tick() => {
+                    let snapshot = task_state.probe_player_health(spotuify_core::now_ms()).await;
+                    tracing::trace!(
+                        connected = snapshot.connected,
+                        consecutive_failures = snapshot.consecutive_failures,
+                        "player health probe"
+                    );
+                }
+            }
+        }
+    });
+}
+
 fn spawn_auth_health_loop(state: Arc<DaemonState>) {
     let task_state = state.clone();
     state.spawn_background("auth-health", async move {

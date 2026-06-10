@@ -108,6 +108,14 @@ spotuify play "imagine dragons"
 
 Use this after sleep/wake, VPN changes, or a Spotify session that stopped responding.
 
+The daemon also self-heals: a background health loop probes the embedded
+session every 60s and auto-reconnects a "zombie" session that went dead
+without a disconnect event (the common cause after sleep/wake) — but only
+while this device is the one you're actively using, so a hand-off to your
+phone is never yanked back. After repeated failures it backs off and stops
+retrying; `spotuify doctor` then flags the session and `spotuify reconnect`
+(or just playing something) re-registers the device.
+
 ## Reload config
 
 ```bash

@@ -194,6 +194,48 @@ pub(crate) enum TransportCmd {
     Repeat { mode: RepeatMode },
 }
 
+/// Health of the embedded player session, sampled by the periodic
+/// health loop. A librespot session can go invalid silently (dropped
+/// TCP, host sleep/wake) without emitting a `SessionDisconnected`
+/// event, so the event-driven reconnect path never fires — this is the
+/// "zombie session" the loop exists to catch.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PlayerHealth {
+    /// `now_ms` of the last probe; 0 before the first probe runs.
+    pub last_probe_ms: i64,
+    /// Whether the last probe found a live session.
+    pub connected: bool,
+    /// Consecutive unhealthy probes; reset to 0 on a healthy probe.
+    pub consecutive_failures: u32,
+    /// `now_ms` of the last auto-reconnect the loop triggered.
+    pub last_reconnect_ms: Option<i64>,
+    /// True once we stopped auto-reconnecting after too many failures;
+    /// cleared by a healthy probe. The next user transport re-registers
+    /// the device via the event path regardless.
+    pub gave_up: bool,
+}
+
+/// Stop auto-reconnecting after this many consecutive failed probes to
+/// avoid a reconnect storm against a persistently unreachable Spotify.
+/// At the 60s probe cadence this is ~5 minutes of retries.
+pub(crate) const PLAYER_RECONNECT_GIVE_UP_AFTER: u32 = 5;
+
+/// Pure decision: should the health loop trigger an auto-reconnect this
+/// tick? Only when the session is down, the user still wants this device
+/// active, no reconnect is already in flight, and we haven't hit the
+/// give-up ceiling.
+pub(crate) fn should_auto_reconnect_player(
+    connected: bool,
+    we_are_active: bool,
+    reconnect_in_flight: bool,
+    consecutive_failures: u32,
+) -> bool {
+    !connected
+        && we_are_active
+        && !reconnect_in_flight
+        && consecutive_failures < PLAYER_RECONNECT_GIVE_UP_AFTER
+}
+
 #[derive(Debug)]
 pub(crate) enum FastTransportStatus {
     /// The player actor acked within the fast deadline.
@@ -327,6 +369,12 @@ pub(crate) struct DaemonState {
     /// reconnect and let librespot steal playback back. The device still
     /// re-registers lazily on the next user transport targeting it.
     we_are_active: Arc<AtomicBool>,
+    /// Guards in-flight auto-reconnects. Shared with the player-event
+    /// worker so the event-driven path and the periodic health loop
+    /// never reconnect twice at once.
+    reconnect_in_flight: Arc<AtomicBool>,
+    /// Latest player-session health sample (see `PlayerHealth`).
+    player_health: Arc<parking_lot::Mutex<PlayerHealth>>,
     /// Update-awareness — the latest GitHub release observed by the periodic
     /// check (see `crate::update`). `None` until the first check resolves.
     /// Read by `Request::CheckUpdate`; written by the update loop.
@@ -470,6 +518,7 @@ impl DaemonState {
         let own_device_name_for_worker = own_device_name.clone();
         let own_device_volume_for_worker = own_device_volume.clone();
         let reconnect_in_flight = Arc::new(AtomicBool::new(false));
+        let reconnect_in_flight_for_worker = reconnect_in_flight.clone();
         let we_are_active = Arc::new(AtomicBool::new(false));
         let we_are_active_for_worker = we_are_active.clone();
         let player_worker = tokio::spawn(async move {
@@ -486,7 +535,7 @@ impl DaemonState {
                     player_tx: player_tx_for_worker,
                     own_device_name: own_device_name_for_worker,
                     own_device_volume: own_device_volume_for_worker,
-                    reconnect_in_flight,
+                    reconnect_in_flight: reconnect_in_flight_for_worker,
                     we_are_active: we_are_active_for_worker,
                     embedded_sink_on_ready,
                 },
@@ -542,6 +591,8 @@ impl DaemonState {
             mutation_seq: Arc::new(AtomicU64::new(0)),
             pending_queue_appends: Arc::new(parking_lot::Mutex::new(Vec::new())),
             we_are_active,
+            reconnect_in_flight,
+            player_health: Arc::new(parking_lot::Mutex::new(PlayerHealth::default())),
             latest_release: Arc::new(parking_lot::Mutex::new(None)),
             episode_feed: Arc::new(parking_lot::Mutex::new(None)),
             playback_clock,
@@ -817,6 +868,59 @@ impl DaemonState {
             return false;
         }
         rx.await.unwrap_or(false)
+    }
+
+    /// One health-loop tick: probe the session, fold the result into the
+    /// `PlayerHealth` snapshot, and auto-reconnect a zombie session when
+    /// the user still wants this device active. Returns the snapshot for
+    /// logging/tests.
+    pub(crate) async fn probe_player_health(&self, now_ms: i64) -> PlayerHealth {
+        let connected = self.player_is_connected().await;
+        let active = self.is_we_are_active();
+        let in_flight = self.reconnect_in_flight.load(Ordering::Acquire);
+
+        let (snapshot, reconnect) = {
+            let mut health = self.player_health.lock();
+            health.last_probe_ms = now_ms;
+            health.connected = connected;
+            if connected {
+                health.consecutive_failures = 0;
+                health.gave_up = false;
+            } else {
+                health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+            }
+            let reconnect = should_auto_reconnect_player(
+                connected,
+                active,
+                in_flight,
+                // Decide against the count BEFORE this failure so the
+                // first failed probe still attempts a reconnect.
+                health.consecutive_failures.saturating_sub(1),
+            );
+            if reconnect {
+                health.last_reconnect_ms = Some(now_ms);
+            } else if !connected
+                && active
+                && health.consecutive_failures >= PLAYER_RECONNECT_GIVE_UP_AFTER
+            {
+                health.gave_up = true;
+            }
+            (*health, reconnect)
+        };
+
+        if reconnect {
+            tracing::warn!(
+                consecutive_failures = snapshot.consecutive_failures,
+                "player session is down while active; auto-reconnecting"
+            );
+            schedule_player_reconnect(self.player_tx.clone(), self.reconnect_in_flight.clone());
+        }
+        snapshot
+    }
+
+    /// Current player-session health snapshot for diagnostics.
+    pub(crate) fn player_health_snapshot(&self) -> PlayerHealth {
+        *self.player_health.lock()
     }
 
     /// Backend kind for diagnostics output.
@@ -3028,6 +3132,27 @@ mod auth_revocation_tests {
         .expect("receiver must still be open");
         let late = rx.await.expect("ack channel should stay open");
         assert!(late.is_err(), "late failure must be observable: {late:?}");
+    }
+
+    #[test]
+    fn auto_reconnect_decision_covers_active_inflight_and_giveup() {
+        use super::{should_auto_reconnect_player, PLAYER_RECONNECT_GIVE_UP_AFTER};
+
+        // Down + active + idle + under the ceiling → reconnect.
+        assert!(should_auto_reconnect_player(false, true, false, 0));
+        // Healthy session → never reconnect.
+        assert!(!should_auto_reconnect_player(true, true, false, 0));
+        // Not the active device (handed off to a phone) → leave it alone.
+        assert!(!should_auto_reconnect_player(false, false, false, 0));
+        // A reconnect already in flight → don't stack another.
+        assert!(!should_auto_reconnect_player(false, true, true, 0));
+        // Hit the give-up ceiling → stop until a user transport re-registers.
+        assert!(!should_auto_reconnect_player(
+            false,
+            true,
+            false,
+            PLAYER_RECONNECT_GIVE_UP_AFTER
+        ));
     }
 }
 

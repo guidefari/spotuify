@@ -100,6 +100,32 @@ async fn dispatch(
                 .await?;
                 report.system = Some(state.system_integration.diagnostics());
                 report.viz = Some(state.viz_coordinator().diagnostics().await);
+                // Phase: surface a zombie player session the health loop is
+                // working to recover. Warning severity (a reconnecting
+                // session is degraded, not fatal) so `healthy` stays as
+                // build_findings computed it.
+                let health = state.player_health_snapshot();
+                if !health.connected && state.is_we_are_active() {
+                    let remediation = if health.gave_up {
+                        vec!["spotuify reconnect".to_string()]
+                    } else {
+                        Vec::new()
+                    };
+                    report.findings.push(spotuify_protocol::DoctorFinding {
+                        category: spotuify_protocol::DoctorFindingCategory::Device,
+                        severity: spotuify_protocol::DoctorFindingSeverity::Warning,
+                        message: if health.gave_up {
+                            format!(
+                                "player session is down after {} reconnect attempts; \
+                                 run `spotuify reconnect` or play something to re-register",
+                                health.consecutive_failures
+                            )
+                        } else {
+                            "player session is down; the daemon is auto-reconnecting".to_string()
+                        },
+                        remediation,
+                    });
+                }
                 report
             },
         }),
