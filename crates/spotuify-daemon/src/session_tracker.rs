@@ -35,6 +35,11 @@ pub enum SessionState {
         started_at_ms: i64,
         last_position_ms: u32,
         accumulated_paused_ms: i64,
+        /// Sink-tap `audible_ms()` sampled when this session began. The
+        /// finalize delta against the live counter is sink-accurate
+        /// audible time (network stalls / buffer drops don't advance it).
+        /// 0 when no embedded counter is wired (wall-clock fallback).
+        audible_baseline_ms: u64,
         #[allow(dead_code)]
         source: PlaybackSource,
         #[allow(dead_code)]
@@ -49,6 +54,7 @@ pub enum SessionState {
         paused_at_ms: i64,
         last_position_ms: u32,
         accumulated_paused_ms: i64,
+        audible_baseline_ms: u64,
         #[allow(dead_code)]
         source: PlaybackSource,
         #[allow(dead_code)]
@@ -80,6 +86,10 @@ pub struct SessionTracker {
     store: Option<Arc<Store>>,
     /// Daemon event broadcast — used for `ListenQualified` emission.
     event_tx: Option<broadcast::Sender<spotuify_protocol::IpcMessage>>,
+    /// Embedded backend's PCM sample counter, when available. Lets
+    /// finalize derive audible time from real written samples instead of
+    /// wall-clock-minus-pauses. `None` for non-embedded backends/tests.
+    audio_counter: Option<Arc<spotuify_player::backends::audio_counter_tap::AudioCounterHandle>>,
 }
 
 impl Default for SessionTracker {
@@ -94,7 +104,15 @@ impl SessionTracker {
             state: Mutex::new(SessionState::Idle),
             store: None,
             event_tx: None,
+            audio_counter: None,
         }
+    }
+
+    /// Live sink-tap audible time, or 0 when no counter is wired.
+    fn audible_now(&self) -> u64 {
+        self.audio_counter
+            .as_ref()
+            .map_or(0, |counter| counter.audible_ms())
     }
 
     /// Construct with a store + event broadcast. Production callers
@@ -103,11 +121,15 @@ impl SessionTracker {
     pub fn with_store(
         store: Arc<Store>,
         event_tx: broadcast::Sender<spotuify_protocol::IpcMessage>,
+        audio_counter: Option<
+            Arc<spotuify_player::backends::audio_counter_tap::AudioCounterHandle>,
+        >,
     ) -> Self {
         Self {
             state: Mutex::new(SessionState::Idle),
             store: Some(store),
             event_tx: Some(event_tx),
+            audio_counter,
         }
     }
 
@@ -124,6 +146,7 @@ impl SessionTracker {
                     started_at_ms: spotuify_core::now_ms(),
                     last_position_ms: *position_ms,
                     accumulated_paused_ms: 0,
+                    audible_baseline_ms: self.audible_now(),
                     source: PlaybackSource::Unknown,
                     backend: BackendLabel::Embedded,
                     private_session: false,
@@ -136,6 +159,7 @@ impl SessionTracker {
                     started_at_ms,
                     last_position_ms,
                     accumulated_paused_ms,
+                    audible_baseline_ms,
                     source,
                     backend,
                     private_session,
@@ -148,6 +172,7 @@ impl SessionTracker {
                         paused_at_ms: spotuify_core::now_ms(),
                         last_position_ms: *last_position_ms,
                         accumulated_paused_ms: *accumulated_paused_ms,
+                        audible_baseline_ms: *audible_baseline_ms,
                         source: *source,
                         backend: *backend,
                         private_session: *private_session,
@@ -162,6 +187,7 @@ impl SessionTracker {
                     paused_at_ms,
                     last_position_ms,
                     accumulated_paused_ms,
+                    audible_baseline_ms,
                     source,
                     backend,
                     private_session,
@@ -174,6 +200,7 @@ impl SessionTracker {
                         started_at_ms: *started_at_ms,
                         last_position_ms: *last_position_ms,
                         accumulated_paused_ms: accumulated_paused_ms.saturating_add(pause_delta),
+                        audible_baseline_ms: *audible_baseline_ms,
                         source: *source,
                         backend: *backend,
                         private_session: *private_session,
@@ -239,6 +266,7 @@ impl SessionTracker {
             started_at_ms,
             last_position_ms,
             accumulated_paused_ms,
+            audible_baseline_ms,
             _src,
             _backend,
             private_session,
@@ -250,6 +278,7 @@ impl SessionTracker {
                 started_at_ms,
                 last_position_ms,
                 accumulated_paused_ms,
+                audible_baseline_ms,
                 source,
                 backend,
                 private_session,
@@ -261,6 +290,7 @@ impl SessionTracker {
                 started_at_ms,
                 last_position_ms,
                 accumulated_paused_ms,
+                audible_baseline_ms,
                 source,
                 backend,
                 private_session,
@@ -271,6 +301,7 @@ impl SessionTracker {
                 started_at_ms,
                 last_position_ms,
                 accumulated_paused_ms,
+                audible_baseline_ms,
                 source,
                 backend,
                 private_session,
@@ -279,11 +310,25 @@ impl SessionTracker {
 
         let ended_at_ms = spotuify_core::now_ms();
         let elapsed_ms = ended_at_ms.saturating_sub(started_at_ms).max(0);
-        // Fallback path (no sink-tap): elapsed minus accumulated paused
-        // intervals. Phase 10.1 follow-up wires AudioCounterTap.audible_ms()
-        // for embedded playback so AirPods buffer drops show up as
-        // less audible time.
-        let audible_ms = elapsed_ms.saturating_sub(accumulated_paused_ms).max(0);
+        // Wall-clock fallback: elapsed minus accumulated paused intervals.
+        let wall_clock_audible_ms = elapsed_ms.saturating_sub(accumulated_paused_ms).max(0);
+        // Prefer the sink tap when an embedded counter is wired: the delta
+        // against the session baseline is audible time from real written
+        // PCM, so network stalls / buffer drops count as less audible time.
+        // Guard against a mid-session counter reset (current < baseline) and
+        // a zero reading by falling back to wall-clock.
+        let audible_ms = match self.audio_counter.as_ref() {
+            Some(counter) => {
+                let current = counter.audible_ms();
+                let tap_delta = current.saturating_sub(audible_baseline_ms);
+                if current >= audible_baseline_ms && tap_delta > 0 {
+                    (tap_delta as i64).min(elapsed_ms.max(0))
+                } else {
+                    wall_clock_audible_ms
+                }
+            }
+            None => wall_clock_audible_ms,
+        };
         let store = self.store.as_ref();
         let duration_ms = track_duration_ms(store, &uri)
             .await

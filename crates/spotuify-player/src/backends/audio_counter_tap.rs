@@ -83,8 +83,9 @@ impl AudioCounterHandle {
         (samples * 1_000) / (rate * channels)
     }
 
-    /// Internal: called by the tap on every `write()`.
-    pub(crate) fn add_samples(&self, count: u64) {
+    /// Record `count` PCM samples as written. Called by the tap on every
+    /// `write()`; also the seam tests use to simulate sink output.
+    pub fn add_samples(&self, count: u64) {
         self.samples.fetch_add(count, Ordering::Relaxed);
     }
 }

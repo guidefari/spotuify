@@ -154,6 +154,16 @@ pub trait PlayerBackend: Send + Sync {
     /// Which variant this is. Used for diagnostics and doctor output.
     fn kind(&self) -> BackendKind;
 
+    /// The PCM sample counter, when this backend owns the audio sink
+    /// chain (embedded only). The session tracker reads it to compute
+    /// sink-accurate audible time; `None` backends fall back to
+    /// wall-clock. Default `None`.
+    fn audio_counter(
+        &self,
+    ) -> Option<std::sync::Arc<crate::backends::audio_counter_tap::AudioCounterHandle>> {
+        None
+    }
+
     /// Register a Connect device under `name` and bring the backend
     /// into a ready state. Idempotent for already-running backends.
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId>;

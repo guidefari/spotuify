@@ -397,6 +397,10 @@ impl PlayerBackend for EmbeddedBackend {
         BackendKind::Embedded
     }
 
+    fn audio_counter(&self) -> Option<Arc<AudioCounterHandle>> {
+        Some(self.audio_counter.clone())
+    }
+
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId> {
         // Stash the name BEFORE creating the session so `session_config`
         // can derive the stable device_id (see `derive_device_id`).

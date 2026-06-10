@@ -70,6 +70,7 @@ fn playing_snapshot(
         started_at_ms,
         last_position_ms,
         accumulated_paused_ms,
+        audible_baseline_ms: 0,
         source: PlaybackSource::Unknown,
         backend: BackendLabel::Embedded,
         private_session,
@@ -137,7 +138,7 @@ async fn cache_track_duration(store: &Store, uri: &str, duration_ms: u64) {
 async fn qualified_when_audible_reaches_threshold() {
     let store = in_memory_store().await;
     let (event_tx, mut event_rx) = broadcast::channel(8);
-    let tracker = SessionTracker::with_store(store.clone(), event_tx);
+    let tracker = SessionTracker::with_store(store.clone(), event_tx, None);
 
     // A 3-minute track started ~108s in the past with no pauses gives
     // audible_ms ≈ 108_000. Threshold for a 180s track is min(90s, 240s)
@@ -189,7 +190,7 @@ async fn qualified_when_audible_reaches_threshold() {
 async fn sub_five_second_skip_is_not_qualified() {
     let store = in_memory_store().await;
     let (event_tx, mut event_rx) = broadcast::channel(8);
-    let tracker = SessionTracker::with_store(store.clone(), event_tx);
+    let tracker = SessionTracker::with_store(store.clone(), event_tx, None);
 
     // 4 seconds of audible time on a 180s track. Threshold is 90s.
     let now = spotuify_core::now_ms();
@@ -230,7 +231,7 @@ async fn long_track_skip_uses_cached_duration_not_last_position() {
     let store = in_memory_store().await;
     cache_track_duration(&store, "spotify:track:long", 240_000).await;
     let (event_tx, mut event_rx) = broadcast::channel(8);
-    let tracker = SessionTracker::with_store(store.clone(), event_tx);
+    let tracker = SessionTracker::with_store(store.clone(), event_tx, None);
 
     let now = spotuify_core::now_ms();
     let snapshot = playing_snapshot(
@@ -270,7 +271,7 @@ async fn long_track_skip_uses_cached_duration_not_last_position() {
 async fn session_died_never_qualifies_even_at_threshold() {
     let store = in_memory_store().await;
     let (event_tx, mut event_rx) = broadcast::channel(8);
-    let tracker = SessionTracker::with_store(store.clone(), event_tx);
+    let tracker = SessionTracker::with_store(store.clone(), event_tx, None);
 
     // Build a snapshot that WOULD qualify under the threshold rule
     // (180s audible on a 180s track) but is being finalised as
@@ -320,7 +321,7 @@ async fn session_died_never_qualifies_even_at_threshold() {
 async fn private_session_suppresses_listen_qualified_event() {
     let store = in_memory_store().await;
     let (event_tx, mut event_rx) = broadcast::channel(8);
-    let tracker = SessionTracker::with_store(store.clone(), event_tx);
+    let tracker = SessionTracker::with_store(store.clone(), event_tx, None);
 
     let now = spotuify_core::now_ms();
     let snapshot = playing_snapshot(
@@ -362,7 +363,7 @@ async fn private_session_suppresses_listen_qualified_event() {
 async fn pauses_reduce_audible_time_below_threshold() {
     let store = in_memory_store().await;
     let (event_tx, _event_rx) = broadcast::channel(8);
-    let tracker = SessionTracker::with_store(store.clone(), event_tx);
+    let tracker = SessionTracker::with_store(store.clone(), event_tx, None);
 
     // 3 minutes of wall clock elapsed, but 100s of it was paused.
     // Net audible = 80s on a 180s track → threshold is 90s → not qualified.
@@ -394,7 +395,7 @@ async fn pauses_reduce_audible_time_below_threshold() {
 async fn finalize_on_idle_state_is_a_noop() {
     let store = in_memory_store().await;
     let (event_tx, _event_rx) = broadcast::channel(8);
-    let tracker = SessionTracker::with_store(store.clone(), event_tx);
+    let tracker = SessionTracker::with_store(store.clone(), event_tx, None);
 
     tracker
         .finalize(SessionState::Idle, SkipReason::TrackEnd)
@@ -413,7 +414,7 @@ async fn finalize_on_idle_state_is_a_noop() {
 async fn track_metrics_accumulate_across_listens() {
     let store = in_memory_store().await;
     let (event_tx, _event_rx) = broadcast::channel(8);
-    let tracker = SessionTracker::with_store(store.clone(), event_tx);
+    let tracker = SessionTracker::with_store(store.clone(), event_tx, None);
 
     let now = spotuify_core::now_ms();
     for session in ["a", "b", "c"] {
@@ -439,5 +440,50 @@ async fn track_metrics_accumulate_across_listens() {
         metric.2 >= 3 * 90_000,
         "total_audible_ms must accumulate (got {})",
         metric.2
+    );
+}
+
+/// Sink-tap audible time: when an embedded counter is wired, finalize
+/// uses the real written-sample delta — not wall-clock — so a stalled
+/// sink (buffer drop, network stall) reports less audible time and can
+/// drop a listen below the qualification threshold.
+#[tokio::test]
+async fn sink_tap_audible_overrides_wall_clock_when_counter_present() {
+    use spotuify_player::backends::audio_counter_tap::AudioCounterHandle;
+
+    let store = in_memory_store().await;
+    let (event_tx, mut event_rx) = broadcast::channel(8);
+    let counter = AudioCounterHandle::new(); // 44.1kHz stereo defaults
+    let tracker = SessionTracker::with_store(store.clone(), event_tx, Some(counter.clone()));
+
+    // Simulate only ~10s of real audio written (44_100 * 2 ch * 10s).
+    counter.add_samples(44_100 * 2 * 10);
+    assert_eq!(counter.audible_ms(), 10_000, "counter precondition");
+
+    // Wall-clock says the 180s track played for 200s (would qualify),
+    // but the sink only produced 10s → must NOT qualify.
+    let now = spotuify_core::now_ms();
+    let snapshot = playing_snapshot(
+        "session-stall",
+        "spotify:track:stall",
+        now - 200_000,
+        180_000,
+        0,
+        false,
+    );
+    tracker.finalize(snapshot, SkipReason::TrackEnd).await;
+
+    let (_, qualified, audible_ms, _, _) = latest_fact(&store).await;
+    assert!(
+        audible_ms <= 11_000,
+        "audible_ms must reflect the sink tap (~10s), not the 200s wall-clock; got {audible_ms}"
+    );
+    assert_eq!(
+        qualified, 0,
+        "a stalled sink (10s audible) on a 180s track must not qualify despite 200s wall-clock"
+    );
+    assert!(
+        event_rx.try_recv().is_err(),
+        "an unqualified listen must not emit ListenQualified"
     );
 }

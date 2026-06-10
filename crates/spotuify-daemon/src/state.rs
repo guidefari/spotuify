@@ -461,6 +461,9 @@ impl DaemonState {
             build_player_or_default(Some(viz_coordinator.shared_analyzer()))
                 .context("daemon failed to construct player backend")?;
         let embedded_sink_on_ready = player_box.kind() == BackendKind::Embedded;
+        // Capture the sink-tap counter before the backend moves into the
+        // actor; the session tracker reads it for sink-accurate audible time.
+        let audio_counter = player_box.audio_counter();
         let (player_tx, player_transport_tx, player_warm_tx, player_actor) =
             spawn_player_actor(player_box);
         let (queue_warm, queue_warm_rx) = QueueWarmScheduler::new();
@@ -476,6 +479,7 @@ impl DaemonState {
         let session_tracker = Arc::new(crate::session_tracker::SessionTracker::with_store(
             Arc::new(store.clone()),
             event_tx.clone(),
+            audio_counter,
         ));
 
         // Phase 2/8 — construct the playback clock NOW so we can pass it
