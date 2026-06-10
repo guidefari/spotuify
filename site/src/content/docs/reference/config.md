@@ -116,6 +116,15 @@ The old proactive scope-drift credential read no longer runs at daemon
 startup. Scope checks now reuse the first real token read from the auth
 file.
 
+Media controls (MPRIS on Linux, Now Playing on macOS, SMTC on Windows)
+are on by default. Set `SPOTUIFY_NO_MEDIA_CONTROLS=1` before starting the
+daemon to turn them off entirely — on Windows this also skips the
+hidden-window driver.
+
+```bash
+SPOTUIFY_NO_MEDIA_CONTROLS=1 spotuify daemon restart
+```
+
 ## One-shot overrides
 
 ```bash

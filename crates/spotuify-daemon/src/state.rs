@@ -1873,6 +1873,18 @@ fn build_system_config() -> spotuify_system::SystemConfig {
                 enabled: config.discord.enabled,
                 application_id: config.discord.application_id.clone().unwrap_or_default(),
             });
+            // Media controls (MPRIS / macOS Now Playing / Windows SMTC) are on
+            // by default. `SPOTUIFY_NO_MEDIA_CONTROLS=1` opts out entirely —
+            // `enabled: false` disables it on every platform, and
+            // `allow_hidden_window: false` also skips the Windows hidden-window
+            // driver. souvlaki init failures degrade gracefully (logged, no
+            // handle), so enabling it can't break playback.
+            let media_controls_off = std::env::var("SPOTUIFY_NO_MEDIA_CONTROLS")
+                .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+            system.media_controls = Some(spotuify_system::media_controls::MediaControlsConfig {
+                enabled: !media_controls_off,
+                allow_hidden_window: !media_controls_off,
+            });
         }
     }
     system

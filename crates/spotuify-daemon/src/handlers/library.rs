@@ -1,24 +1,16 @@
 //! `library` request handlers (split out of the dispatch god-function).
 
-#![allow(unused_imports)]
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-use spotuify_core::{now_ms, search_performed_event, Playback};
 use spotuify_protocol::{
-    CommandReceipt, DaemonEvent, EpisodeSort, Operation, OperationId, OperationKind,
-    OperationSource, OperationStatus, PlaybackCommand, PlaylistCreateReceipt, ReceiptId, Request,
-    Response, ResponseData, SearchScopeData, SearchSortData, SearchSourceData,
+    DaemonEvent, OperationKind,
+    OperationSource, Request, ResponseData,
 };
 use spotuify_spotify::actions::{self, CommandKind};
-use spotuify_spotify::client::{MediaItem, MediaKind, SpotifyClient};
-use spotuify_spotify::config::Config;
-use spotuify_spotify::selection;
+use spotuify_spotify::client::{MediaItem, MediaKind};
 
-use crate::analytics::AnalyticsStore;
 use crate::handler::*;
-use crate::retention::retention_cutoffs;
-use crate::state::{DaemonState, FastTransportStatus};
+use crate::state::DaemonState;
 
 pub(crate) async fn dispatch(
     state: Arc<DaemonState>,

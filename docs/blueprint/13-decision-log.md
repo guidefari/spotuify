@@ -536,6 +536,19 @@ playback). Remaining gap: `MediaControlsConfig.allow_hidden_window` (the
 `--no-media-controls` opt-out) is honoured by the driver but not yet wired to a
 CLI flag in `build_system_config`; that's a small follow-up, not a blocker.
 
+Follow-up done (2026-06-11): `build_system_config` never set `system.media_controls`
+at all, so the whole media-controls subsystem (MPRIS / Now Playing / SMTC) was
+dead on every platform. It now defaults to enabled, with
+`SPOTUIFY_NO_MEDIA_CONTROLS=1` disabling it entirely (sets both `enabled` and
+`allow_hidden_window` to false, so the macOS Now Playing / Linux MPRIS
+registration and the Windows hidden-window driver are all skipped). souvlaki
+init failures still degrade gracefully (logged, no handle), so enabling it
+can't break playback. Verified: daemon compile + clippy + 140 tests + smoke.sh
+green with the subsystem on; the macOS Now Playing widget itself needs visual
+confirmation (an OS-widget check, not a CLI surface). Also cleaned up: the
+`#![allow(unused_imports)]` in the split handler modules was replaced with
+precise per-module imports via `cargo fix`.
+
 **macOS CLI signing/notarization in CI (9.N) — wired, guarded.** The release
 DMG was already Developer-ID-signed + notarized locally via
 `clients/macos/scripts/build-dmg.sh`; the gap was the macOS *CLI binary*
