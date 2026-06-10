@@ -414,3 +414,35 @@ Out of scope: sorting podcasts by "tags" or genres. Spotify's API exposes none o
 shows or episodes (only release date, duration, title, show name, publisher,
 played state), so the available-field sorts ship instead. User-applied local tags
 would be a separate feature and were not built.
+
+## D019: Audit-driven removals and won't-do markers (2026-06-10)
+
+A full-codebase audit drove a backlog of fixes. The decisions below record
+what was deliberately removed or declined so they don't get re-litigated.
+
+Decision: **remove the `analytics export` / `analytics import` CLI + protocol
+surfaces.** They only ever returned a "scrobble-bridge follow-up" error. An
+in-tree provider bridge would mean storing third-party credentials and tracking
+ListenBrainz/Last.fm API drift; the shell-hook recipes in `docs/recipes/` are the
+supported live-scrobbling path. Removed `Request::AnalyticsExport`/`AnalyticsImport`,
+`ExportTarget`, both CLI subcommands, the daemon bail arm, and the round-trip test.
+MCP never exposed them, so no agent surface changed.
+
+Won't-do (explicitly declined; revisit only on validated demand):
+
+- **Row thumbnails** in search/playlist lists — visual noise + maintenance cost
+  without a validated need (see Phase 15 cover-art notes).
+- **Manual lyrics provider selection** — automatic mercury→LRCLIB fallback stands
+  until there's a need to override it (Phase 16).
+- **Native PipeWire visualizer capture** — cpal monitor capture already works over
+  PipeWire/Pulse; a native dependency is not worth the marginal latency win.
+- **AUR + Scoop packaging** — external-repo distribution, tracked outside this repo.
+- **MCP resource push over HTTP** — the HTTP transport has no SSE by design; live
+  push subscriptions ship stdio-only.
+
+Accepted as-is (with code comments, no change):
+
+- The IPC frame cap stays at 16 MiB (named `MAX_IPC_FRAME_BYTES`): album-art and
+  large `ClientSeed` payloads are legitimate, and the socket is local-only 0600.
+- Stale tantivy lock removal is not fsynced: the startup preflight re-runs every
+  launch, so a resurrected lock is cleared on the next start.

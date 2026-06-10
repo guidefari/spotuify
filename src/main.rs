@@ -831,24 +831,6 @@ enum AnalyticsCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Export qualified listens. Not implemented yet; use live hooks.
-    Export {
-        /// Export target reserved for the future export bridge.
-        #[arg(long)]
-        target: String,
-        #[arg(long)]
-        since: Option<String>,
-        #[arg(long, value_enum, default_value = "table")]
-        format: OutputFormat,
-    },
-    /// Import historical scrobbles. Not implemented yet.
-    Import {
-        /// Import target reserved for the future import bridge.
-        #[arg(long)]
-        target: String,
-        #[arg(long, value_enum, default_value = "table")]
-        format: OutputFormat,
-    },
 }
 
 #[derive(Subcommand)]
@@ -2233,23 +2215,6 @@ async fn handle_analytics(command: AnalyticsCommand) -> Result<()> {
             let request = spotuify_protocol::Request::AnalyticsPrune { apply };
             send_and_render(request, format).await
         }
-        AnalyticsCommand::Export {
-            target,
-            since,
-            format,
-        } => {
-            let request = spotuify_protocol::Request::AnalyticsExport {
-                target: parse_export_target(&target)?,
-                since_ms: since.as_deref().and_then(parse_iso_or_relative),
-            };
-            send_and_render(request, format).await
-        }
-        AnalyticsCommand::Import { target, format } => {
-            let request = spotuify_protocol::Request::AnalyticsImport {
-                target: parse_export_target(&target)?,
-            };
-            send_and_render(request, format).await
-        }
     }
 }
 
@@ -2635,15 +2600,6 @@ fn parse_search_mode(raw: &str) -> Result<spotuify_protocol::SearchMode> {
         "raw" => Ok(M::Raw),
         "normalized" => Ok(M::Normalized),
         other => anyhow::bail!("invalid --mode `{other}`; expected raw|normalized"),
-    }
-}
-
-fn parse_export_target(raw: &str) -> Result<spotuify_protocol::ExportTarget> {
-    use spotuify_protocol::ExportTarget as T;
-    match raw {
-        "listenbrainz" | "listen_brainz" => Ok(T::ListenBrainz),
-        "lastfm" | "last_fm" => Ok(T::LastFm),
-        other => anyhow::bail!("invalid --target `{other}`; expected listenbrainz|lastfm"),
     }
 }
 

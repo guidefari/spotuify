@@ -118,8 +118,6 @@ const requiredCliPages = [
   'analytics-rediscovery',
   'analytics-rebuild',
   'analytics-prune',
-  'analytics-export',
-  'analytics-import',
   'ops',
   'ops-log',
   'ops-show',

@@ -70,8 +70,7 @@ habit_metrics
 - `spotuify analytics habits --window day|week|month [--since] [--format]`
 - `spotuify analytics search [--raw|--normalized] [--limit] [--format]`
 - `spotuify analytics rediscovery --gap 30d|90d|365d [--format]`
-- `spotuify analytics export --target listenbrainz|lastfm --since DATE` is reserved but currently returns the scrobble-bridge follow-up error.
-- `spotuify analytics import --target listenbrainz|lastfm` is reserved but currently returns the scrobble-bridge follow-up error.
+- Provider export/import was removed (it only ever returned a follow-up error). Live scrobbling is the shell-hook bridge below; see `docs/recipes/`.
 
 ### Shell-hook bridge to external scrobblers
 - Phase 14's `spotuify_hook listen-qualified <uri> <duration_ms>` event is the bridge.
@@ -105,7 +104,7 @@ habit_metrics
 5. [x] Rebuild logic: `analytics rebuild` recomputes derivations from `analytics_events`.
 6. [x] Incremental track rollup: on each finalized listen, update `track_metrics`.
 7. [x] Rich daily habit rollups: habits now derive `top_hour_of_day`, `exploration_ratio`, and `repeat_ratio` from `listen_facts` at read time. Verified by `habit_buckets_include_top_hour_exploration_and_repeat_ratios`.
-8. [x] CLI wiring for analytics top/habits/search/rediscovery/rebuild/prune. Export/import command surfaces exist but intentionally return the scrobble-bridge follow-up error.
+8. [x] CLI wiring for analytics top/habits/search/rediscovery/rebuild/prune. Export/import command surfaces were removed (see decision log); live scrobbling is the shell-hook bridge.
 9. [x] Recipes directory with sample shell-hook scrobblers. Verified `docs/recipes/scrobble-listenbrainz.sh`, `docs/recipes/scrobble-lastfm.sh`, and `docs/recipes/notify-discord-listening.sh` with `bash -n`.
 10. [x] Private-session suppression for `ListenQualified`; local `listen_facts.private_session` still persists.
 11. [x] Retention: `analytics prune` dry-run/apply is wired; daemon startup and daily background retention prune use the same configured retention windows. Verified by `retention_cutoffs_honor_configured_windows`, `cargo check -p spotuify-daemon`, and daemon clippy.

@@ -9,8 +9,7 @@
 //! - `DaemonEvent::ListenQualified` carries optional artist/album.
 
 use spotuify_protocol::{
-    DaemonEvent, ExportTarget, HabitWindow, Request, ResponseData, SearchMode, SinceWindow,
-    TopEntry, TopKind,
+    DaemonEvent, HabitWindow, Request, ResponseData, SearchMode, SinceWindow, TopEntry, TopKind,
 };
 
 #[test]
@@ -74,18 +73,6 @@ fn analytics_search_request_round_trip() {
         limit: 100,
     };
     let json = serde_json::to_string(&req).unwrap();
-    let back: Request = serde_json::from_str(&json).unwrap();
-    assert_eq!(req, back);
-}
-
-#[test]
-fn analytics_export_round_trip() {
-    let req = Request::AnalyticsExport {
-        target: ExportTarget::ListenBrainz,
-        since_ms: Some(1_700_000_000_000),
-    };
-    let json = serde_json::to_string(&req).unwrap();
-    assert!(json.contains("\"listen_brainz\""));
     let back: Request = serde_json::from_str(&json).unwrap();
     assert_eq!(req, back);
 }

@@ -129,8 +129,6 @@ const EXPECTED_PAGES = [
   'analytics-rediscovery',
   'analytics-rebuild',
   'analytics-prune',
-  'analytics-export',
-  'analytics-import',
   'ops',
   'ops-log',
   'ops-show',
@@ -279,8 +277,6 @@ const COMMAND_EXAMPLES = {
   'analytics-rediscovery': ['spotuify analytics rediscovery --gap 90d'],
   'analytics-rebuild': ['spotuify analytics rebuild', 'spotuify analytics rebuild --since 2026-05-01T00:00:00Z'],
   'analytics-prune': ['spotuify analytics prune', 'spotuify analytics prune --apply'],
-  'analytics-export': ['spotuify analytics export --help'],
-  'analytics-import': ['spotuify analytics import --help'],
   ops: ['spotuify ops log', 'spotuify ops undo --dry-run'],
   'ops-log': ['spotuify ops log --limit 20 --format json'],
   'ops-show': ['spotuify ops show 018f... --diff'],
@@ -493,23 +489,6 @@ const EXTRA_HELP = {
     usage: 'spotuify analytics prune [OPTIONS]',
     options: [
       '      --apply            Actually delete rows. Without this flag, print a dry-run report',
-      '      --format <FORMAT>  Output format [default: table] [possible values: table, json, jsonl, csv, ids]',
-    ],
-  }),
-  'analytics-export': manualHelp({
-    about: 'Export qualified listens. Not implemented yet; use live hooks',
-    usage: 'spotuify analytics export [OPTIONS]',
-    options: [
-      '      --target <TARGET>  Export target reserved for the future export bridge [possible values: listenbrainz, lastfm]',
-      '      --since <SINCE>    ISO timestamp to export from',
-      '      --format <FORMAT>  Output format [default: table] [possible values: table, json, jsonl, csv, ids]',
-    ],
-  }),
-  'analytics-import': manualHelp({
-    about: 'Import historical scrobbles. Not implemented yet',
-    usage: 'spotuify analytics import [OPTIONS]',
-    options: [
-      '      --target <TARGET>  Import target reserved for the future import bridge [possible values: listenbrainz, lastfm]',
       '      --format <FORMAT>  Output format [default: table] [possible values: table, json, jsonl, csv, ids]',
     ],
   }),

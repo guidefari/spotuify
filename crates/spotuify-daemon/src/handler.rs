@@ -1646,12 +1646,6 @@ async fn dispatch(
                 dry_run: false,
             })
         }
-        Request::AnalyticsExport { .. } | Request::AnalyticsImport { .. } => {
-            anyhow::bail!(
-                "ListenBrainz/Last.fm export+import lands in the scrobble-bridge follow-up; \
-                 use the shell-hook recipe in docs/recipes/ to scrobble live listens."
-            )
-        }
         Request::OpsLog {
             limit,
             since_ms,

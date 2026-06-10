@@ -484,12 +484,6 @@ pub enum AnalyticsRediscoveryGap {
     YearDays,
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug)]
-pub enum AnalyticsExportTarget {
-    Listenbrainz,
-    Lastfm,
-}
-
 #[derive(Subcommand)]
 pub enum AnalyticsCommand {
     /// Recompute derived listen facts from raw analytics_events.
@@ -533,24 +527,6 @@ pub enum AnalyticsCommand {
     Rediscovery {
         #[arg(long, value_enum, default_value = "90d")]
         gap: AnalyticsRediscoveryGap,
-        #[arg(long, value_enum, default_value = "table")]
-        format: OutputFormat,
-    },
-    /// Export qualified listens. Not implemented yet; use live hooks.
-    Export {
-        /// Export target reserved for the future export bridge.
-        #[arg(long, value_enum)]
-        target: AnalyticsExportTarget,
-        #[arg(long)]
-        since: Option<String>,
-        #[arg(long, value_enum, default_value = "table")]
-        format: OutputFormat,
-    },
-    /// Import historical scrobbles. Not implemented yet.
-    Import {
-        /// Import target reserved for the future import bridge.
-        #[arg(long, value_enum)]
-        target: AnalyticsExportTarget,
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },

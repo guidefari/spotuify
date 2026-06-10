@@ -57,14 +57,13 @@ The hook can scrobble to ListenBrainz, post a now-playing notification, or feed 
 
 Hook commands are executed by the shell exactly as configured. Track data is passed through `SPOTUIFY_*` environment variables; it is not interpolated into the command string.
 
-## Export and import status
+## Scrobbling to external services
 
-```bash
-spotuify analytics export --help
-spotuify analytics import --help
-```
-
-These commands are reserved for a future provider bridge and currently return a clear follow-up error. Use shell hooks for live ListenBrainz, Last.fm, Discord, or custom integrations.
+Spotuify does not ship an in-tree provider export/import bridge — it would mean
+storing third-party credentials and tracking provider API drift. Instead, the
+shell-hook above is the supported path for live ListenBrainz, Last.fm, Discord,
+or custom integrations. Ready-to-use scripts live in `docs/recipes/`
+(`scrobble-listenbrainz.sh`, `scrobble-lastfm.sh`, `notify-discord-listening.sh`).
 
 ## See Also
 

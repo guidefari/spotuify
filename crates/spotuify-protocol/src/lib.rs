@@ -22,8 +22,8 @@ pub use agent_playlists::{
     PlaylistMutationPreview, PlaylistPlan, PlaylistTrackSelection, ResolvedTrackCandidate,
 };
 pub use analytics::{
-    ExportTarget, RebuildReport, RediscoveryCandidate, SearchHistoryEntry, SearchMode, SinceWindow,
-    TopEntry, TopKind,
+    RebuildReport, RediscoveryCandidate, SearchHistoryEntry, SearchMode, SinceWindow, TopEntry,
+    TopKind,
 };
 pub use event_log::{findings_from, EventLog, LoggedEvent, LoggedKind};
 pub use ipc_client::{default_socket_path, IpcClient};
@@ -294,14 +294,6 @@ pub enum Request {
     AnalyticsRediscovery {
         gap_days: u32,
     },
-    AnalyticsExport {
-        target: ExportTarget,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        since_ms: Option<i64>,
-    },
-    AnalyticsImport {
-        target: ExportTarget,
-    },
     AnalyticsPrune {
         apply: bool,
     },
@@ -498,8 +490,6 @@ impl Request {
             | Self::AnalyticsHabits { .. }
             | Self::AnalyticsSearch { .. }
             | Self::AnalyticsRediscovery { .. }
-            | Self::AnalyticsExport { .. }
-            | Self::AnalyticsImport { .. }
             | Self::AnalyticsPrune { .. }
             | Self::OpsLog { .. }
             | Self::OpsShow { .. }
@@ -609,8 +599,6 @@ impl Request {
             Self::AnalyticsHabits { .. } => "analytics-habits",
             Self::AnalyticsSearch { .. } => "analytics-search",
             Self::AnalyticsRediscovery { .. } => "analytics-rediscovery",
-            Self::AnalyticsExport { .. } => "analytics-export",
-            Self::AnalyticsImport { .. } => "analytics-import",
             Self::AnalyticsPrune { .. } => "analytics-prune",
             Self::OpsLog { .. } => "ops-log",
             Self::OpsShow { .. } => "ops-show",

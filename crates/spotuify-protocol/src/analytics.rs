@@ -47,14 +47,6 @@ pub enum SearchMode {
     Normalized,
 }
 
-/// External scrobbler target for export/import.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ExportTarget {
-    ListenBrainz,
-    LastFm,
-}
-
 /// One row in `ResponseData::AnalyticsTop`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TopEntry {
