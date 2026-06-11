@@ -94,7 +94,7 @@ spotuify search "luther vandross" --type track --format ids \
   </div>
   <div>
     <h3>agents</h3>
-    <p>Tell your agent what you are in the mood for. It runs the same CLI you do: plan candidates, resolve tracks, preview the playlist, create it once you approve. Prefer a server? The built-in MCP server exposes 38 tools, backed by the daemon that plays the audio.</p>
+    <p>Tell your agent what you are in the mood for. It runs the same CLI you do: plan candidates, resolve tracks, preview the playlist, create it once you approve. Prefer a server? The built-in MCP server exposes 37 tools, backed by the daemon that plays the audio.</p>
 
 ```bash
 spotuify mcp
@@ -168,6 +168,23 @@ spotuify play "burial archangel"
 
 ## The contract
 
+Forty seconds of the whole claim, on tape: play from the shell, browse in the TUI, quit it, prove playback from a pipe, then queue five tracks through stdin.
+
+<figure class="home-demo home-demo-inline">
+  <video
+    src="/spotuify-daemon-demo.mp4"
+    aria-label="spotuify daemon demo: play from the shell, quit the TUI, playback continues, pipe search results into the queue"
+    autoPlay
+    muted
+    loop
+    playsInline
+    controls
+    preload="metadata"
+  >
+    <a href="/spotuify-daemon-demo.mp4">Watch the daemon demo</a>
+  </video>
+</figure>
+
 <div class="surface-grid">
   <div>
     <h3>the music outlives the client</h3>
@@ -213,7 +230,7 @@ spotuify ops undo --dry-run
   <div><strong>4</strong> clients</div>
   <div><strong>57</strong> commands</div>
   <div><strong>5</strong> output formats</div>
-  <div><strong>38</strong> mcp tools</div>
+  <div><strong>37</strong> mcp tools</div>
   <div><strong>10</strong> tui screens</div>
 </div>
 

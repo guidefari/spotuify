@@ -1,6 +1,6 @@
 # spotuify
 
-spotuify is a Spotify player you drive from your terminal: a keyboard-native TUI and a fully scriptable CLI for the same thing. Search, play, queue, switch devices, build playlists, read synced lyrics, see album art, all without leaving the shell. It also ships an MCP server so a coding agent can run your music the way you do, but that's a bonus. The TUI and CLI are the point.
+spotuify is Spotify as a daemon on your machine. One process owns playback (embedded librespot, registered as a Spotify Connect device), the metadata cache, and a local search index. Four clients sit on top of one Unix socket: a keyboard-native TUI, a CLI that prints `json`, `jsonl`, `csv`, or `ids` for pipes, an MCP server so a coding agent can run your music the way you do, and a macOS menubar app. Search, play, queue, switch devices, build playlists, read synced lyrics, see album art, all without leaving the shell. Quit any client; the music keeps playing.
 
 <p align="center"><img src="site/public/spotuify-demo.gif" alt="spotuify terminal demo: search, play, queue, and device control" /></p>
 
@@ -13,9 +13,9 @@ GA scope: `spotuify` is BYO Spotify app GA for terminal users who are comfortabl
 Fair question. `spotify-player`, `ncspot`, and the original `spotify-tui` already proved a terminal Spotify client is worth living in, and spotuify builds on what they shipped: embedded `librespot` for playback, a keyboard TUI, local library search. It pushes hard in one direction the others treat as a side feature. The CLI is the product, not a wrapper around the TUI.
 
 - **Pipeable everywhere, not just on one command.** Every read, list, status, and search surface speaks `--format json`, `jsonl`, `csv`, or `ids`. `spotuify search "lo-fi beats" --type playlist --format ids` returns bare URIs you can pipe into anything, in any language. Other terminal clients give you JSON on a command or two, or an interactive UI you can't script at all.
-- **Your agents can run it.** Because the CLI is the contract, an LLM controls Spotify through ordinary commands (or the built-in MCP server). Writes are preview-first: `--dry-run` shows what would change, `--yes` commits, and `spotuify ops undo` reverses the last one. A back button for your library, which you want the moment an agent is the one clicking.
+- **Your agents can run it.** Tell an agent what you're in the mood for and it curates through the same ordinary commands you type (or the built-in MCP server): plan candidates, resolve tracks, preview the playlist, create it once you approve. Writes are preview-first: `--dry-run` shows what would change, `--yes` commits, and `spotuify ops undo` reverses the last one. A back button for your library, which you want the moment an agent is the one clicking.
 - **The music keeps playing after you close the window.** A background daemon owns playback, queue, and devices; the TUI, CLI, and agents are all just views of it. Quit the TUI and the song keeps going. Run a command from another shell and it shows up instantly.
-- **Search runs off a local cache.** A SQLite store plus a rebuildable index answer library and search queries from disk, so navigation is instant and an agent gets the same results twice.
+- **Search runs off a local cache.** A SQLite store plus a rebuildable index answer library and search queries from disk, so navigation is instant and an agent gets the same results twice. The cache is metadata only: track, album, playlist, and listening records. The audio itself always streams from Spotify, same as any Connect device.
 
 Want the most polished desktop experience? Use the official app. Want Spotify as something you can type at, pipe, script, and hand to an agent? That's this.
 
@@ -541,20 +541,21 @@ claude mcp add spotuify --command spotuify --args mcp
 "spotuify": { "command": "spotuify", "args": ["mcp"] }
 ```
 
-Tools exposed:
+Tools exposed (37):
 
-- Read: `search`, `now_playing`, `devices_list`, `queue_show`, `playlists_list`, `playlist_tracks`, `library_list`
-- Transport: `play`, `play_uri`, `pause`, `resume`, `next`, `previous`, `seek`, `volume`, `shuffle`, `repeat`
-- Destructive (require `confirm: true`): `queue_add`, `transfer_device`, `playlist_create`, `playlist_add`, `playlist_remove`, `library_save`, `library_unsave`
-- Lyrics: `lyrics`
+- Read: `search`, `now_playing`, `devices_list`, `queue_show`, `playlists_list`, `playlist_tracks`, `library_list`, `playlist_plan`, `playlist_resolve_tracks`
+- Transport: `play`, `play_uri`, `pause`, `resume`, `next`, `previous`, `seek`, `volume`, `shuffle`, `repeat`, `radio_start`
+- Destructive (require `confirm: true`): `queue_add`, `transfer_device`, `playlist_create`, `playlist_add`, `playlist_remove`, `playlist_unfollow`, `playlist_set_image`, `library_save`, `library_unsave`
+- Discovery: `lyrics`, `related_artists`
 - Analytics: `analytics_top`, `analytics_habits`, `analytics_search`, `analytics_rediscovery`
 - Ops: `ops_log`, `undo_last` (`undo_last` is the safety net)
 
-Resources:
+Resources (5):
 
 - `spotuify://playback` — current playback state
 - `spotuify://devices` — visible Spotify Connect devices
 - `spotuify://playlists` — user playlists
+- `spotuify://now_playing/lyrics` — synced lyrics for the current track
 - `spotuify://doctor` — latest health-check report
 
 Destructive tools called without `confirm: true` return a preview the LLM can show to the user. The LLM is expected to relay it and ask before retrying with `confirm: true`. Patterns adopted from spotify-player commit #966.
