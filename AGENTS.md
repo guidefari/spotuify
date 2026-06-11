@@ -108,8 +108,14 @@ The rule covers more than playback: queue reorders, library saves, playlist edit
   6. If shipping the macOS app, build the DMG locally with `clients/macos/scripts/build-dmg.sh` and attach `Spotuify.dmg`, `Spotuify.dmg.sha256`, `Spotuify-{version}.dmg`, and `Spotuify-{version}.dmg.sha256` to the GitHub Release. CI does not build the DMG because the app currently needs the macOS 26 SDK.
   7. Verify install surfaces against the released version:
      - `brew install planetaryescape/spotuify/spotuify` / `brew upgrade planetaryescape/spotuify/spotuify`
-     - `cargo install --git https://github.com/planetaryescape/spotuify --tag v{version} --locked spotuify`
-  8. Report final released version and any install lag/failures.
+     - `cargo install --git https://github.com/planetaryescape/spotuify --tag v{version} --locked spotuify --root "$(mktemp -d)"` — install into a THROWAWAY root, assert `--version`, then delete it. Never `cargo install` into the default `~/.cargo/bin` during a release check; that leaves a second binary that shadows Homebrew on `PATH` (the exact problem step 8 fixes).
+     - `install.sh` (the Linux installer) is verified in CI's `Release CLI Smoke`; do not run it on the user's macOS machine — it drops a binary in `~/.local/bin`.
+  8. **Dedupe the user's machine — leave exactly one install (Homebrew).** Standing preference (chosen 2026-06, "Homebrew only"): the canonical install on this machine is `/opt/homebrew/bin/spotuify` via the tap. After install verification succeeds:
+     - `which -a spotuify` — there must be exactly one hit, `/opt/homebrew/bin/spotuify`.
+     - Remove any other copies that crept in: `~/.cargo/bin/spotuify` (stray `cargo install`), `~/.local/bin/spotuify` (install.sh / manual tarball). Do NOT touch the Homebrew one.
+     - If a removed copy was the one on the live daemon (`spotuify daemon status` binary path) or was shadowing brew on `PATH`, stop that daemon and `spotuify daemon start` so the running daemon is the Homebrew binary.
+     - Confirm: `spotuify --version` == released version AND `command -v spotuify` == `/opt/homebrew/bin/spotuify`.
+  9. Report final released version, the single confirmed install path, and any install lag/failures.
 - Release artifacts generated locally (`spotuify-v*.tar.gz`, `spotuify-v*.zip`, `Spotuify*.dmg`, checksums, generated Formula files) are not source files. Do not commit them. Delete or ignore them after verification.
 
 ## Core principles
