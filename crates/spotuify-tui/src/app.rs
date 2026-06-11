@@ -196,8 +196,9 @@ pub struct DevicePickerModal {
 
 /// Modal listing the local audio output devices the embedded player can
 /// render to (the Mac speakers/headphones). Opened with `O`; Enter sets
-/// `player.audio_output_device` + reconnects. Carries its own snapshot of
-/// the device list since it isn't part of normal app state.
+/// `player.audio_output_device` and asks the daemon to rebind its sink
+/// live (playback resumes; no daemon restart). Carries its own snapshot
+/// of the device list since it isn't part of normal app state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioOutputPickerModal {
     pub outputs: Vec<String>,
@@ -3990,12 +3991,26 @@ fn apply_audio_output_picker_selection(
         spotuify_spotify::config::ConfigKey::PlayerAudioOutputDevice,
         value,
     ) {
-        // The output device binds when the backend's sink is built, so a
-        // re-register wouldn't apply it — restart rebuilds from config.
+        // Live rebind: the daemon swaps its sink in-process and resumes
+        // the interrupted track. No daemon restart, so the TUI's IPC
+        // connection and event stream stay up.
         Ok(_) => {
-            spawn_restart_daemon(async_tx.clone());
+            let device = (!value.is_empty()).then(|| value.to_string());
+            let async_tx_inner = async_tx.clone();
+            tokio::spawn(async move {
+                let outcome = match request_data(Request::SetAudioOutput { device }).await {
+                    Ok(ResponseData::Ack { message }) => Ok(CommandResult {
+                        message: Some(message),
+                        request_refresh: true,
+                        ..Default::default()
+                    }),
+                    Ok(_) => Err("unexpected response to set-audio-output".to_string()),
+                    Err(err) => Err(short_error(err)),
+                };
+                let _ = async_tx_inner.send(AsyncResult::Command(Box::new(outcome)));
+            });
             app.toast = Some(format!(
-                "Audio output → {}; restarting daemon…",
+                "Audio output → {}…",
                 audio_output_toast_label(&name)
             ));
         }

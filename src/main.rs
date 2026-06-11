@@ -412,10 +412,11 @@ enum Command {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Choose which local audio output the embedded player renders to,
-    /// then reconnect so it takes effect. Pass `default` (or empty) to
-    /// follow the system default output again. Name must match one from
-    /// `spotuify audio-outputs`.
+    /// Choose which local audio output the embedded player renders to.
+    /// Applies live: the daemon rebinds its sink in-process and resumes
+    /// the interrupted track where it left off. Pass `default` (or
+    /// empty) to follow the system default output again. Name must
+    /// match one from `spotuify audio-outputs`.
     AudioOutput {
         /// Output device name, or `default` to clear.
         name: String,
@@ -2147,24 +2148,53 @@ fn audio_outputs_command(format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-/// Set the embedded player's local audio output device and reconnect so
-/// it takes effect. `default`/empty clears the override (system default).
+/// Set the embedded player's local audio output device. The config write
+/// persists the choice; the daemon then rebinds its sink in-process
+/// (Spirc rebuild via the reconnect path) and resumes the interrupted
+/// track. `default`/empty clears the override (system default).
 async fn audio_output_command(name: &str) -> Result<()> {
     let cleared = name.trim().is_empty() || name.eq_ignore_ascii_case("default");
     let value = if cleared { "" } else { name };
     set_config_value(ConfigKey::PlayerAudioOutputDevice, value)?;
-    // A full restart is required: the audio device is bound when the
-    // backend's sink chain is built at daemon start, so re-registering the
-    // existing backend (Reconnect) wouldn't pick up the change. Restart
-    // rebuilds the backend from the fresh config. Briefly interrupts
-    // playback, which is expected when switching outputs.
-    daemon::server::restart_daemon().await?;
-    if cleared {
-        println!("Audio output reset to the system default; daemon restarted to apply.");
-    } else {
-        println!("Audio output set to \"{name}\"; daemon restarted to apply.");
+    let device = (!cleared).then(|| name.to_string());
+    match send_set_audio_output(device).await {
+        Ok(message) => println!("{message} (no daemon restart)"),
+        Err(err) => {
+            // Compatibility fallback: a daemon predating SetAudioOutput
+            // can't decode the request. The old behavior still works.
+            tracing::debug!(
+                error = %err,
+                "live audio-output rebind failed; falling back to daemon restart"
+            );
+            daemon::server::restart_daemon().await?;
+            if cleared {
+                println!("Audio output reset to the system default; daemon restarted to apply.");
+            } else {
+                println!("Audio output set to \"{name}\"; daemon restarted to apply.");
+            }
+        }
     }
     Ok(())
+}
+
+async fn send_set_audio_output(device: Option<String>) -> Result<String> {
+    use spotuify_protocol::{IpcClient, OperationSource};
+    daemon::server::ensure_daemon_running().await?;
+    let mut client = IpcClient::connect_with_source(OperationSource::Cli).await?;
+    match client
+        .request(spotuify_protocol::Request::SetAudioOutput { device })
+        .await?
+    {
+        spotuify_protocol::Response::Ok {
+            data: spotuify_protocol::ResponseData::Ack { message },
+        } => Ok(message),
+        spotuify_protocol::Response::Ok { .. } => {
+            anyhow::bail!("unexpected response to set-audio-output")
+        }
+        spotuify_protocol::Response::Error { message, .. } => {
+            anyhow::bail!("daemon error: {message}")
+        }
+    }
 }
 
 async fn handle_analytics(command: AnalyticsCommand) -> Result<()> {

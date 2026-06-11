@@ -164,6 +164,12 @@ pub trait PlayerBackend: Send + Sync {
         None
     }
 
+    /// Update the local audio output device used when the sink chain is
+    /// (re)built. Takes effect on the next `register_device`, so callers
+    /// pair it with a reconnect. `None` follows the system default.
+    /// Backends without a local sink ignore it.
+    fn set_audio_output_device(&mut self, _device: Option<String>) {}
+
     /// Register a Connect device under `name` and bring the backend
     /// into a ready state. Idempotent for already-running backends.
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId>;

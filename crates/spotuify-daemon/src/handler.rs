@@ -4651,6 +4651,11 @@ mod routing_tests {
             ResponseData::VizStatus { .. }
         );
         case!(
+            "set-audio-output",
+            Request::SetAudioOutput { device: None },
+            ResponseData::Ack { .. }
+        );
+        case!(
             "cache-status",
             Request::CacheStatus,
             ResponseData::CacheStatus { .. }

@@ -21,11 +21,11 @@ spotuify status
 
 ```bash
 spotuify audio-outputs                          # list local outputs
-spotuify audio-output "MacBook Pro Speakers"    # set it + restart the player
+spotuify audio-output "MacBook Pro Speakers"    # rebind live, resume playback
 spotuify audio-output default                   # follow the system default again
 ```
 
-What you get: the choice persisted as `player.audio_output_device` and the player restarted so audio routes there. In the TUI, press `O` for the same picker.
+What you get: the choice persisted as `player.audio_output_device`, the player's sink rebound in-process (no daemon restart), and the interrupted track resumed where it left off. In the TUI, press `O` for the same picker.
 
 This is the *local* output (which speaker on this Mac), not the Connect target. To play on another Connect device (a phone, an Echo), use `spotuify transfer` instead.
 

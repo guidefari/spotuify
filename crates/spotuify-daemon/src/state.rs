@@ -142,6 +142,10 @@ enum PlayerCommand {
         name: String,
         resp: oneshot::Sender<Result<DeviceId>>,
     },
+    SetAudioOutput {
+        device: Option<String>,
+        resp: oneshot::Sender<()>,
+    },
     IsConnected {
         resp: oneshot::Sender<bool>,
     },
@@ -856,6 +860,20 @@ impl DaemonState {
             self.viz_coordinator.set_sink_available(true).await;
         }
         Ok(device_id)
+    }
+
+    /// Update the player backend's local audio output selection. Takes
+    /// effect on the next reconnect (the sink chain is rebuilt then), so
+    /// callers pair this with `reconnect_player`.
+    pub(crate) async fn set_player_audio_output(&self, device: Option<String>) -> Result<()> {
+        let (resp, rx) = oneshot::channel();
+        self.player_tx
+            .send(PlayerCommand::SetAudioOutput { device, resp })
+            .await
+            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
+        rx.await
+            .map_err(|err| anyhow::anyhow!("player actor stopped: {err}"))?;
+        Ok(())
     }
 
     /// Snapshot the player's connection state. Backend-agnostic — the
@@ -1745,6 +1763,10 @@ fn spawn_player_actor(
                             }
                             let result = player.register_device(&name).await;
                             let _ = resp.send(player_result(result));
+                        }
+                        PlayerCommand::SetAudioOutput { device, resp } => {
+                            player.set_audio_output_device(device);
+                            let _ = resp.send(());
                         }
                         PlayerCommand::IsConnected { resp } => {
                             let _ = resp.send(player.is_connected().await);

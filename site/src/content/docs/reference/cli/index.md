@@ -75,7 +75,7 @@ Commands:
   reload          Phase 13 (P13-I) - ask the running daemon to reload `config.toml`
   reconnect       Phase 13 (P13-I) - force the daemon to re-register its embedded player (after a VPN flap, network change, etc)
   audio-outputs   List the local audio output devices the embedded player can render to (the system speakers/headphones spotuify-hume plays through)
-  audio-output    Choose which local audio output the embedded player renders to, then reconnect so it takes effect. Pass `default` (or empty) to follow the system default output again. Name must match one from `spotuify audio-outputs`
+  audio-output    Choose which local audio output the embedded player renders to. Applies live: the daemon rebinds its sink in-process and resumes the interrupted track where it left off. Pass `default` (or empty) to follow the system default output again. Name must match one from `spotuify audio-outputs`
   bug-report      Phase 13 (P13-D) - bundle a redacted diagnostic tarball for bug reports. Never auto-uploads; the user inspects + shares it
   reindex         Rebuild the local search index from SQLite cache
   cache           Inspect local cache state

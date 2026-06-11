@@ -63,6 +63,7 @@
   "search-cache-prune",
   "search-page",
   "search-stream",
+  "set-audio-output",
   "set-viz-enabled",
   "set-viz-focus",
   "set-viz-source",

@@ -176,6 +176,7 @@ public enum DaemonRequest: Encodable, Sendable {
     case sync(target: SyncTarget)
     case image(url: String)
     case reconnect
+    case setAudioOutput(device: String? = nil)
     case reload
     case reloadAuth
     case webApiToken(force: Bool)
@@ -375,6 +376,9 @@ public enum DaemonRequest: Encodable, Sendable {
             try c.encode(url, forKey: AnyKey("url"))
         case .reconnect:
             try c.encode("reconnect", forKey: AnyKey("cmd"))
+        case .setAudioOutput(let device):
+            try c.encode("set-audio-output", forKey: AnyKey("cmd"))
+            try c.encodeIfPresent(device, forKey: AnyKey("device"))
         case .reload:
             try c.encode("reload", forKey: AnyKey("cmd"))
         case .reloadAuth:
@@ -489,7 +493,8 @@ public enum DaemonRequest: Encodable, Sendable {
             .notificationAct(id: "i", action: "a", snoozeUntilMs: nil),
             .checkUpdate(force: false), .episodeFeed(limit: 1, sort: .newest, refresh: false),
             .shutdown, .getDoctorReport, .reindex, .cacheStatus, .logsTail(lines: 1),
-            .sync(target: .all), .image(url: "u"), .reconnect, .reload, .reloadAuth,
+            .sync(target: .all), .image(url: "u"), .reconnect, .setAudioOutput(device: nil),
+            .reload, .reloadAuth,
             .webApiToken(force: false), .searchCachePrune(olderThanMs: nil),
             .playlistCreate(name: "n", description: nil, uris: ["u"]),
             .playlistRemoveItems(playlist: "p", uris: ["u"]),

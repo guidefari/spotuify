@@ -344,6 +344,14 @@ pub enum Request {
     /// Force-rebuild the upstream Spotify session. Useful after VPN
     /// flap / network change for embedded librespot.
     Reconnect,
+    /// Rebind the embedded player's local audio output device without a
+    /// daemon restart: updates the backend's device selection, rebuilds
+    /// the Spirc + sink chain in-process, then resumes the interrupted
+    /// track at its prior position. `None` follows the system default.
+    SetAudioOutput {
+        #[serde(default)]
+        device: Option<String>,
+    },
     /// Drop the daemon's cached Spotify token + clear the
     /// `auth_revoked` latch so the next operation re-reads fresh
     /// credentials from the auth file. Fired by clients after they've
@@ -491,6 +499,7 @@ impl Request {
             | Self::LogsTail { .. }
             | Self::Sync { .. }
             | Self::Reconnect
+            | Self::SetAudioOutput { .. }
             | Self::ReloadAuth
             | Self::CheckUpdate { .. }
             | Self::WebApiToken { .. } => IpcCategory::AdminMaintenance,
@@ -621,6 +630,7 @@ impl Request {
             Self::OpsRedo { .. } => "ops-redo",
             Self::Reload => "reload",
             Self::Reconnect => "reconnect",
+            Self::SetAudioOutput { .. } => "set-audio-output",
             Self::ReloadAuth => "reload-auth",
             Self::WebApiToken { .. } => "web-api-token",
             Self::SearchCachePrune { .. } => "search-cache-prune",
@@ -710,6 +720,7 @@ impl Request {
             "search-cache-prune",
             "search-page",
             "search-stream",
+            "set-audio-output",
             "set-viz-enabled",
             "set-viz-focus",
             "set-viz-source",

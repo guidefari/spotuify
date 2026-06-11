@@ -49,6 +49,7 @@ pub(crate) fn categorize(request: &Request) -> Cat {
         Request::PlaybackGet
         | Request::PlaybackCommand { .. }
         | Request::Reconnect
+        | Request::SetAudioOutput { .. }
         | Request::DevicesList
         | Request::DeviceTransfer { .. }
         | Request::QueueAdd { .. }

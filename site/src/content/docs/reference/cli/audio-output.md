@@ -1,13 +1,13 @@
 ---
 title: "spotuify audio-output"
-description: "Choose which local audio output the embedded player renders to, then reconnect so it takes effect. Pass `default` (or empty) to follow the system default output again. Name must match one from `spotuify audio-outputs`"
+description: "Choose which local audio output the embedded player renders to. Applies live: the daemon rebinds its sink in-process and resumes the interrupted track where it left off. Pass `default` (or empty) to follow the system default output again. Name must match one from `spotuify audio-outputs`"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Choose which local audio output the embedded player renders to, then reconnect so it takes effect. Pass `default` (or empty) to follow the system default output again. Name must match one from `spotuify audio-outputs`
+Choose which local audio output the embedded player renders to. Applies live: the daemon rebinds its sink in-process and resumes the interrupted track where it left off. Pass `default` (or empty) to follow the system default output again. Name must match one from `spotuify audio-outputs`
 
 ## Examples
 
@@ -19,7 +19,7 @@ spotuify audio-output default
 ## Help
 
 ```text
-Choose which local audio output the embedded player renders to, then reconnect so it takes effect. Pass `default` (or empty) to follow the system default output again. Name must match one from `spotuify audio-outputs`
+Choose which local audio output the embedded player renders to. Applies live: the daemon rebinds its sink in-process and resumes the interrupted track where it left off. Pass `default` (or empty) to follow the system default output again. Name must match one from `spotuify audio-outputs`
 
 Usage: spotuify audio-output [OPTIONS] <NAME>
 

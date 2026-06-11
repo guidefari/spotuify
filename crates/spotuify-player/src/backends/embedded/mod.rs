@@ -401,6 +401,12 @@ impl PlayerBackend for EmbeddedBackend {
         Some(self.audio_counter.clone())
     }
 
+    fn set_audio_output_device(&mut self, device: Option<String>) {
+        // Stored only; `sink_builder` reads it the next time the Spirc
+        // is (re)built, so callers pair this with a reconnect.
+        self.audio_output_device = device;
+    }
+
     async fn register_device(&mut self, name: &str) -> PlayerResult<DeviceId> {
         // Stash the name BEFORE creating the session so `session_config`
         // can derive the stable device_id (see `derive_device_id`).

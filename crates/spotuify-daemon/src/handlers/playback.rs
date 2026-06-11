@@ -706,6 +706,47 @@ pub(crate) async fn dispatch(
                 message: "player backend reconnected".to_string(),
             })
         }
+        Request::SetAudioOutput { device } => {
+            // Live output rebind: snapshot what was playing, swap the
+            // backend's device selection, rebuild the Spirc + sink via
+            // the normal reconnect path, then put the interrupted track
+            // back where it was. No daemon restart.
+            tracing::info!(device = ?device, "audio output rebind requested");
+            let snapshot = state.snapshot_playback();
+            state.set_player_audio_output(device.clone()).await?;
+            let device_name = DaemonState::configured_device_name();
+            state.reconnect_player(&device_name).await?;
+            let mut message = match device.as_deref() {
+                Some(name) => format!("audio output set to \"{name}\""),
+                None => "audio output reset to the system default".to_string(),
+            };
+            if snapshot.is_playing {
+                if let Some(item) = snapshot.item.as_ref() {
+                    let position_ms = u32::try_from(snapshot.progress_ms).unwrap_or(0);
+                    match state
+                        .transport(crate::state::TransportCmd::PlayUri {
+                            uri: item.uri.clone(),
+                            position_ms,
+                        })
+                        .await
+                    {
+                        Ok(()) => {
+                            message.push_str("; playback resumed");
+                            spawn_playback_refresh(state.clone());
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                error = %err,
+                                "playback restore after audio output rebind failed"
+                            );
+                            message.push_str("; playback could not be resumed automatically");
+                        }
+                    }
+                }
+            }
+            state.emit_event(DaemonEvent::ConfigReloaded);
+            Ok(ResponseData::Ack { message })
+        }
         _ => unreachable!("non-playback request routed to playback dispatcher"),
     }
 }
