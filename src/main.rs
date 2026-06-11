@@ -202,9 +202,10 @@ enum Command {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Search Spotify and play the first matching result.
+    /// Search Spotify and play the first matching result. Spotify URIs
+    /// and open.spotify.com links skip the search and play directly.
     Play {
-        /// Search query.
+        /// Search query, `spotify:…` URI, or open.spotify.com link.
         query: String,
         /// Media type to search.
         #[arg(long = "type", value_enum, default_value = "track")]

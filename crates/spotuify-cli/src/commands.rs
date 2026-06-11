@@ -252,11 +252,38 @@ pub async fn ipc_resolve_tracks(from: &Path, format: OutputFormat) -> Result<()>
     output::print_resolved_track_candidates(&candidates, format)
 }
 
+/// A `spotify:…` URI or open.spotify.com link passed to `play` should
+/// play directly — searching it as text used to play whatever track
+/// happened to match the literal string (e.g. a playlist URI matched a
+/// track titled "THE ONE"), and never started the context.
+pub(crate) fn direct_play_uri(arg: &str) -> Option<String> {
+    if selection::media_kind_from_uri(arg).is_ok() {
+        return Some(arg.to_string());
+    }
+    let parsed = url::Url::parse(arg).ok()?;
+    if parsed.host_str() != Some("open.spotify.com") {
+        return None;
+    }
+    let mut segments: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
+    // Locale-prefixed share links: /intl-fr/track/<id>.
+    if segments.first().is_some_and(|s| s.starts_with("intl-")) {
+        segments.remove(0);
+    }
+    let [kind, id, ..] = segments[..] else {
+        return None;
+    };
+    let uri = format!("spotify:{kind}:{id}");
+    selection::media_kind_from_uri(&uri).is_ok().then_some(uri)
+}
+
 pub async fn ipc_play_query(
     query: &str,
     scope: SearchScopeData,
     format: OutputFormat,
 ) -> Result<()> {
+    if let Some(uri) = direct_play_uri(query) {
+        return ipc_play_uri(&uri, format).await;
+    }
     // `spotuify play <query>` is a "find anywhere and play" command
     // — catalog discovery, not library lookup. Limit=10 keeps the
     // search slim since we only consume the top result.
@@ -1715,6 +1742,29 @@ fn read_input(path: &Path) -> Result<String> {
 mod tests {
     use super::*;
     use spotuify_core::{LyricLine, LyricsProvider, MediaKind};
+
+    #[test]
+    fn direct_play_uri_accepts_uris_and_share_links() {
+        use super::direct_play_uri;
+        assert_eq!(
+            direct_play_uri("spotify:playlist:5j11qZxwlnz4KLxMfIUQZc").as_deref(),
+            Some("spotify:playlist:5j11qZxwlnz4KLxMfIUQZc")
+        );
+        assert_eq!(
+            direct_play_uri("https://open.spotify.com/track/7kR0HpP59JIJiVJQpGCGuq?si=abc")
+                .as_deref(),
+            Some("spotify:track:7kR0HpP59JIJiVJQpGCGuq")
+        );
+        assert_eq!(
+            direct_play_uri("https://open.spotify.com/intl-fr/album/7g4qoHjkYvfFkXJEZCjtc1")
+                .as_deref(),
+            Some("spotify:album:7g4qoHjkYvfFkXJEZCjtc1")
+        );
+        // Plain text queries still go through search.
+        assert_eq!(direct_play_uri("imagine dragons"), None);
+        assert_eq!(direct_play_uri("https://example.com/track/x"), None);
+        assert_eq!(direct_play_uri("spotify:bogus:123"), None);
+    }
 
     fn media_item(uri: &str, name: &str, duration_ms: u64) -> MediaItem {
         MediaItem {

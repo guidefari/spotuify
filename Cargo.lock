@@ -5468,6 +5468,7 @@ dependencies = [
  "spotuify-spotify",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
