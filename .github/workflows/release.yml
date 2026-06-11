@@ -341,6 +341,11 @@ jobs:
         # for its build sandbox — broke the verify step on v0.1.60.
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - name: Verify Homebrew install
+        env:
+          # ubuntu-latest's AppArmor blocks rootless bubblewrap (broke
+          # the verify on v0.1.62 even with bubblewrap installed). The
+          # sandbox protects nothing on a throwaway smoke runner.
+          HOMEBREW_NO_SANDBOX_LINUX: "1"
         run: |
           brew update
           brew tap planetaryescape/spotuify
