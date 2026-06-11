@@ -233,22 +233,52 @@ private struct UpdatesPaneBody: View {
 
     var body: some View {
         Section {
+            LabeledContent("This app", value: model.appVersion.isEmpty ? "unknown" : model.appVersion)
             Toggle("Check for updates automatically", isOn: $autoCheckUpdates)
             Button("Check Now") { model.checkUpdate(force: true) }
         }
         if let update = model.availableUpdate {
             Section("Available") {
                 LabeledContent("Latest", value: update.latestVersion).foregroundStyle(.tint)
-                if let url = update.url, let u = URL(string: url) {
-                    Button("Download") { NSWorkspace.shared.open(u) }
-                } else if let command = update.command {
-                    LabeledContent("Upgrade") {
-                        Text(command).font(.caption.monospaced()).textSelection(.enabled)
+                switch model.updater.phase {
+                case .downloading, .verifying, .installing:
+                    LabeledContent("Status") {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text(updaterStatus).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                case .installed(let url):
+                    Button("Relaunch to finish update") { AppRelaunch.relaunch(from: url) }
+                case .failed(let message):
+                    Text(message).font(.caption).foregroundStyle(.red)
+                    Button("Retry") {
+                        model.updater.reset()
+                        model.installAvailableUpdate()
+                    }
+                    if let url = update.url, let u = URL(string: url) {
+                        Button("Open releases page") { NSWorkspace.shared.open(u) }
+                    }
+                case .idle:
+                    Button("Update Now") { model.installAvailableUpdate() }
+                    if let command = update.command {
+                        LabeledContent("Or via terminal") {
+                            Text(command).font(.caption.monospaced()).textSelection(.enabled)
+                        }
                     }
                 }
             }
         } else {
             Text("You're up to date.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var updaterStatus: String {
+        switch model.updater.phase {
+        case .downloading: "Downloading…"
+        case .verifying: "Verifying…"
+        case .installing: "Installing…"
+        default: ""
         }
     }
 }

@@ -26,6 +26,8 @@ public final class AppModel {
     public let lyrics = LyricsStore()
     public let reminders = RemindersStore()
     public let viz = VizStore()
+    /// One-click in-app updater (download DMG → verify → swap bundle).
+    public let updater = AppUpdater()
     /// Set true once per launch when due notifications exist on connect, so the
     /// shell can present the due-inbox modal exactly once.
     public var presentDueInbox = false
@@ -112,6 +114,14 @@ public final class AppModel {
 
     public func setVolume(_ percent: Int) {
         send(.volume(percent: UInt8(max(0, min(100, percent)))))
+    }
+
+    /// Report this app's focus to the daemon. Viz focus is a per-client
+    /// vote: the daemon broadcasts spectrum frames at full rate while
+    /// any voting client (this app, the TUI) is focused, and throttles
+    /// only when all of them are backgrounded.
+    public func setVizFocus(_ focused: Bool) {
+        Task { [weak self] in try? await self?.connection.request(.setVizFocus(focused: focused)) }
     }
 
     public func cycleRepeat() {
@@ -292,6 +302,13 @@ public final class AppModel {
     /// This app bundle's marketing version (CFBundleShortVersionString).
     public var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+    }
+
+    /// Kick off the one-click update for the currently advertised
+    /// release. Progress/result surface via `updater.phase`.
+    public func installAvailableUpdate() {
+        guard let update = availableUpdate else { return }
+        Task { await updater.install(version: update.latestVersion) }
     }
 
     /// True when `candidate` is a strictly newer dotted version than `current`.

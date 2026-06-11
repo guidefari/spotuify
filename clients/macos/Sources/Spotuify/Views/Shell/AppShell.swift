@@ -115,19 +115,29 @@ struct AppShell: View {
         if autoCheckUpdates, model.banner == nil, let update = model.availableUpdate {
             HStack(spacing: 10) {
                 Image(systemName: "arrow.up.circle.fill").foregroundStyle(.tint)
-                Text("spotuify \(update.latestVersion) is available")
+                Text(updateBannerTitle(for: update))
                     .font(.callout.weight(.medium))
+                    .lineLimit(2)
                 Spacer(minLength: 8)
-                if let urlString = update.url, let url = URL(string: urlString) {
-                    Button("Download") { NSWorkspace.shared.open(url) }
+                switch model.updater.phase {
+                case .downloading, .verifying, .installing:
+                    ProgressView().controlSize(.small)
+                case .installed(let url):
+                    Button("Relaunch") { AppRelaunch.relaunch(from: url) }
                         .buttonStyle(.borderedProminent).controlSize(.small)
-                } else if let command = update.command {
-                    Button("Copy upgrade command") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(command, forType: .string)
-                        model.showToast("Upgrade command copied")
+                case .failed:
+                    if let urlString = update.url, let url = URL(string: urlString) {
+                        Button("Open releases page") { NSWorkspace.shared.open(url) }
+                            .buttonStyle(.bordered).controlSize(.small)
                     }
-                    .buttonStyle(.bordered).controlSize(.small)
+                    Button("Retry") {
+                        model.updater.reset()
+                        model.installAvailableUpdate()
+                    }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+                case .idle:
+                    Button("Update Now") { model.installAvailableUpdate() }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
                 }
                 Button { model.dismissUpdate() } label: { Image(systemName: "xmark") }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
@@ -140,6 +150,17 @@ struct AppShell: View {
             .padding(.top, 10)
             .frame(maxWidth: 520)
             .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
+    private func updateBannerTitle(for update: AvailableUpdate) -> String {
+        switch model.updater.phase {
+        case .downloading: return "Downloading spotuify \(update.latestVersion)…"
+        case .verifying: return "Verifying download…"
+        case .installing: return "Installing spotuify \(update.latestVersion)…"
+        case .installed: return "spotuify \(update.latestVersion) installed — relaunch to finish"
+        case .failed(let message): return message
+        case .idle: return "spotuify \(update.latestVersion) is available"
         }
     }
 

@@ -81,11 +81,30 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        switch model.readiness {
-        case .ready:
-            AppShell()
-        default:
-            DaemonGateView(readiness: model.readiness)
+        Group {
+            switch model.readiness {
+            case .ready:
+                AppShell()
+            default:
+                DaemonGateView(readiness: model.readiness)
+            }
+        }
+        // Viz focus is a per-client vote on the daemon; report ours so
+        // an unfocused TUI can't throttle this app's visualizer (and
+        // vice versa). Also vote on connect, since a stale vote from a
+        // previous run may still be on file.
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification
+        )) { _ in
+            model.setVizFocus(true)
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.willResignActiveNotification
+        )) { _ in
+            model.setVizFocus(false)
+        }
+        .onChange(of: model.isReady) { _, ready in
+            if ready { model.setVizFocus(NSApp.isActive) }
         }
     }
 }

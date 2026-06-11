@@ -9,7 +9,7 @@ use crate::state::DaemonState;
 pub(crate) async fn dispatch(
     state: Arc<DaemonState>,
     request: Request,
-    _source: Option<OperationSource>,
+    source: Option<OperationSource>,
 ) -> anyhow::Result<ResponseData> {
     match request {
         Request::SetVizEnabled { enabled } => {
@@ -31,9 +31,14 @@ pub(crate) async fn dispatch(
             diagnostics: state.viz_coordinator().diagnostics().await,
         }),
         Request::SetVizFocus { focused } => {
-            state.viz_coordinator().set_focused(focused).await;
+            // Vote per client kind: the unfocused TUI must not drop the
+            // shared SpectrumFrame broadcast to 1 Hz for the macOS app
+            // (or any other subscriber). Source-less clients (the macOS
+            // app's raw socket) share the "unknown" bucket.
+            let client = source.map_or("unknown", |s| s.label());
+            state.viz_coordinator().set_focused(client, focused).await;
             Ok(ResponseData::Ack {
-                message: format!("viz focus = {focused}"),
+                message: format!("viz focus[{client}] = {focused}"),
             })
         }
         _ => unreachable!("non-viz request routed to viz dispatcher"),

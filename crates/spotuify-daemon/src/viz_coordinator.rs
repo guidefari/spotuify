@@ -12,8 +12,13 @@
 //! - Player events feed the coordinator's playing/paused state. While
 //!   paused, the ticker keeps running (so band magnitudes decay
 //!   smoothly to zero) but stops broadcasting once decayed.
-//! - `set_focused(false)` throttles the broadcast rate from 30 Hz to
-//!   1 Hz so background terminals don't burn CPU.
+//! - Focus is a per-client vote (`set_focused(client, focused)`). The
+//!   ticker broadcasts at the full configured rate while ANY voting
+//!   client is focused and only drops to 1 Hz when every client that
+//!   ever voted is unfocused. One shared broadcast feeds the TUI, the
+//!   macOS app, and any other subscriber — a single backgrounded
+//!   terminal must not throttle the rest (that was a real bug: the
+//!   unfocused TUI dropped the macOS app's visualizer to 1 Hz).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -32,14 +37,20 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 const DEFAULT_TARGET_FPS: u8 = 30;
-const UNFOCUSED_FPS: u8 = 1;
+/// Throttled rate when every voting client is unfocused. 15 (a clean
+/// half of the 30 Hz tick stride) instead of the old 1 Hz: a visible
+/// but unfocused terminal still reads as animation, not a slideshow,
+/// while halving FFT + broadcast work.
+const UNFOCUSED_FPS: u8 = 15;
 
 pub struct VizCoordinator {
     analyzer: SharedAnalyzer,
     event_tx: broadcast::Sender<IpcMessage>,
     state: Mutex<VizCoordinatorState>,
     enabled: Arc<AtomicBool>,
-    focused: AtomicBool,
+    /// Per-client focus votes keyed by client label ("tui", "cli", …).
+    /// Empty map = nobody voted yet = treat as focused.
+    focus_votes: Mutex<std::collections::HashMap<String, bool>>,
     playing: Arc<AtomicBool>,
     sink_available: AtomicBool,
     configured_fps: AtomicU8,
@@ -90,7 +101,7 @@ impl VizCoordinator {
             event_tx,
             state: Mutex::new(VizCoordinatorState::default()),
             enabled: Arc::new(AtomicBool::new(false)),
-            focused: AtomicBool::new(true),
+            focus_votes: Mutex::new(std::collections::HashMap::new()),
             playing: Arc::new(AtomicBool::new(false)),
             sink_available: AtomicBool::new(false),
             configured_fps: AtomicU8::new(DEFAULT_TARGET_FPS),
@@ -137,6 +148,10 @@ impl VizCoordinator {
             return;
         }
         if enabled {
+            // Stale votes from clients that died while unfocused must
+            // not throttle a freshly-enabled visualizer.
+            self.focus_votes.lock().clear();
+            self.recompute_target_fps();
             self.activate_source().await;
             self.start_ticker();
         } else {
@@ -161,12 +176,22 @@ impl VizCoordinator {
         self.broadcast_source_change();
     }
 
-    pub async fn set_focused(&self, focused: bool) {
-        let was = self.focused.swap(focused, Ordering::Release);
-        if was == focused {
-            return;
-        }
-        let new_fps = if focused {
+    pub async fn set_focused(&self, client: &str, focused: bool) {
+        self.focus_votes.lock().insert(client.to_string(), focused);
+        self.recompute_target_fps();
+    }
+
+    /// Full rate while ANY voting client is focused; only throttle when
+    /// every client that voted is unfocused. No votes = focused, so a
+    /// fresh daemon (or a subscriber that never reports focus, like the
+    /// CLI) gets full-rate frames.
+    fn effective_focused(&self) -> bool {
+        let votes = self.focus_votes.lock();
+        votes.is_empty() || votes.values().any(|focused| *focused)
+    }
+
+    fn recompute_target_fps(&self) {
+        let new_fps = if self.effective_focused() {
             self.configured_fps.load(Ordering::Acquire)
         } else {
             UNFOCUSED_FPS
@@ -177,9 +202,7 @@ impl VizCoordinator {
     pub fn set_target_fps(&self, fps: u8) {
         let fps = fps.clamp(1, 60);
         self.configured_fps.store(fps, Ordering::Release);
-        if self.focused.load(Ordering::Acquire) {
-            self.target_fps.store(fps, Ordering::Release);
-        }
+        self.recompute_target_fps();
     }
 
     pub fn set_analyzer_params(&self, smoothing: f32, noise_gate: f32) {
@@ -546,10 +569,34 @@ mod tests {
     #[tokio::test]
     async fn set_focused_changes_target_fps() {
         let (vc, _rx) = fresh();
-        vc.set_focused(false).await;
+        vc.set_focused("tui", false).await;
         assert_eq!(vc.diagnostics().await.target_fps, UNFOCUSED_FPS);
-        vc.set_focused(true).await;
+        vc.set_focused("tui", true).await;
         assert_eq!(vc.diagnostics().await.target_fps, DEFAULT_TARGET_FPS);
+    }
+
+    #[tokio::test]
+    async fn one_unfocused_client_does_not_throttle_a_focused_one() {
+        // Regression: the TUI losing terminal focus dropped the shared
+        // broadcast to 1 Hz, making the macOS app's visualizer janky.
+        let (vc, _rx) = fresh();
+        vc.set_focused("unknown", true).await; // macOS app focused
+        vc.set_focused("tui", false).await; // terminal backgrounded
+        assert_eq!(vc.diagnostics().await.target_fps, DEFAULT_TARGET_FPS);
+        // Only when every voting client is unfocused do we throttle.
+        vc.set_focused("unknown", false).await;
+        assert_eq!(vc.diagnostics().await.target_fps, UNFOCUSED_FPS);
+    }
+
+    #[tokio::test]
+    async fn enabling_viz_clears_stale_focus_votes() {
+        let (vc, _rx) = fresh();
+        vc.set_focused("tui", false).await;
+        assert_eq!(vc.diagnostics().await.target_fps, UNFOCUSED_FPS);
+        vc.set_source(VizSourceKindData::None).await;
+        vc.set_enabled(true).await;
+        assert_eq!(vc.diagnostics().await.target_fps, DEFAULT_TARGET_FPS);
+        vc.set_enabled(false).await;
     }
 
     #[tokio::test]
