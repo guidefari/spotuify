@@ -118,7 +118,7 @@ file.
 
 Media controls (MPRIS on Linux, Now Playing on macOS, SMTC on Windows)
 are on by default. Set `SPOTUIFY_NO_MEDIA_CONTROLS=1` before starting the
-daemon to turn them off entirely — on Windows this also skips the
+daemon to turn them off entirely; on Windows this also skips the
 hidden-window driver.
 
 ```bash
