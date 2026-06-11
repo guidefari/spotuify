@@ -47,6 +47,12 @@ pub const CHIP_FG: Color = Color::Rgb(240, 248, 252);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UiPalette {
     pub accent: Color,
+    /// Primary "branded" accent: Spotify green by default, the cover's
+    /// dominant colour once album art is loaded. Everything that used
+    /// to hardcode `GREEN` (tab chips, focused borders, selection
+    /// marks, transport chips, gauges, status text) reads this so the
+    /// whole frame follows the album, not just the now-playing bar.
+    pub brand: Color,
     pub soft_accent: Color,
     pub background: Color,
     pub foreground: Color,
@@ -56,6 +62,7 @@ pub struct UiPalette {
 impl UiPalette {
     pub const DEFAULT: Self = Self {
         accent: ACCENT,
+        brand: GREEN,
         soft_accent: GREEN_SOFT,
         background: PANEL,
         foreground: BG,
@@ -71,6 +78,7 @@ impl UiPalette {
         let rail = blend_rgb(rgb, (245, 248, 250), 0.30);
         Some(Self {
             accent,
+            brand: accent,
             soft_accent: Color::Rgb(soft.0, soft.1, soft.2),
             background: Color::Rgb(bg.0, bg.1, bg.2),
             foreground,
@@ -83,6 +91,38 @@ impl Default for UiPalette {
     fn default() -> Self {
         Self::DEFAULT
     }
+}
+
+thread_local! {
+    /// Palette for the frame currently being drawn. `ui::render` sets
+    /// this from `App::palette` at the top of every frame; the chip /
+    /// card helpers and every accent-coloured renderer read it through
+    /// the accessors below so all accent surfaces follow the album art
+    /// instead of staying Spotify-green. Rendering is single-threaded,
+    /// so a thread-local avoids threading the palette through dozens of
+    /// helper signatures.
+    static ACTIVE_PALETTE: std::cell::Cell<UiPalette> =
+        const { std::cell::Cell::new(UiPalette::DEFAULT) };
+}
+
+pub fn set_active_palette(palette: UiPalette) {
+    ACTIVE_PALETTE.with(|cell| cell.set(palette));
+}
+
+/// Album-adaptive brand accent (falls back to the Spotify green
+/// default). This is what the old hardcoded `GREEN` call sites read.
+pub fn accent() -> Color {
+    ACTIVE_PALETTE.with(|cell| cell.get().brand)
+}
+
+/// Readable foreground for text drawn on an `accent()` background.
+pub fn accent_foreground() -> Color {
+    ACTIVE_PALETTE.with(|cell| cell.get().foreground)
+}
+
+/// Muted accent for selection backgrounds (adaptive `GREEN_SOFT`).
+pub fn soft_accent() -> Color {
+    ACTIVE_PALETTE.with(|cell| cell.get().soft_accent)
 }
 
 fn dominant_terminal_safe_rgb(image: &image::DynamicImage) -> Option<(u8, u8, u8)> {
@@ -213,7 +253,7 @@ pub fn section_chip(label: &str) -> Span<'static> {
 /// state (`playing` / `idle` / `restricted`), log severity, etc.
 pub fn state_chip(label: &str, role: StateRole) -> Span<'static> {
     let (fg, bg) = match role {
-        StateRole::Active => (BG, GREEN),
+        StateRole::Active => (accent_foreground(), accent()),
         StateRole::Warn => (BG, WARN),
         StateRole::Error => (CHIP_FG, RED),
         StateRole::Idle => (BG, MUTED),
@@ -238,7 +278,7 @@ pub enum StateRole {
 /// actions (Yes, Play, Save) and RED for destructive ones.
 pub fn button_chip(label: &str, role: ButtonRole) -> Span<'static> {
     let (fg, bg) = match role {
-        ButtonRole::Affirm => (BG, GREEN),
+        ButtonRole::Affirm => (accent_foreground(), accent()),
         ButtonRole::Cancel => (CHIP_FG, CHIP_BG),
         ButtonRole::Danger => (CHIP_FG, RED),
     };
@@ -276,17 +316,17 @@ pub fn card_block(title: &str) -> Block<'static> {
         .style(Style::default().bg(PANEL))
 }
 
-/// Focused card: same shape, GREEN border + GREEN title chip. Used for
-/// the focused group in search, the focused panel in modals.
+/// Focused card: same shape, accent border + accent title chip. Used
+/// for the focused group in search, the focused panel in modals.
 pub fn focused_card_block(title: &str) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        .border_style(Style::default().fg(accent()).add_modifier(Modifier::BOLD))
         .title(Span::styled(
             format!(" {title} "),
             Style::default()
-                .fg(BG)
-                .bg(GREEN)
+                .fg(accent_foreground())
+                .bg(accent())
                 .add_modifier(Modifier::BOLD),
         ))
         .style(Style::default().bg(PANEL))

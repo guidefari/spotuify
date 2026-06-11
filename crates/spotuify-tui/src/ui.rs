@@ -2,9 +2,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Tabs, Wrap,
-};
+use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui_image::StatefulImage;
 
@@ -15,7 +13,8 @@ use crate::widgets::spectrum::SpectrumWidget;
 use spotuify_core::active_lyric_line_index;
 use spotuify_spotify::client::{MediaItem, MediaKind, Playlist};
 
-const GREEN: Color = Color::Rgb(30, 215, 96);
+use crate::widgets::style::{accent, accent_foreground};
+
 const BG: Color = Color::Rgb(8, 10, 12);
 const PANEL: Color = Color::Rgb(18, 22, 25);
 const MUTED: Color = Color::Rgb(118, 128, 135);
@@ -42,6 +41,10 @@ fn pad_pane_top(area: Rect) -> Rect {
 }
 
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
+    // Publish the album-adaptive palette for this frame; `accent()` /
+    // `soft_accent()` / `accent_foreground()` and the style helpers all
+    // read it, so every accent surface follows the cover art together.
+    crate::widgets::style::set_active_palette(app.palette);
     let area = frame.area();
     frame.render_widget(
         Block::default().style(Style::default().bg(app.palette.background)),
@@ -166,7 +169,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Paragraph::new(Line::from(vec![
                 Span::styled(
                     format!(" {spinner} "),
-                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                    Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled("Loading albums…", Style::default().fg(TEXT)),
             ]))
@@ -204,7 +207,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     .map_or("Other", |(_, label)| *label);
                 rows.push(ListItem::new(Line::from(Span::styled(
                     label.to_string(),
-                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                    Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                 ))));
                 current_group = group;
                 started = true;
@@ -213,13 +216,13 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 selected_row = rows.len();
             }
             let heart = if album.in_library == Some(true) {
-                Span::styled("♥ ", Style::default().fg(GREEN))
+                Span::styled("♥ ", Style::default().fg(accent()))
             } else {
                 Span::raw("")
             };
             rows.push(ListItem::new(vec![
                 Line::from(vec![
-                    Span::styled("💿  ", Style::default().fg(GREEN)),
+                    Span::styled("💿  ", Style::default().fg(accent())),
                     heart,
                     Span::styled(
                         album.name.clone(),
@@ -235,8 +238,8 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let list = List::new(rows)
             .highlight_style(
                 Style::default()
-                    .fg(BG)
-                    .bg(GREEN)
+                    .fg(accent_foreground())
+                    .bg(accent())
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("▌")
@@ -271,7 +274,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Paragraph::new(Line::from(vec![
                 Span::styled(
                     format!(" {spinner} "),
-                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                    Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled("Loading tracks…", Style::default().fg(TEXT)),
             ]))
@@ -311,8 +314,8 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let list = List::new(rows)
             .highlight_style(
                 Style::default()
-                    .fg(BG)
-                    .bg(GREEN)
+                    .fg(accent_foreground())
+                    .bg(accent())
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("▌")
@@ -357,12 +360,12 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let area = centered_rect(60, 30, area);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        .border_style(Style::default().fg(accent()).add_modifier(Modifier::BOLD))
         .title(Span::styled(
             " 🔒  Spotify re-authentication ",
             Style::default()
-                .fg(BG)
-                .bg(GREEN)
+                .fg(accent_foreground())
+                .bg(accent())
                 .add_modifier(Modifier::BOLD),
         ));
 
@@ -402,7 +405,7 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     Line::from(vec![
                         Span::styled(
                             format!(" {spinner} "),
-                            Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                            Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
                             "Opening browser — complete login there.",
@@ -427,7 +430,10 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
                         "Open this URL in any browser to continue:",
                         Style::default().fg(TEXT),
                     )),
-                    Line::from(Span::styled(auth_url.clone(), Style::default().fg(GREEN))),
+                    Line::from(Span::styled(
+                        auth_url.clone(),
+                        Style::default().fg(accent()),
+                    )),
                     Line::from(""),
                 ],
                 Some(LoginProgress::WaitingForCallback) => vec![
@@ -435,7 +441,7 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     Line::from(vec![
                         Span::styled(
                             format!(" {spinner} "),
-                            Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                            Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                         ),
                         Span::styled("Waiting for the OAuth callback…", Style::default().fg(TEXT)),
                     ]),
@@ -449,7 +455,7 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     Line::from(""),
                     Line::from(Span::styled(
                         "✓  Spotify auth saved.",
-                        Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                     )),
                     Line::from(""),
                 ],
@@ -522,7 +528,7 @@ fn fmt_reminder_when(ms: i64) -> String {
 fn notification_state_span(state: spotuify_core::NotificationState) -> Span<'static> {
     use spotuify_core::NotificationState as S;
     let (text, color) = match state {
-        S::Unseen => ("● new", GREEN),
+        S::Unseen => ("● new", accent()),
         S::Seen => ("seen", MUTED),
         S::Snoozed => ("snoozed", RED),
         S::Dismissed => ("dismissed", MUTED),
@@ -537,8 +543,8 @@ fn notification_state_span(state: spotuify_core::NotificationState) -> Span<'sta
 fn render_notifications(frame: &mut Frame<'_>, app: &App, area: Rect) {
     use crate::widgets::style::card_block;
     let highlight = Style::default()
-        .fg(BG)
-        .bg(GREEN)
+        .fg(accent_foreground())
+        .bg(accent())
         .add_modifier(Modifier::BOLD);
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -635,7 +641,7 @@ fn render_notifications(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 if r.recurrence.is_recurring() {
                     meta.push(Span::styled(
                         format!("  ·  {}", r.recurrence.label()),
-                        Style::default().fg(GREEN),
+                        Style::default().fg(accent()),
                     ));
                 }
                 ListItem::new(vec![
@@ -702,8 +708,8 @@ fn render_reminder_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         List::new(items)
             .highlight_style(
                 Style::default()
-                    .fg(BG)
-                    .bg(GREEN)
+                    .fg(accent_foreground())
+                    .bg(accent())
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("▌"),
@@ -716,7 +722,7 @@ fn render_reminder_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::styled("Repeat: ", Style::default().fg(MUTED)),
             Span::styled(
                 picker.recurrence.label(),
-                Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
             ),
             Span::styled("   (Tab to cycle)", Style::default().fg(MUTED)),
         ]))
@@ -801,7 +807,7 @@ fn render_playlist_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ListItem::new(Line::from(vec![
                 Span::styled(
                     format!(" {spinner} "),
-                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                    Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled("Loading playlists…", Style::default().fg(TEXT)),
             ])),
@@ -816,7 +822,10 @@ fn render_playlist_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .map(|playlist| {
                 let checked = picker.selected_playlist_ids.contains(&playlist.id);
                 let bullet = if checked {
-                    Span::styled("●", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+                    Span::styled(
+                        "●",
+                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+                    )
                 } else {
                     Span::styled("○", Style::default().fg(MUTED))
                 };
@@ -846,8 +855,8 @@ fn render_playlist_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         List::new(rows)
             .highlight_style(
                 Style::default()
-                    .fg(BG)
-                    .bg(GREEN)
+                    .fg(accent_foreground())
+                    .bg(accent())
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("▌"),
@@ -896,7 +905,7 @@ fn render_audio_output_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ListItem::new(Line::from(vec![
                 Span::styled(
                     " 🔊  ",
-                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                    Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(name.clone(), Style::default().fg(TEXT)),
             ]))
@@ -906,7 +915,7 @@ fn render_audio_output_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .highlight_style(
             Style::default()
                 .fg(TEXT)
-                .bg(crate::widgets::style::GREEN_SOFT)
+                .bg(app.palette.soft_accent)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▌")
@@ -951,7 +960,7 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ListItem::new(Line::from(vec![
                 Span::styled(
                     format!(" {spinner} "),
-                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                    Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled("Loading devices…", Style::default().fg(TEXT)),
             ])),
@@ -968,7 +977,7 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 let mut header: Vec<Span<'_>> = vec![
                     Span::styled(
                         format!(" {icon}  "),
-                        Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         device.name.clone(),
@@ -979,7 +988,7 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     header.push(Span::raw("  "));
                     header.push(Span::styled(
                         "● active",
-                        Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                     ));
                 }
                 if device.is_restricted {
@@ -1011,8 +1020,8 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         List::new(rows)
             .highlight_style(
                 Style::default()
-                    .fg(BG)
-                    .bg(GREEN)
+                    .fg(accent_foreground())
+                    .bg(accent())
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("▌"),
@@ -1124,7 +1133,7 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Paragraph::new(Line::from(vec![
                 Span::styled(
                     kind_icon(&item.kind),
-                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                    Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
                 Span::styled(item.subtitle.clone(), Style::default().fg(TEXT)),
@@ -1136,7 +1145,7 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let progress = progress_ratio(view.progress_ms, view.duration_ms);
         frame.render_widget(
             Gauge::default()
-                .gauge_style(Style::default().fg(GREEN).bg(Color::Rgb(38, 45, 49)))
+                .gauge_style(Style::default().fg(accent()).bg(Color::Rgb(38, 45, 49)))
                 .ratio(progress)
                 .label(format!(
                     "{} / {}",
@@ -1163,7 +1172,7 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 )),
                 Line::from(Span::styled(
                     "Press / to search and Enter to start playback.",
-                    Style::default().fg(GREEN),
+                    Style::default().fg(accent()),
                 )),
             ])
             .style(Style::default().bg(PANEL)),
@@ -1189,7 +1198,7 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 )),
                 Line::from(Span::styled(
                     "Start playback from Search or Library to load a live queue.",
-                    Style::default().fg(GREEN),
+                    Style::default().fg(accent()),
                 )),
             ])
             .style(Style::default().bg(PANEL)),
@@ -1222,18 +1231,88 @@ fn render_now_playing(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(24),
-            Constraint::Min(30),
-            Constraint::Length(40),
-        ])
-        .split(inner);
+    let layout = now_playing_layout(inner);
+    if let Some(cover) = layout.cover {
+        render_cover(frame, app, cover);
+    }
+    if let Some(track) = layout.track {
+        render_track(frame, app, track);
+    }
+    render_transport(frame, app, layout.transport, layout.compact_transport);
+}
 
-    render_cover(frame, app, chunks[0]);
-    render_track(frame, app, chunks[1]);
-    render_transport(frame, app, chunks[2]);
+pub(crate) const TRANSPORT_FULL_WIDTH: u16 = 40;
+pub(crate) const TRANSPORT_COMPACT_WIDTH: u16 = 26;
+const COVER_WIDTH: u16 = 24;
+const TRACK_MIN_WIDTH: u16 = 30;
+
+/// Regions of the bottom now-playing bar, computed from its inner rect.
+pub(crate) struct NowPlayingLayout {
+    pub cover: Option<Rect>,
+    pub track: Option<Rect>,
+    pub transport: Rect,
+    pub compact_transport: bool,
+}
+
+/// Width-aware layout for the bottom now-playing bar. Shared with the
+/// mouse hit-testing in `app.rs` so click zones always match what's
+/// drawn. Collapse order as the terminal narrows: cover art goes first,
+/// then the transport switches to its compact form, then the track
+/// panel is dropped so the controls keep the full row.
+pub(crate) fn now_playing_layout(inner: Rect) -> NowPlayingLayout {
+    let width = inner.width;
+    if width >= COVER_WIDTH + TRACK_MIN_WIDTH + TRANSPORT_FULL_WIDTH {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(COVER_WIDTH),
+                Constraint::Min(TRACK_MIN_WIDTH),
+                Constraint::Length(TRANSPORT_FULL_WIDTH),
+            ])
+            .split(inner);
+        return NowPlayingLayout {
+            cover: Some(chunks[0]),
+            track: Some(chunks[1]),
+            transport: chunks[2],
+            compact_transport: false,
+        };
+    }
+    if width >= 24 + TRANSPORT_FULL_WIDTH {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(24),
+                Constraint::Length(TRANSPORT_FULL_WIDTH),
+            ])
+            .split(inner);
+        return NowPlayingLayout {
+            cover: None,
+            track: Some(chunks[0]),
+            transport: chunks[1],
+            compact_transport: false,
+        };
+    }
+    if width >= 14 + TRANSPORT_COMPACT_WIDTH {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(14),
+                Constraint::Length(TRANSPORT_COMPACT_WIDTH),
+            ])
+            .split(inner);
+        return NowPlayingLayout {
+            cover: None,
+            track: Some(chunks[0]),
+            transport: chunks[1],
+            compact_transport: true,
+        };
+    }
+    NowPlayingLayout {
+        cover: None,
+        track: None,
+        transport: inner,
+        compact_transport: true,
+    }
 }
 
 fn render_cover(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -1323,7 +1402,7 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     title,
                     Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
                 )),
-                Line::from(Span::styled(hint, Style::default().fg(GREEN))),
+                Line::from(Span::styled(hint, Style::default().fg(accent()))),
                 Line::from(Span::styled(
                     "Search, queue, playlists, and podcasts are available from the tabs below.",
                     Style::default().fg(MUTED),
@@ -1397,7 +1476,7 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 kind_icon(&item.kind),
-                Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
             Span::styled(
@@ -1416,7 +1495,7 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .split(rows[4]);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(state, Style::default().fg(GREEN)),
+            Span::styled(state, Style::default().fg(accent())),
             Span::styled(" on ", Style::default().fg(MUTED)),
             Span::styled(truncate(&device_name(app), 20), Style::default().fg(TEXT)),
         ]))
@@ -1455,7 +1534,62 @@ fn active_singalong_lyric_line_index(
         .rposition(|line| !line.text.trim().is_empty())
 }
 
-fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect) {
+/// Toggle-chip labels for the transport's shuffle / repeat / like row.
+/// Shared with `transport_toggle_ranges` so the mouse hit-testing in
+/// `app.rs` tracks the rendered chip widths in both layouts.
+pub(crate) fn transport_toggle_labels(
+    repeat: &str,
+    shuffle: bool,
+    liked: bool,
+    compact: bool,
+) -> (&'static str, &'static str, &'static str) {
+    let shuffle_label = match (compact, shuffle) {
+        (false, true) => "SHUFFLE",
+        (false, false) => "shuffle",
+        (true, true) => "SHUF",
+        (true, false) => "shuf",
+    };
+    let repeat_label = match (compact, repeat) {
+        (false, "track") => "REPEAT ONE",
+        (false, "context" | "on") => "REPEAT ALL",
+        (false, _) => "repeat",
+        (true, "track") => "REP 1",
+        (true, "context" | "on") => "REP A",
+        (true, _) => "rep",
+    };
+    let like_label = match (compact, liked) {
+        (false, true) => "LIKED",
+        (true, true) => "LIKE",
+        (_, false) => "like",
+    };
+    (shuffle_label, repeat_label, like_label)
+}
+
+/// Column ranges (relative to the transport block's 1-cell inner
+/// margin) of the shuffle / repeat / like chips on the toggles row.
+pub(crate) fn transport_toggle_ranges(
+    repeat: &str,
+    shuffle: bool,
+    liked: bool,
+    compact: bool,
+) -> [std::ops::Range<u16>; 3] {
+    let (shuffle_label, repeat_label, like_label) =
+        transport_toggle_labels(repeat, shuffle, liked, compact);
+    let gap: u16 = 2;
+    let shuffle_start: u16 = 1;
+    let shuffle_end = shuffle_start + shuffle_label.len() as u16 + 2;
+    let repeat_start = shuffle_end + gap;
+    let repeat_end = repeat_start + repeat_label.len() as u16 + 2;
+    let like_start = repeat_end + gap;
+    let like_end = like_start + like_label.len() as u16 + 2;
+    [
+        shuffle_start..shuffle_end,
+        repeat_start..repeat_end,
+        like_start..like_end,
+    ]
+}
+
+fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool) {
     use crate::widgets::style::{state_chip, StateRole, CHIP_BG, CHIP_FG};
     // Phase 6 — canonical view: volume falls back to devices cache for
     // the same active-device id (never a different device), liked
@@ -1469,14 +1603,17 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     // Chunky transport chips: 7 cells wide each (`   X   `) so the
     // glyph sits in a chip the user can actually click. 3-cell gaps
-    // between primary buttons.
+    // between primary buttons. Compact mode shrinks chips to 3 cells
+    // and gaps to 2 so the row fits `TRANSPORT_COMPACT_WIDTH`.
+    let chip_pad = if compact { " " } else { "   " };
+    let chip_gap = if compact { "  " } else { "   " };
     let big_chip = |glyph: &str, role: ButtonHeroRole| {
         let (fg, bg) = match role {
-            ButtonHeroRole::Primary => (BG, GREEN),
+            ButtonHeroRole::Primary => (accent_foreground(), accent()),
             ButtonHeroRole::Secondary => (CHIP_FG, CHIP_BG),
         };
         Span::styled(
-            format!("   {glyph}   "),
+            format!("{chip_pad}{glyph}{chip_pad}"),
             Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
         )
     };
@@ -1484,9 +1621,9 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let primary_row = Line::from(vec![
         Span::raw(" "),
         big_chip("⏮", ButtonHeroRole::Secondary),
-        Span::raw("   "),
+        Span::raw(chip_gap),
         big_chip(play_glyph, ButtonHeroRole::Primary),
-        Span::raw("   "),
+        Span::raw(chip_gap),
         big_chip("⏭", ButtonHeroRole::Secondary),
     ]);
 
@@ -1501,21 +1638,16 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect) {
             state_chip(label, StateRole::Idle)
         }
     };
-    let shuffle_chip = toggle_chip(
-        if app.playback.shuffle {
-            "SHUFFLE"
-        } else {
-            "shuffle"
-        },
+    let (shuffle_label, repeat_label, like_label) = transport_toggle_labels(
+        app.playback.repeat.as_str(),
         app.playback.shuffle,
+        liked,
+        compact,
     );
-    let (repeat_label, repeat_on) = match app.playback.repeat.as_str() {
-        "track" => ("REPEAT ONE", true),
-        "context" | "on" => ("REPEAT ALL", true),
-        _ => ("repeat", false),
-    };
+    let repeat_on = matches!(app.playback.repeat.as_str(), "track" | "context" | "on");
+    let shuffle_chip = toggle_chip(shuffle_label, app.playback.shuffle);
     let repeat_chip = toggle_chip(repeat_label, repeat_on);
-    let like_chip = toggle_chip(if liked { "LIKED" } else { "like" }, liked);
+    let like_chip = toggle_chip(like_label, liked);
     let toggles_row = Line::from(vec![
         Span::raw(" "),
         shuffle_chip,
@@ -1535,13 +1667,13 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         "🔊"
     };
-    let bar_width: usize = 16;
+    let bar_width: usize = if compact { 8 } else { 16 };
     let filled = ((volume as usize) * bar_width).div_ceil(100).min(bar_width);
     let bar: String = "█".repeat(filled) + &"░".repeat(bar_width - filled);
     let volume_row = Line::from(vec![
         Span::raw(" "),
         Span::styled(format!("{speaker_glyph}  "), Style::default().fg(MUTED)),
-        Span::styled(bar, Style::default().fg(GREEN)),
+        Span::styled(bar, Style::default().fg(accent())),
         Span::styled(format!("  {volume:>3}"), Style::default().fg(MUTED)),
     ]);
 
@@ -1688,48 +1820,17 @@ fn render_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let tabs_row = rows[1];
     // Tabs: each tab is `[N] Label`. The numeric prefix is a small
     // CHIP_BG chip so the keyboard shortcut reads as a button. The
-    // active tab gets the inverted GREEN treatment.
+    // active tab gets the inverted GREEN treatment. Layout is computed
+    // by `tab_strip_layout` (shared with mouse hit-testing) so narrow
+    // terminals degrade to short labels / a window around the active
+    // tab instead of silently clipping the right-hand tabs.
     let selected = Screen::ALL
         .iter()
         .position(|screen| *screen == app.screen)
         .unwrap_or(0);
-    let titles = Screen::ALL
-        .into_iter()
-        .enumerate()
-        .map(|(index, screen)| {
-            let is_active = index == selected;
-            let key_chip_bg = if is_active {
-                Style::default()
-                    .fg(GREEN)
-                    .bg(BG)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-                    .fg(crate::widgets::style::CHIP_FG)
-                    .bg(crate::widgets::style::CHIP_BG)
-                    .add_modifier(Modifier::BOLD)
-            };
-            let label_style = if is_active {
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(MUTED)
-            };
-            Line::from(vec![
-                Span::styled(format!(" {} ", screen.key_label()), key_chip_bg),
-                Span::styled(format!(" {} ", screen.label()), label_style),
-            ])
-        })
-        .collect::<Vec<_>>();
+    let (tab_line, _) = tab_strip_layout(selected, tabs_row.width);
     frame.render_widget(
-        Tabs::new(titles)
-            .select(selected)
-            .style(Style::default().bg(BG))
-            .divider(Span::styled(
-                "  │  ",
-                Style::default()
-                    .fg(crate::widgets::style::DIM_BORDER)
-                    .bg(BG),
-            )),
+        Paragraph::new(tab_line).style(Style::default().bg(BG)),
         tabs_row,
     );
 
@@ -1748,6 +1849,123 @@ fn render_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     if content.len() > 1 {
         render_right_rail(frame, app, content[1]);
     }
+}
+
+/// Width-aware tab strip. Tries the roomiest presentation first and
+/// degrades in steps as the terminal narrows: full labels with the wide
+/// divider, full labels with a tight divider, short labels (the active
+/// tab keeps its full label), then a window of short-label tabs around
+/// the active one with `‹`/`›` overflow markers. Returns the styled
+/// line plus each visible tab's column range (relative to the strip
+/// start) so mouse hit-testing in `app.rs` always matches what's drawn.
+pub(crate) fn tab_strip_layout(
+    selected: usize,
+    width: u16,
+) -> (Line<'static>, Vec<(usize, std::ops::Range<u16>)>) {
+    use crate::widgets::style::{CHIP_BG, CHIP_FG, DIM_BORDER};
+    let screens = Screen::ALL;
+    let n = screens.len();
+
+    let cell_width = |index: usize, short: bool| -> u16 {
+        let screen = screens[index];
+        let label = if short && index != selected {
+            screen.short_label()
+        } else {
+            screen.label()
+        };
+        (screen.key_label().len() + label.len() + 4) as u16
+    };
+    let total_width = |short: bool, divider_width: u16| -> u16 {
+        (0..n).map(|i| cell_width(i, short)).sum::<u16>()
+            + divider_width.saturating_mul(n as u16 - 1)
+    };
+
+    let modes: [(bool, &str); 4] = [(false, "  │  "), (false, " │ "), (true, " │ "), (true, " ")];
+    let fitting_mode = modes
+        .iter()
+        .find(|(short, divider)| total_width(*short, divider.chars().count() as u16) <= width);
+
+    let (short, divider, start, end, left_marker, right_marker) = match fitting_mode {
+        Some((short, divider)) => (*short, *divider, 0, n, false, false),
+        None => {
+            // Window around the selected tab: grow rightward then
+            // leftward while the strip (plus overflow markers) fits.
+            let divider = " ";
+            let fits = |start: usize, end: usize| -> bool {
+                let cells: u16 = (start..end).map(|i| cell_width(i, true)).sum();
+                let dividers = (end - start).saturating_sub(1) as u16;
+                let markers = if start > 0 { 2u16 } else { 0 } + if end < n { 2u16 } else { 0 };
+                cells + dividers + markers <= width
+            };
+            let (mut start, mut end) = (selected, selected + 1);
+            loop {
+                let grew_right = end < n && fits(start, end + 1);
+                if grew_right {
+                    end += 1;
+                }
+                let grew_left = start > 0 && fits(start - 1, end);
+                if grew_left {
+                    start -= 1;
+                }
+                if !grew_right && !grew_left {
+                    break;
+                }
+            }
+            (true, divider, start, end, start > 0, end < n)
+        }
+    };
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut ranges: Vec<(usize, std::ops::Range<u16>)> = Vec::new();
+    let mut x: u16 = 0;
+    let marker_style = Style::default().fg(MUTED).bg(BG);
+    if left_marker {
+        spans.push(Span::styled("‹ ", marker_style));
+        x += 2;
+    }
+    for (index, screen) in screens.iter().copied().enumerate().take(end).skip(start) {
+        if index > start {
+            spans.push(Span::styled(
+                divider.to_string(),
+                Style::default().fg(DIM_BORDER).bg(BG),
+            ));
+            x += divider.chars().count() as u16;
+        }
+        let is_active = index == selected;
+        let key_chip_style = if is_active {
+            Style::default()
+                .fg(accent())
+                .bg(BG)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(CHIP_FG)
+                .bg(CHIP_BG)
+                .add_modifier(Modifier::BOLD)
+        };
+        let label_style = if is_active {
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(MUTED)
+        };
+        let label = if short && !is_active {
+            screen.short_label()
+        } else {
+            screen.label()
+        };
+        let cell_start = x;
+        let chip = format!(" {} ", screen.key_label());
+        x += chip.chars().count() as u16;
+        spans.push(Span::styled(chip, key_chip_style));
+        let label_cell = format!(" {label} ");
+        x += label_cell.chars().count() as u16;
+        spans.push(Span::styled(label_cell, label_style));
+        ranges.push((index, cell_start..x));
+    }
+    if right_marker {
+        spans.push(Span::styled(" ›", marker_style));
+    }
+    (Line::from(spans), ranges)
 }
 
 fn render_screen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -1815,8 +2033,8 @@ fn render_history(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
 
     let highlight = Style::default()
-        .fg(BG)
-        .bg(GREEN)
+        .fg(accent_foreground())
+        .bg(accent())
         .add_modifier(Modifier::BOLD);
     let mut items: Vec<ListItem<'_>> = Vec::with_capacity(total_tracks);
     for session in &app.history_sessions {
@@ -1836,7 +2054,7 @@ fn render_history(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     .unwrap_or_else(|| "Mixed session".to_string());
                 let header = Line::from(Span::styled(
                     format!("— {label} · {}", fmt_reminder_when(session.started_at_ms)),
-                    Style::default().fg(GREEN),
+                    Style::default().fg(accent()),
                 ));
                 items.push(ListItem::new(vec![header, track_line]));
             } else {
@@ -2377,7 +2595,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Line::from(vec![
                     Span::styled(
                         format!(" {spinner} "),
-                        Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled("Fetching synced lyrics…", Style::default().fg(TEXT)),
                 ]),
@@ -2478,7 +2696,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     // Footer: provider chip + offset.
     let footer = if app.lyrics_loading {
-        vec![Span::styled("Fetching…", Style::default().fg(GREEN))]
+        vec![Span::styled("Fetching…", Style::default().fg(accent()))]
     } else if let Some(lyrics) = &app.lyrics {
         vec![
             section_chip(lyrics.provider.label()),
@@ -2529,7 +2747,7 @@ fn render_search(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("/ ", Style::default().fg(GREEN)),
+            Span::styled("/ ", Style::default().fg(accent())),
             Span::styled(&app.search_query, Style::default().fg(TEXT)),
             Span::styled(format!("  {prompt}"), Style::default().fg(MUTED)),
         ]))
@@ -2652,7 +2870,7 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
                 if pane.loading {
                     Some(Span::styled(
                         "↓ loading more…",
-                        Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                     ))
                 } else if let Some(error) = pane.error.as_deref() {
                     Some(Span::styled(
@@ -2733,14 +2951,20 @@ fn render_media_rows(
     for (i, item) in items.iter().enumerate().skip(start).take(visible_items) {
         let is_sel = i == selected;
         let marker = if app.marked_uris.contains(&item.uri) {
-            Span::styled("●", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+            Span::styled(
+                "●",
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+            )
         } else if is_sel {
-            Span::styled("▌", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+            Span::styled(
+                "▌",
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+            )
         } else {
             Span::raw(" ")
         };
         let name_style = if is_sel {
-            Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
+            Style::default().fg(accent()).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
         };
@@ -2799,7 +3023,7 @@ fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
-                    Span::styled(format!(" {spinner} "), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!(" {spinner} "), Style::default().fg(accent()).add_modifier(Modifier::BOLD)),
                     Span::styled(
                         "Fetching your library…",
                         Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
@@ -2903,8 +3127,8 @@ fn render_library_section(
     let list = List::new(list_items)
         .highlight_style(
             Style::default()
-                .fg(BG)
-                .bg(GREEN)
+                .fg(accent_foreground())
+                .bg(accent())
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▌")
@@ -2942,7 +3166,7 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Line::from(vec![
                     Span::styled(
                         kind_icon(&item.kind),
-                        Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(" "),
                     Span::styled(
@@ -2980,7 +3204,7 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 )),
                 Line::from(Span::styled(
                     "Press / to search and Enter to start playback.",
-                    Style::default().fg(GREEN),
+                    Style::default().fg(accent()),
                 )),
             ])
             .style(Style::default().bg(PANEL)),
@@ -3006,7 +3230,7 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 )),
                 Line::from(Span::styled(
                     "Start playback from Search or Library to load a live queue.",
-                    Style::default().fg(GREEN),
+                    Style::default().fg(accent()),
                 )),
             ]
         } else {
@@ -3017,7 +3241,7 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 )),
                 Line::from(Span::styled(
                     "Press `e` on any track or album to enqueue it.",
-                    Style::default().fg(GREEN),
+                    Style::default().fg(accent()),
                 )),
             ]
         };
@@ -3086,7 +3310,7 @@ fn render_playlists(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 Paragraph::new(vec![Line::from(vec![
                     Span::styled(
                         format!(" {spinner} "),
-                        Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled("Loading tracks…", Style::default().fg(TEXT)),
                 ])])
@@ -3103,8 +3327,8 @@ fn render_playlists(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         )
         .highlight_style(
             Style::default()
-                .fg(BG)
-                .bg(GREEN)
+                .fg(accent_foreground())
+                .bg(accent())
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▌")
@@ -3151,7 +3375,7 @@ fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 )),
                 Line::from(Span::styled(
                     "Open Spotify on a phone/laptop/speaker to make it visible. Press u to refresh.",
-                    Style::default().fg(GREEN),
+                    Style::default().fg(accent()),
                 )),
             ])
             .wrap(Wrap { trim: true })
@@ -3192,7 +3416,7 @@ fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 let pct = device.volume_percent.unwrap_or(0);
                 vec![
                     Span::styled("🔊  ", Style::default().fg(MUTED)),
-                    Span::styled(bar, Style::default().fg(GREEN)),
+                    Span::styled(bar, Style::default().fg(accent())),
                     Span::styled(format!("  {pct:>3}"), Style::default().fg(MUTED)),
                 ]
             } else {
@@ -3235,8 +3459,8 @@ fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
     )
     .row_highlight_style(
         Style::default()
-            .fg(BG)
-            .bg(GREEN)
+            .fg(accent_foreground())
+            .bg(accent())
             .add_modifier(Modifier::BOLD),
     )
     .highlight_symbol("▌ ")
@@ -3286,7 +3510,7 @@ fn render_filter_bar(frame: &mut Frame<'_>, app: &App, title: &str, area: Rect) 
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("filter ", Style::default().fg(GREEN)),
+            Span::styled("filter ", Style::default().fg(accent())),
             Span::styled(&app.list_filter_query, Style::default().fg(TEXT)),
             Span::styled(format!("  {prompt}"), Style::default().fg(MUTED)),
         ]))
@@ -3357,7 +3581,7 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
         if report.findings.is_empty() {
             left.push(Line::from(Span::styled(
                 "Nothing to flag.",
-                Style::default().fg(GREEN),
+                Style::default().fg(accent()),
             )));
         } else {
             left.extend(report.findings.iter().take(6).map(|finding| {
@@ -3373,7 +3597,7 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
         left.push(Line::from(vec![
             Span::styled(
                 format!(" {spinner} "),
-                Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "Loading doctor…",
@@ -3445,7 +3669,7 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Span::raw(" "),
             Span::styled(
                 format!("matching `{}`", app.list_filter_query),
-                Style::default().fg(GREEN),
+                Style::default().fg(accent()),
             ),
         ]
     }));
@@ -3485,7 +3709,7 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
             let cursor = if i == app.operations_cursor {
                 Span::styled(
                     "▌ ",
-                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                    Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                 )
             } else {
                 Span::raw("  ")
@@ -3527,7 +3751,7 @@ fn format_log_line(line: &str, selected: bool) -> Line<'static> {
         if selected {
             Span::styled(
                 "▌ ",
-                Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
             )
         } else {
             Span::raw("  ")
@@ -3589,10 +3813,13 @@ fn render_command_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 " › ",
-                Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
             ),
             Span::styled(app.command_palette.input.clone(), Style::default().fg(TEXT)),
-            Span::styled("▍", Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "▍",
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+            ),
         ]))
         .style(Style::default().bg(PANEL)),
         rows[0],
@@ -3625,8 +3852,8 @@ fn render_command_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
         List::new(items)
             .highlight_style(
                 Style::default()
-                    .fg(BG)
-                    .bg(GREEN)
+                    .fg(accent_foreground())
+                    .bg(accent())
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("▌")
@@ -3842,7 +4069,7 @@ fn render_playlist_list(
                 Line::from(vec![
                     Span::styled(
                         " ⠋ ",
-                        Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         "Fetching playlists…",
@@ -3870,7 +4097,7 @@ fn render_playlist_list(
             let marker = if playlist.image_url.is_some() {
                 Span::styled(
                     " ▣ ",
-                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                    Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                 )
             } else {
                 Span::styled(" ▢ ", Style::default().fg(MUTED))
@@ -3908,8 +4135,8 @@ fn render_playlist_list(
     )))
     .row_highlight_style(
         Style::default()
-            .fg(BG)
-            .bg(GREEN)
+            .fg(accent_foreground())
+            .bg(accent())
             .add_modifier(Modifier::BOLD),
     )
     .style(Style::default().bg(PANEL));
@@ -4003,7 +4230,7 @@ fn render_artwork_preview(
                 truncate(&subject.detail, text_width),
                 Style::default().fg(MUTED),
             )),
-            Line::from(Span::styled(status, Style::default().fg(GREEN))),
+            Line::from(Span::styled(status, Style::default().fg(accent()))),
         ])
         .wrap(Wrap { trim: true })
         .style(Style::default().bg(PANEL)),
@@ -4018,7 +4245,7 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
     match app.screen {
         Screen::Search if app.is_searching => vec![
             Line::from(vec![
-                Span::styled(format!(" {spinner_owned} "), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" {spinner_owned} "), Style::default().fg(accent()).add_modifier(Modifier::BOLD)),
                 Span::styled(
                     "Searching Spotify and local cache…",
                     Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
@@ -4036,7 +4263,7 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
             )),
             Line::from(Span::styled(
                 "Press / and type an artist, song, album, or playlist.",
-                Style::default().fg(GREEN),
+                Style::default().fg(accent()),
             )),
             Line::from(Span::styled(
                 "Once results land: g t/r/b/p/s/e jumps to Tracks/Artists/Albums/Playlists/Shows/Episodes.",
@@ -4045,7 +4272,7 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
         ],
         Screen::Library => vec![
             Line::from(vec![
-                Span::styled(format!(" {spinner_owned} "), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" {spinner_owned} "), Style::default().fg(accent()).add_modifier(Modifier::BOLD)),
                 Span::styled(
                     "Fetching your library…",
                     Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
@@ -4071,18 +4298,18 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
             if !app.queue.session_active {
                 Line::from(Span::styled(
                     "Start playback from Search or Library to load a live queue.",
-                    Style::default().fg(GREEN),
+                    Style::default().fg(accent()),
                 ))
             } else {
                 Line::from(Span::styled(
                     "Press `e` on any track or album to enqueue.",
-                    Style::default().fg(GREEN),
+                    Style::default().fg(accent()),
                 ))
             },
         ],
         Screen::Playlists if app.selected_playlist_id.is_some() => vec![
             Line::from(vec![
-                Span::styled(format!(" {spinner_owned} "), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" {spinner_owned} "), Style::default().fg(accent()).add_modifier(Modifier::BOLD)),
                 Span::styled(
                     "Loading tracks…",
                     Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
@@ -4100,7 +4327,7 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
             )),
             Line::from(Span::styled(
                 "Saved songs, albums, podcasts, and recent plays appear here.",
-                Style::default().fg(GREEN),
+                Style::default().fg(accent()),
             )),
             Line::from(Span::styled(
                 "Use Search while the cache warms up.",
@@ -4114,7 +4341,7 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
             )),
             Line::from(Span::styled(
                 "Use Search or Library to start something.",
-                Style::default().fg(GREEN),
+                Style::default().fg(accent()),
             )),
         ],
         _ => vec![Line::from(Span::styled(
@@ -4221,12 +4448,12 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Span::styled(
                     " ✓ ",
                     Style::default()
-                        .fg(BG)
-                        .bg(GREEN)
+                        .fg(accent_foreground())
+                        .bg(accent())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
-                Span::styled(toast.clone(), Style::default().fg(GREEN)),
+                Span::styled(toast.clone(), Style::default().fg(accent())),
             ]))
             .style(Style::default().bg(BG)),
             area,
@@ -4241,11 +4468,14 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Span::styled(
                     format!(" {spinner} "),
                     Style::default()
-                        .fg(GREEN)
+                        .fg(accent())
                         .bg(BG)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("Syncing Spotify… Ctrl+C quits", Style::default().fg(GREEN)),
+                Span::styled(
+                    "Syncing Spotify… Ctrl+C quits",
+                    Style::default().fg(accent()),
+                ),
             ]))
             .style(Style::default().bg(BG)),
             area,
@@ -4372,14 +4602,14 @@ fn banner_message(banner: &BannerState) -> (String, Color) {
         ),
         BannerState::UpdateAvailable => (
             "Update installed — restart daemon to apply".to_string(),
-            GREEN,
+            accent(),
         ),
         BannerState::UpgradeAvailable {
             latest_version,
             action,
         } => (
             format!("spotuify {latest_version} available · {action}"),
-            GREEN,
+            accent(),
         ),
     }
 }
@@ -4409,15 +4639,15 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Span::styled(
                     " / ",
                     Style::default()
-                        .fg(BG)
-                        .bg(GREEN)
+                        .fg(accent_foreground())
+                        .bg(accent())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
                 Span::styled(app.help_query.clone(), Style::default().fg(TEXT)),
                 Span::styled(
                     cursor_glyph,
-                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                    Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                 ),
             ]),
         ])
@@ -4551,9 +4781,15 @@ fn media_item_with(
         Span::raw(" ")
     };
     let marker = if now_playing {
-        Span::styled("▶", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "▶",
+            Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+        )
     } else if marked {
-        Span::styled("●", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "●",
+            Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::raw(" ")
     };
@@ -4563,7 +4799,7 @@ fn media_item_with(
         String::new()
     };
     let name_style = if now_playing {
-        Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
+        Style::default().fg(accent()).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
     };
@@ -4642,7 +4878,7 @@ pub fn kind_icon(kind: &MediaKind) -> &'static str {
 
 fn kind_color(kind: &MediaKind) -> Color {
     match kind {
-        MediaKind::Track => GREEN,
+        MediaKind::Track => accent(),
         MediaKind::Episode => Color::Rgb(180, 128, 255),
         MediaKind::Show => Color::Rgb(180, 128, 255),
         MediaKind::Album => Color::Rgb(91, 179, 255),
@@ -4740,6 +4976,73 @@ mod tests {
     use ratatui::Terminal;
     use ratatui_image::picker::Picker;
     use std::collections::HashSet;
+
+    #[test]
+    fn tab_strip_shows_all_tabs_full_labels_when_wide() {
+        let (_, ranges) = tab_strip_layout(0, 200);
+        assert_eq!(ranges.len(), Screen::ALL.len());
+        let strip_end = ranges.last().expect("ranges").1.end;
+        assert!(strip_end <= 200);
+    }
+
+    #[test]
+    fn tab_strip_degrades_but_keeps_all_tabs_at_medium_width() {
+        // 116 usable cols (120-col terminal minus chrome) can't fit full
+        // labels, but the short-label mode keeps every tab reachable.
+        let (_, ranges) = tab_strip_layout(0, 116);
+        assert_eq!(ranges.len(), Screen::ALL.len());
+        assert!(ranges.last().expect("ranges").1.end <= 116);
+    }
+
+    #[test]
+    fn tab_strip_windows_around_selected_when_very_narrow() {
+        // 40 cols can't show ten tabs even short-labelled; the window
+        // must still contain the selected tab and stay inside width.
+        for selected in [0, 5, Screen::ALL.len() - 1] {
+            let (_, ranges) = tab_strip_layout(selected, 40);
+            assert!(
+                ranges.iter().any(|(index, _)| *index == selected),
+                "selected tab {selected} must stay visible"
+            );
+            assert!(ranges.last().expect("ranges").1.end <= 40);
+        }
+    }
+
+    #[test]
+    fn tab_strip_ranges_are_disjoint_and_ordered() {
+        let (_, ranges) = tab_strip_layout(3, 90);
+        for pair in ranges.windows(2) {
+            assert!(pair[0].1.end <= pair[1].1.start);
+        }
+    }
+
+    #[test]
+    fn now_playing_layout_collapse_order() {
+        let inner = |w| Rect::new(0, 0, w, 8);
+        // Wide: all three regions.
+        let full = now_playing_layout(inner(120));
+        assert!(full.cover.is_some() && full.track.is_some());
+        assert_eq!(full.transport.width, TRANSPORT_FULL_WIDTH);
+        // Cover drops first; transport keeps full width.
+        let mid = now_playing_layout(inner(80));
+        assert!(mid.cover.is_none() && mid.track.is_some());
+        assert_eq!(mid.transport.width, TRANSPORT_FULL_WIDTH);
+        // Then transport compacts.
+        let narrow = now_playing_layout(inner(50));
+        assert!(narrow.track.is_some());
+        assert!(narrow.compact_transport);
+        assert_eq!(narrow.transport.width, TRANSPORT_COMPACT_WIDTH);
+        // Finally the track panel goes; controls own the row.
+        let tiny = now_playing_layout(inner(30));
+        assert!(tiny.track.is_none());
+        assert_eq!(tiny.transport.width, 30);
+    }
+
+    #[test]
+    fn compact_transport_toggle_ranges_fit_compact_width() {
+        let ranges = transport_toggle_ranges("context", true, true, true);
+        assert!(ranges[2].end < TRANSPORT_COMPACT_WIDTH);
+    }
 
     #[test]
     fn wrapped_row_count_estimates_wrapping() {
@@ -4927,6 +5230,7 @@ mod tests {
         let mut app = test_app();
         app.palette = crate::widgets::style::UiPalette {
             accent: Color::Rgb(200, 40, 30),
+            brand: Color::Rgb(200, 40, 30),
             soft_accent: Color::Rgb(120, 45, 45),
             background: Color::Rgb(35, 22, 22),
             foreground: Color::Rgb(250, 250, 250),
@@ -4986,6 +5290,18 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    #[test]
+    fn full_frame_renders_without_panic_at_narrow_widths() {
+        // Regression net for the responsive collapse: every tier of the
+        // tab strip + now-playing layout must render a full frame, all
+        // the way down to absurdly small terminals.
+        for (width, height) in [(160u16, 40u16), (110, 32), (80, 28), (50, 24), (34, 18)] {
+            let mut app = test_app();
+            let lines = render_lines(&mut app, width, height);
+            assert_eq!(lines.len(), height as usize, "{width}x{height} frame");
+        }
     }
 
     #[test]

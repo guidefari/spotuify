@@ -102,6 +102,23 @@ impl Screen {
         }
     }
 
+    /// Abbreviated tab label for narrow terminals, where the full set of
+    /// ten tabs doesn't fit on one row.
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Player => "Home",
+            Self::Search => "Srch",
+            Self::Library => "Lib",
+            Self::Playlists => "Lists",
+            Self::Queue => "Queue",
+            Self::History => "Hist",
+            Self::Devices => "Dev",
+            Self::Diagnostics => "Diag",
+            Self::Lyrics => "Lyr",
+            Self::Notifications => "Notif",
+        }
+    }
+
     /// The number key that jumps to this screen (History is `0`, since 1–9 are
     /// taken). Used by the tab bar so the chip matches the real keybinding
     /// rather than the screen's position in `ALL`.
@@ -2350,6 +2367,10 @@ async fn run_loop(
     app: &mut App,
 ) -> Result<()> {
     let mut events = EventStream::new();
+    // Self-heal the daemon's per-client focus vote: a previous TUI that
+    // exited while unfocused leaves a stale "tui = unfocused" vote that
+    // would keep the viz throttled. We're clearly focused at launch.
+    spawn_viz_focus(true);
     // Phase 8 — TUI is event-driven. The daemon's PlaybackChanged event
     // now carries the full Playback snapshot (Phase 3), and the daemon's
     // PlaybackClock extrapolates progress locally on each PlaybackGet, so
@@ -2451,7 +2472,13 @@ async fn run_loop(
 /// best-effort optimization, not a correctness signal).
 fn spawn_viz_focus(focused: bool) {
     tokio::spawn(async move {
-        if let Ok(mut client) = IpcClient::connect().await {
+        // `connect_with_source(Tui)` so the daemon files this vote in
+        // the TUI's focus bucket — focus throttling is per-client now,
+        // and a source-less connect would land in the shared "unknown"
+        // bucket alongside the macOS app.
+        if let Ok(mut client) =
+            IpcClient::connect_with_source(spotuify_protocol::OperationSource::Tui).await
+        {
             let _ = client
                 .request(spotuify_protocol::Request::SetVizFocus { focused })
                 .await;
@@ -3175,7 +3202,7 @@ fn mouse_outcome(app: &App, area: Rect, mouse: MouseEvent) -> Option<MouseOutcom
     if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
         return None;
     }
-    if let Some(action) = mouse_tab_action(area, mouse.column, mouse.row) {
+    if let Some(action) = mouse_tab_action(app, area, mouse.column, mouse.row) {
         return Some(MouseOutcome::Action(action));
     }
     let (main, rail) = body_content_areas(area, app.right_rail);
@@ -3215,19 +3242,11 @@ fn mouse_transport_action(app: &App, player: Rect, column: u16, row: u16) -> Opt
             vertical: 1,
         },
     );
-    let transport_width = 40u16.min(inner.width);
-    if transport_width == 0 {
-        return None;
-    }
-    let transport = Rect::new(
-        inner
-            .x
-            .saturating_add(inner.width.saturating_sub(transport_width)),
-        inner.y,
-        transport_width,
-        inner.height,
-    );
-    if !rect_contains(transport, column, row) {
+    // Same layout call as `render_now_playing`, so the transport rect
+    // and chip widths track the responsive collapse exactly.
+    let layout = ui::now_playing_layout(inner);
+    let transport = layout.transport;
+    if transport.width == 0 || !rect_contains(transport, column, row) {
         return None;
     }
     // Strip transport's 1-cell horizontal margin so columns match the
@@ -3245,37 +3264,25 @@ fn mouse_transport_action(app: &App, player: Rect, column: u16, row: u16) -> Opt
             1 => Some(TuiAction::PlayPause),
             _ => Some(TuiAction::Next),
         },
-        // Toggles row — shuffle, repeat, like. Column ranges are
-        // computed against the same chip widths `render_transport` uses
-        // so clicks land on the chip the user sees.
+        // Toggles row — shuffle, repeat, like. Ranges come from the
+        // same helper `render_transport` uses for its chip labels, so
+        // clicks land on the chip the user sees in either layout.
         4 => {
-            // Order: " " " SHUFFLE "/" shuffle " "  " " REPEAT … "/" repeat " "  " " LIKED "/" like "
-            let shuffle_start: u16 = 1;
-            let shuffle_end = shuffle_start.saturating_add(9);
-            let repeat_len: u16 = match app.playback.repeat.as_str() {
-                "track" | "context" | "on" => 12,
-                _ => 8,
-            };
-            let repeat_start = shuffle_end.saturating_add(2);
-            let repeat_end = repeat_start.saturating_add(repeat_len);
-            let like_start = repeat_end.saturating_add(2);
-            let like_len: u16 = {
-                let liked = app.playback.item.as_ref().is_some_and(|i| {
-                    app.marked_uris.contains(&i.uri)
-                        || app.library_items.iter().any(|saved| saved.uri == i.uri)
-                });
-                if liked {
-                    7
-                } else {
-                    6
-                }
-            };
-            let like_end = like_start.saturating_add(like_len);
-            if (shuffle_start..shuffle_end).contains(&local_col) {
+            let liked = app.playback.item.as_ref().is_some_and(|i| {
+                app.marked_uris.contains(&i.uri)
+                    || app.library_items.iter().any(|saved| saved.uri == i.uri)
+            });
+            let [shuffle, repeat, like] = ui::transport_toggle_ranges(
+                app.playback.repeat.as_str(),
+                app.playback.shuffle,
+                liked,
+                layout.compact_transport,
+            );
+            if shuffle.contains(&local_col) {
                 Some(TuiAction::ToggleShuffle)
-            } else if (repeat_start..repeat_end).contains(&local_col) {
+            } else if repeat.contains(&local_col) {
                 Some(TuiAction::CycleRepeat)
-            } else if (like_start..like_end).contains(&local_col) {
+            } else if like.contains(&local_col) {
                 Some(TuiAction::LikeSelection)
             } else {
                 None
@@ -3285,14 +3292,25 @@ fn mouse_transport_action(app: &App, player: Rect, column: u16, row: u16) -> Opt
     }
 }
 
-fn mouse_tab_action(area: Rect, column: u16, row: u16) -> Option<TuiAction> {
+fn mouse_tab_action(app: &App, area: Rect, column: u16, row: u16) -> Option<TuiAction> {
     let tabs = body_tabs_area(area);
     if !rect_contains(tabs, column, row) || tabs.width == 0 {
         return None;
     }
-    let relative = column.saturating_sub(tabs.x) as usize;
-    let index = (relative * Screen::ALL.len()) / tabs.width as usize;
-    Screen::ALL.get(index).copied().map(screen_action)
+    // Same layout call as `render_body`, so clicks land on the tab the
+    // user sees regardless of which responsive mode is active.
+    let selected = Screen::ALL
+        .iter()
+        .position(|screen| *screen == app.screen)
+        .unwrap_or(0);
+    let (_, ranges) = ui::tab_strip_layout(selected, tabs.width);
+    let relative = column.saturating_sub(tabs.x);
+    ranges
+        .iter()
+        .find(|(_, range)| range.contains(&relative))
+        .and_then(|(index, _)| Screen::ALL.get(*index))
+        .copied()
+        .map(screen_action)
 }
 
 fn mouse_rail_outcome(
@@ -3499,13 +3517,15 @@ fn player_progress_area(player: Rect) -> Rect {
             vertical: 1,
         },
     );
-    let transport_width = 40.min(inner.width);
-    let cover_width = 24.min(inner.width.saturating_sub(transport_width));
-    let progress_width = inner.width.saturating_sub(cover_width + transport_width);
+    // The progress gauge lives in the track panel; when the responsive
+    // layout drops that panel there is nothing to click (zero width).
+    let track = ui::now_playing_layout(inner)
+        .track
+        .unwrap_or(Rect::new(inner.x, inner.y, 0, 0));
     Rect::new(
-        inner.x.saturating_add(cover_width),
+        track.x,
         player.y.saturating_add(player.height.saturating_sub(2)),
-        progress_width,
+        track.width,
         1,
     )
 }
@@ -3514,10 +3534,13 @@ fn body_tabs_area(area: Rect) -> Rect {
     let body_height = area
         .height
         .saturating_sub(ui::PLAYER_HEIGHT.saturating_add(ui::STATUS_HEIGHT));
+    // Horizontal margin 2 = the body block's LEFT/RIGHT border plus its
+    // 1-cell inner margin, so columns here line up with `render_body`'s
+    // tab strip exactly (the strip's ranges are relative to this x).
     let inner = rect_inner(
         Rect::new(area.x, area.y, area.width, body_height),
         Margin {
-            horizontal: 1,
+            horizontal: 2,
             vertical: 0,
         },
     );
@@ -6257,11 +6280,27 @@ mod tests {
         let app = test_app();
         let area = Rect::new(0, 0, 120, 32);
 
+        // Resolve Library's drawn cell through the same layout the
+        // renderer and hit-test share, so the click targets the chip
+        // wherever the responsive tab strip puts it.
+        let tabs = body_tabs_area(area);
+        let (_, ranges) = ui::tab_strip_layout(0, tabs.width);
+        let library = Screen::ALL
+            .iter()
+            .position(|screen| *screen == Screen::Library)
+            .expect("library screen exists");
+        let range = ranges
+            .iter()
+            .find(|(index, _)| *index == library)
+            .map(|(_, range)| range.clone())
+            .expect("library tab visible at 120 cols");
+        let column = tabs.x + range.start + (range.end - range.start) / 2;
+
         assert_eq!(
             mouse_outcome(
                 &app,
                 area,
-                mouse(MouseEventKind::Down(MouseButton::Left), 35, 1)
+                mouse(MouseEventKind::Down(MouseButton::Left), column, 1)
             ),
             Some(MouseOutcome::Action(TuiAction::OpenLibrary))
         );
