@@ -1,35 +1,30 @@
 ---
-title: "spotuify artist"
-description: "Artist operations"
+title: "spotuify radio"
+description: "Mercury-backed radio stations"
 ---
 
 <!-- generated: spotuify-cli-reference -->
 
 ## When to use it
 
-Artist operations
+Mercury-backed radio stations
 
 ## Examples
 
 ```bash
-spotuify artist followed
-spotuify artist albums spotify:artist:36QJpDe2go2KgaRleHCDTp
+spotuify radio
 ```
 
 ## Help
 
 ```text
-Artist operations
+Mercury-backed radio stations
 
-Usage: spotuify artist [OPTIONS] <COMMAND>
+Usage: spotuify radio [OPTIONS] <COMMAND>
 
 Commands:
-  albums    Print an artist's discography (albums, singles, compilations, appears-on)
-  followed  List the artists you follow
-  follow    Follow an artist
-  unfollow  Unfollow an artist
-  related   Artists related to the given one (Mercury-backed; needs the daemon's librespot session, since the Web API endpoint was deprecated)
-  help      Print this message or the help of the given subcommand(s)
+  start  Start a station seeded by a track/artist/album/playlist URI. By default it queues the resolved tracks onto the active device
+  help   Print this message or the help of the given subcommand(s)
 
 Options:
       --log-format <LOG_FORMAT>  Phase 13 (P13-A) - pick the daemon log format for this run. Also honoured via `SPOTUIFY_LOG_FORMAT` [possible values: text, json]
