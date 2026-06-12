@@ -106,7 +106,7 @@ struct PodcastsView: View {
     private var showsContent: some View {
         let shows = store.shows(libraryShows: model.library.savedShows)
         if model.library.loadingShows && model.library.savedShows.isEmpty {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            SkeletonTiles()
         } else if shows.isEmpty {
             ContentUnavailableView(
                 store.source == .spotify ? "No results" : "No podcasts",
@@ -124,7 +124,7 @@ struct PodcastsView: View {
     private var episodesContent: some View {
         let episodes = store.episodes
         if store.loadingEpisodes && episodes.isEmpty {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            SkeletonRows()
         } else if episodes.isEmpty {
             ContentUnavailableView(
                 "No episodes", systemImage: "waveform",

@@ -24,7 +24,7 @@ struct PlaylistsView: View {
                 EditorialPageHeader("Playlists")
                 Divider()
                 if model.library.loadingPlaylists && model.library.playlists.isEmpty {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    SkeletonTiles()
                 } else if model.library.playlists.isEmpty {
                     ContentUnavailableView("No playlists", systemImage: "music.note.list")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -73,7 +73,7 @@ struct PlaylistDetailView: View {
             Divider()
 
             if model.library.loadingTracksFor == playlist.id && tracks.isEmpty {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                SkeletonRows()
             } else {
                 TrackListView(tracks: tracks)
             }

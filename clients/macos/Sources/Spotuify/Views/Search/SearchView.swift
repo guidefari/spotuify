@@ -144,7 +144,7 @@ struct SearchView: View {
     private var content: some View {
         let store = model.search
         if store.isSearching && store.results.isEmpty {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            SkeletonRows()
         } else if let error = store.errorMessage {
             ContentUnavailableView("Search failed", systemImage: "exclamationmark.triangle", description: Text(error))
         } else if store.results.isEmpty {

@@ -38,7 +38,7 @@ struct HistoryView: View {
     private var content: some View {
         let sessions = model.library.historySessions
         if model.library.loadingHistory && sessions.isEmpty {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            SkeletonRows()
         } else if sessions.isEmpty {
             ContentUnavailableView(
                 "No listening history", systemImage: "clock.arrow.circlepath",

@@ -11,7 +11,7 @@ struct LikedSongsView: View {
         NavigationStack {
             Group {
                 if model.library.loadingLiked && liked.isEmpty {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    SkeletonRows()
                 } else if liked.isEmpty {
                     ContentUnavailableView("No liked songs", systemImage: "heart",
                         description: Text("Songs you like on Spotify show up here."))
@@ -42,7 +42,7 @@ struct AlbumsView: View {
                 EditorialPageHeader("Albums")
                 Divider()
                 if model.library.loadingAlbums && model.library.savedAlbums.isEmpty {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    SkeletonTiles()
                 } else if model.library.savedAlbums.isEmpty {
                     ContentUnavailableView("No saved albums", systemImage: "square.stack")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -68,7 +68,7 @@ struct ArtistsView: View {
                 EditorialPageHeader("Artists")
                 Divider()
                 if model.library.loadingArtists && model.library.followedArtists.isEmpty {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    SkeletonTiles(minTile: 150)
                 } else if model.library.followedArtists.isEmpty {
                     ContentUnavailableView("No followed artists", systemImage: "music.mic",
                         description: Text("Artists you follow on Spotify show up here."))
