@@ -4497,9 +4497,37 @@ fn render_hint_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if hints.is_empty() {
         return;
     }
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(hints.len() * 4);
+    // Width-aware: `top_hints` returns the context's full keymap in
+    // priority order with Help last. Fit as many as the row allows,
+    // always reserving room for the trailing "? Help" so the complete
+    // keymap stays one keypress away even on narrow terminals.
+    let hint_width = |hint: &crate::tui_actions::ActionSpec| -> u16 {
+        // key chip " X " (shortcut + 2) + space + label.
+        (hint.shortcut.chars().count() + 3 + hint.label.chars().count()) as u16
+    };
+    const SEPARATOR_WIDTH: u16 = 3; // " · "
+    let help = hints.pop().expect("hints checked non-empty above");
+    let help_cost = hint_width(&help) + SEPARATOR_WIDTH;
+    let mut budget = area.width.saturating_sub(1); // leading space
+    let mut fitted: Vec<crate::tui_actions::ActionSpec> = Vec::new();
+    for hint in hints {
+        let cost = hint_width(&hint)
+            + if fitted.is_empty() {
+                0
+            } else {
+                SEPARATOR_WIDTH
+            };
+        if budget < cost + help_cost {
+            break;
+        }
+        budget -= cost;
+        fitted.push(hint);
+    }
+    fitted.push(help);
+
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(fitted.len() * 4);
     spans.push(Span::raw(" "));
-    for (idx, hint) in hints.into_iter().enumerate().take(8) {
+    for (idx, hint) in fitted.into_iter().enumerate() {
         if idx > 0 {
             spans.push(Span::styled(
                 " · ",
@@ -5302,6 +5330,27 @@ mod tests {
             let lines = render_lines(&mut app, width, height);
             assert_eq!(lines.len(), height as usize, "{width}x{height} frame");
         }
+    }
+
+    #[test]
+    fn playlists_hint_bar_advertises_queue_whole_playlist() {
+        let mut app = test_app();
+        app.screen = Screen::Playlists;
+        let lines = render_lines(&mut app, 170, 32);
+        assert!(
+            lines.iter().any(|line| line.contains("Queue playlist")),
+            "hint bar should advertise queueing the whole playlist"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("Help")),
+            "hint bar should always end with the Help escape hatch"
+        );
+        // Narrow terminals keep the head of the list + Help.
+        let narrow = render_lines(&mut app, 60, 24);
+        assert!(
+            narrow.iter().any(|line| line.contains("Help")),
+            "Help must survive narrow widths"
+        );
     }
 
     #[test]

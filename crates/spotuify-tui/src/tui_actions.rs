@@ -144,8 +144,6 @@ impl ActionSpec {
     }
 }
 
-pub const HINT_BAR_MAX_HINTS: usize = 5;
-
 pub fn default_actions() -> Vec<ActionSpec> {
     use ActionContext as C;
     use TuiAction as A;
@@ -758,6 +756,7 @@ pub fn top_hints(context: ActionContext, selected_count: usize) -> Vec<ActionSpe
         ][..],
         C::Playlists => &[
             A::OpenSelected,
+            A::QueueSelection,
             A::AddSelectionToPlaylist,
             A::StartListFilter,
             A::Refresh,
@@ -765,9 +764,10 @@ pub fn top_hints(context: ActionContext, selected_count: usize) -> Vec<ActionSpe
         ][..],
         C::PlaylistTracks => &[
             A::PlaySelected,
-            A::ToggleMark,
             A::QueueSelection,
+            A::ToggleMark,
             A::LikeSelection,
+            A::AddSelectionToPlaylist,
             A::OpenDevicePicker,
         ][..],
         C::Queue => &[
@@ -814,12 +814,60 @@ pub fn top_hints(context: ActionContext, selected_count: usize) -> Vec<ActionSpe
         ][..],
     };
 
-    priority
+    // Priority actions first, then every other action available in
+    // this context (registry order) so the hint bar can fill whatever
+    // width the terminal has — a fixed five-hint cap left most of the
+    // keymap invisible. Tab-bar navigation actions are skipped (the
+    // tab strip already shows them) and Help is forced last so the
+    // renderer can guarantee a trailing "? Help" escape hatch.
+    let mut hints: Vec<ActionSpec> = priority
         .iter()
         .filter_map(|action| action_spec(*action))
         .filter(|spec| spec.matches_context(context))
-        .take(HINT_BAR_MAX_HINTS)
-        .collect()
+        .collect();
+    for spec in default_actions() {
+        if !spec.matches_context(context)
+            || hints.iter().any(|hint| hint.id == spec.id)
+            || matches!(spec.id, A::Help)
+            || is_tab_navigation(spec.id)
+        {
+            continue;
+        }
+        hints.push(spec);
+    }
+    if let Some(help) = action_spec(A::Help) {
+        hints.push(help);
+    }
+    // The playlist LIST queues the whole playlist on `e` (the daemon
+    // expands the playlist URI) — say so, "Queue" alone reads as a
+    // single-track action and nobody finds it.
+    if context == C::Playlists {
+        for hint in &mut hints {
+            if hint.id == A::QueueSelection {
+                hint.label = "Queue playlist";
+            }
+        }
+    }
+    hints
+}
+
+/// Actions the tab strip already advertises (number keys); repeating
+/// them in the hint bar wastes the row.
+fn is_tab_navigation(action: TuiAction) -> bool {
+    use TuiAction as A;
+    matches!(
+        action,
+        A::OpenPlayer
+            | A::OpenSearch
+            | A::OpenLibrary
+            | A::OpenPlaylists
+            | A::OpenQueue
+            | A::OpenHistory
+            | A::OpenDevices
+            | A::OpenDiagnostics
+            | A::OpenLyrics
+            | A::OpenNotifications
+    )
 }
 
 pub fn palette_commands(
@@ -985,15 +1033,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn home_hints_are_capped_and_actionable() {
+    fn home_hints_lead_with_priority_actions_and_end_with_help() {
         let hints = top_hints(ActionContext::Player, 0);
 
-        assert_eq!(hints.len(), HINT_BAR_MAX_HINTS);
         assert_eq!(hints[0].id, TuiAction::PlayPause);
         assert_eq!(hints[1].id, TuiAction::PlaySelected);
         assert_eq!(hints[2].id, TuiAction::QueueSelection);
         assert_eq!(hints[3].id, TuiAction::LikeSelection);
         assert_eq!(hints[4].id, TuiAction::ToggleQueueRail);
+        // The tail carries the rest of the context's keymap (the
+        // renderer fits to width) and Help is always the closer.
+        assert!(hints.len() > 5, "hints should cover the full keymap");
+        assert_eq!(hints.last().map(|hint| hint.id), Some(TuiAction::Help));
+        // Tab-bar navigation is already on the tab strip — no repeats.
+        assert!(hints.iter().all(|hint| !is_tab_navigation(hint.id)));
+        // No duplicates.
+        let mut seen = std::collections::HashSet::new();
+        assert!(hints.iter().all(|hint| seen.insert(hint.id)));
+    }
+
+    #[test]
+    fn playlist_list_hints_surface_queue_whole_playlist() {
+        let hints = top_hints(ActionContext::Playlists, 0);
+        let queue = hints
+            .iter()
+            .find(|hint| hint.id == TuiAction::QueueSelection)
+            .expect("playlist list must hint the queue action");
+        assert_eq!(queue.label, "Queue playlist");
+        // It must be in the first few hints, not buried in the tail —
+        // narrow terminals only render the head of the list.
+        let position = hints
+            .iter()
+            .position(|hint| hint.id == TuiAction::QueueSelection)
+            .expect("position exists");
+        assert!(position <= 2, "queue hint buried at {position}");
+        // Inside an open playlist the generic label is correct.
+        let track_hints = top_hints(ActionContext::PlaylistTracks, 0);
+        let track_queue = track_hints
+            .iter()
+            .find(|hint| hint.id == TuiAction::QueueSelection)
+            .expect("playlist tracks hint the queue action");
+        assert_ne!(track_queue.label, "Queue playlist");
     }
 
     #[test]
@@ -1022,11 +1102,11 @@ mod tests {
         let hints = top_hints(ActionContext::SearchResults, 2);
         let ids = hints.iter().map(|hint| hint.id).collect::<Vec<_>>();
 
-        // OpenDevicePicker rounds out the bar — bulk actions still
-        // dominate; `D` is the only globally-promoted shortcut here.
+        // Bulk actions lead the bar; the rest of the keymap follows
+        // for wide terminals, with Help always closing the list.
         assert_eq!(
-            ids,
-            vec![
+            &ids[..5],
+            &[
                 TuiAction::QueueSelection,
                 TuiAction::LikeSelection,
                 TuiAction::AddSelectionToPlaylist,
@@ -1034,6 +1114,7 @@ mod tests {
                 TuiAction::OpenDevicePicker,
             ]
         );
+        assert_eq!(ids.last(), Some(&TuiAction::Help));
     }
 
     #[test]
