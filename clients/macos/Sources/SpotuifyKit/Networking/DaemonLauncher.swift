@@ -43,12 +43,24 @@ public enum DaemonLauncher {
 
     /// Install the bundled `spotuify` binary to `~/.local/bin/spotuify` so the
     /// daemon+CLI are available on the user's PATH (the DMG is the whole backend).
-    /// No-op when no bundled binary, or when a copy is already installed there.
+    /// No-op when no bundled binary, when a system install (Homebrew /
+    /// /usr/local / cargo) already provides the CLI — `~/.local/bin`
+    /// precedes Homebrew on many PATHs, so installing alongside one
+    /// would SHADOW it and resurrect the duplicate-install problem on
+    /// every app launch — or when a current copy is already installed.
     @discardableResult
     public static func installBundledCLIIfNeeded() -> Bool {
         guard let bundled = bundledBinaryPath(),
               let home = ProcessInfo.processInfo.environment["HOME"] else { return false }
         let fm = FileManager.default
+        let systemInstalls = [
+            "/opt/homebrew/bin/spotuify",
+            "/usr/local/bin/spotuify",
+            "\(home)/.cargo/bin/spotuify",
+        ]
+        if systemInstalls.contains(where: { fm.isExecutableFile(atPath: $0) }) {
+            return false
+        }
         let binDir = "\(home)/.local/bin"
         let dest = "\(binDir)/spotuify"
         // Already installed + same size → assume current, skip.
