@@ -48,9 +48,12 @@ pub struct VizCoordinator {
     event_tx: broadcast::Sender<IpcMessage>,
     state: Mutex<VizCoordinatorState>,
     enabled: Arc<AtomicBool>,
-    /// Per-client focus votes keyed by client label ("tui", "cli", …).
-    /// Empty map = nobody voted yet = treat as focused.
-    focus_votes: Mutex<std::collections::HashMap<String, bool>>,
+    /// Per-client focus votes keyed by client label ("tui", "cli", …),
+    /// with the vote's arrival time. Empty map = nobody voted yet =
+    /// treat as focused. Votes EXPIRE (see `VOTE_TTL`): a client that
+    /// voted focused and then quit must not pin the broadcast at full
+    /// rate forever.
+    focus_votes: Mutex<std::collections::HashMap<String, (bool, std::time::Instant)>>,
     playing: Arc<AtomicBool>,
     sink_available: AtomicBool,
     configured_fps: AtomicU8,
@@ -177,7 +180,9 @@ impl VizCoordinator {
     }
 
     pub async fn set_focused(&self, client: &str, focused: bool) {
-        self.focus_votes.lock().insert(client.to_string(), focused);
+        self.focus_votes
+            .lock()
+            .insert(client.to_string(), (focused, std::time::Instant::now()));
         self.recompute_target_fps();
     }
 
@@ -186,8 +191,13 @@ impl VizCoordinator {
     /// fresh daemon (or a subscriber that never reports focus, like the
     /// CLI) gets full-rate frames.
     fn effective_focused(&self) -> bool {
-        let votes = self.focus_votes.lock();
-        votes.is_empty() || votes.values().any(|focused| *focused)
+        /// A vote from a client we haven't heard from in this long no
+        /// longer counts — clients re-vote on every focus change and
+        /// on launch, so anything older is likely from a dead process.
+        const VOTE_TTL: Duration = Duration::from_secs(10 * 60);
+        let mut votes = self.focus_votes.lock();
+        votes.retain(|_, (_, at)| at.elapsed() < VOTE_TTL);
+        votes.is_empty() || votes.values().any(|(focused, _)| *focused)
     }
 
     fn recompute_target_fps(&self) {
@@ -200,7 +210,10 @@ impl VizCoordinator {
     }
 
     pub fn set_target_fps(&self, fps: u8) {
-        let fps = fps.clamp(1, 60);
+        // The ticker runs at DEFAULT_TARGET_FPS and decimates by
+        // integer stride, so rates above 30 are unreachable — clamp
+        // honestly instead of silently delivering 30 for "60".
+        let fps = fps.clamp(1, DEFAULT_TARGET_FPS);
         self.configured_fps.store(fps, Ordering::Release);
         self.recompute_target_fps();
     }
@@ -288,7 +301,14 @@ impl VizCoordinator {
 
         #[cfg(feature = "loopback-cpal")]
         if want_loopback {
-            match LoopbackThread::spawn(self.analyzer.clone()) {
+            // CoreAudio device init inside `LoopbackThread::spawn` can
+            // block for seconds; don't stall a tokio worker for it.
+            let analyzer = self.analyzer.clone();
+            let spawned = tokio::task::spawn_blocking(move || LoopbackThread::spawn(analyzer))
+                .await
+                .map_err(|err| LoopbackError::BuildStream(format!("join loopback spawn: {err}")))
+                .and_then(|result| result);
+            match spawned {
                 Ok(thread) => {
                     let device_name = thread.device_name.clone();
                     let sample_rate = thread.sample_rate;

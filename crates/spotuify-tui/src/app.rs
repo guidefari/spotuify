@@ -3512,11 +3512,9 @@ fn mouse_seek_position(app: &App, player: Rect, column: u16, row: u16) -> Option
 }
 
 fn bottom_player_area(area: Rect) -> Rect {
-    let chrome_height = ui::PLAYER_HEIGHT.saturating_add(ui::STATUS_HEIGHT);
-    let y = area
-        .y
-        .saturating_add(area.height.saturating_sub(chrome_height));
-    Rect::new(area.x, y, area.width, ui::PLAYER_HEIGHT.min(area.height))
+    // Same solver the renderer uses — at tiny heights the chrome
+    // shrinks and fixed offsets drifted off the drawn player.
+    ui::root_chrome_layout(area)[1]
 }
 
 fn player_progress_area(player: Rect) -> Rect {
@@ -3538,31 +3536,43 @@ fn player_progress_area(player: Rect) -> Rect {
 }
 
 fn body_tabs_area(area: Rect) -> Rect {
-    let body_height = area
-        .height
-        .saturating_sub(ui::PLAYER_HEIGHT.saturating_add(ui::STATUS_HEIGHT));
+    let body = ui::root_chrome_layout(area)[0];
     // Horizontal margin 2 = the body block's LEFT/RIGHT border plus its
     // 1-cell inner margin, so columns here line up with `render_body`'s
     // tab strip exactly (the strip's ranges are relative to this x).
     let inner = rect_inner(
-        Rect::new(area.x, area.y, area.width, body_height),
+        body,
         Margin {
             horizontal: 2,
             vertical: 0,
         },
     );
-    Rect::new(inner.x, inner.y, inner.width, 3.min(inner.height))
+    // Only the strip row itself (rows[1] of the body stack) — the
+    // padding rows above/below are not tab hotspots.
+    Rect::new(
+        inner.x,
+        inner.y.saturating_add(1),
+        inner.width,
+        1.min(inner.height),
+    )
 }
 
 fn body_content_areas(area: Rect, rail: RightRailMode) -> (Rect, Option<Rect>) {
-    let tabs = body_tabs_area(area);
+    let body = ui::root_chrome_layout(area)[0];
+    let inner = rect_inner(
+        body,
+        Margin {
+            horizontal: 2,
+            vertical: 0,
+        },
+    );
+    // Content sits below the 3-row tab band (pad, strip, pad) — the
+    // body stack `render_body` lays out.
     let content = Rect::new(
-        tabs.x,
-        tabs.y.saturating_add(tabs.height),
-        tabs.width,
-        area.height
-            .saturating_sub(ui::PLAYER_HEIGHT.saturating_add(ui::STATUS_HEIGHT))
-            .saturating_sub(tabs.height),
+        inner.x,
+        inner.y.saturating_add(3),
+        inner.width,
+        inner.height.saturating_sub(3),
     );
     if rail == RightRailMode::Hidden || content.width < 96 {
         return (content, None);

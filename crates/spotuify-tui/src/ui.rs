@@ -24,6 +24,21 @@ const RED: Color = Color::Rgb(245, 88, 88);
 pub const PLAYER_HEIGHT: u16 = 10;
 pub const STATUS_HEIGHT: u16 = 3;
 
+/// The root body/player/status split. Shared with the mouse geometry
+/// in `app.rs`: below ~25 rows the solver shrinks the chrome, and
+/// hit-test helpers that assumed "player is always the bottom
+/// PLAYER_HEIGHT rows" drifted from what was drawn.
+pub fn root_chrome_layout(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(12),
+            Constraint::Length(PLAYER_HEIGHT),
+            Constraint::Length(STATUS_HEIGHT),
+        ])
+        .split(area)
+}
+
 /// Carve a 1-row breathing space off the top of a pane's content
 /// area so the first list item never butts directly against the
 /// pane's title-bearing top border. No-op for panes shorter than 2
@@ -54,14 +69,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
         area,
     );
 
-    let root = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(12),
-            Constraint::Length(PLAYER_HEIGHT),
-            Constraint::Length(STATUS_HEIGHT),
-        ])
-        .split(area);
+    let root = root_chrome_layout(area);
 
     render_body(frame, app, root[0]);
     render_now_playing(frame, app, root[1]);
