@@ -274,7 +274,13 @@ public final class AppModel {
     public func clearBanner() { banner = nil }
 
     /// Dismiss the update banner (until the next launch / check).
-    public func dismissUpdate() { availableUpdate = nil }
+    /// Refused while the updater is mid-flight: clearing
+    /// `availableUpdate` hides every surface that could show the
+    /// Relaunch button after the bundle swap completes.
+    public func dismissUpdate() {
+        guard !updater.phase.isBusy else { return }
+        availableUpdate = nil
+    }
 
     /// Ask the daemon whether a newer release exists. `force` re-checks now;
     /// otherwise returns the daemon's cached result. Populates `availableUpdate`.
@@ -293,7 +299,9 @@ public final class AppModel {
                     latestVersion: latest,
                     command: status.upgrade.command,
                     url: status.upgrade.url ?? status.releaseURL)
-            } else {
+            } else if !self.updater.phase.isBusy {
+                // Never yank the update context out from under a
+                // mid-flight install/relaunch prompt.
                 self.availableUpdate = nil
             }
         }
@@ -491,8 +499,12 @@ public final class AppModel {
     }
 
     private func debugLog(_ message: String) {
+        // Gated: this fires for EVERY daemon event, including 30Hz
+        // spectrum frames — ungated os_log writes burned CPU/battery
+        // and churned the log store around the clock.
+        guard debugEnabled else { return }
         logger.notice("\(message, privacy: .public)")
-        if debugEnabled, let line = "[spotuify] \(message)\n".data(using: .utf8) {
+        if let line = "[spotuify] \(message)\n".data(using: .utf8) {
             FileHandle.standardError.write(line) // stderr is unbuffered
         }
     }

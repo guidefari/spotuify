@@ -22,8 +22,13 @@ public enum CLIRunner {
             process.executableURL = URL(fileURLWithPath: binary)
             process.arguments = args
             let stdout = Pipe()
+            let stderr = Pipe()
             process.standardOutput = stdout
-            process.standardError = Pipe()
+            process.standardError = stderr
+            // Drain BOTH pipes while polling: a command producing more
+            // than the 64KB pipe buffer used to block on write, "time
+            // out", and get terminated with its output discarded.
+            var collected = Data()
             do {
                 try process.run()
             } catch {
@@ -32,14 +37,17 @@ public enum CLIRunner {
             // Bounded wait: terminate if the command overruns.
             let deadline = Date().addingTimeInterval(timeout)
             while process.isRunning && Date() < deadline {
+                collected.append(stdout.fileHandleForReading.availableData)
+                _ = stderr.fileHandleForReading.availableData
                 usleep(40_000)
             }
             if process.isRunning {
                 process.terminate()
                 throw CLIError(message: "spotuify \(args.first ?? "") timed out")
             }
-            let data = stdout.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
+            collected.append(stdout.fileHandleForReading.readDataToEndOfFile())
+            _ = stderr.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: collected, encoding: .utf8) ?? ""
             if process.terminationStatus != 0 {
                 throw CLIError(
                     message: "spotuify \(args.joined(separator: " ")) exited \(process.terminationStatus)")

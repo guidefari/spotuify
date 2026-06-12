@@ -106,6 +106,13 @@ struct RootView: View {
         .onChange(of: model.isReady) { _, ready in
             if ready { model.setVizFocus(NSApp.isActive) }
         }
+        // Window closed (app keeps running via the menu bar): nothing
+        // shows the visualizer anymore, so withdraw our focused vote —
+        // a stale `true` pinned the daemon's spectrum broadcast at
+        // full rate into a windowless app indefinitely.
+        .onDisappear {
+            model.setVizFocus(false)
+        }
     }
 }
 

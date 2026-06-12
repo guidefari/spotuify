@@ -39,6 +39,9 @@ final class SystemMediaController {
     /// nil `item` (optimistic / state-only events) while audio keeps playing;
     /// retaining the last track stops Control Center from blanking out.
     private var lastItem: MediaItem?
+    /// Monotonic publish counter — see the generation guard in
+    /// `updateNowPlaying`.
+    private var publishGeneration: UInt64 = 0
 
     private init() {}
 
@@ -124,10 +127,16 @@ final class SystemMediaController {
         if item.context.isEmpty == false {
             info[MPMediaItemPropertyAlbumTitle] = item.context
         }
+        // Generation guard: a slow artwork fetch for track A must not
+        // publish AFTER track B's update and pin stale info in Control
+        // Center until the next event.
+        publishGeneration &+= 1
+        let generation = publishGeneration
         if let image = await artworkImage(for: item.imageURL),
            let artwork = makeNowPlayingArtwork(from: image) {
             info[MPMediaItemPropertyArtwork] = artwork
         }
+        guard generation == publishGeneration else { return }
 
         center.nowPlayingInfo = info
         center.playbackState = player.isPlaying ? .playing : .paused

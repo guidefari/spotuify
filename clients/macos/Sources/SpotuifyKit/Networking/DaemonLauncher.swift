@@ -53,20 +53,27 @@ public enum DaemonLauncher {
         guard let bundled = bundledBinaryPath(),
               let home = ProcessInfo.processInfo.environment["HOME"] else { return false }
         let fm = FileManager.default
+        let binDir = "\(home)/.local/bin"
+        let dest = "\(binDir)/spotuify"
         let systemInstalls = [
             "/opt/homebrew/bin/spotuify",
             "/usr/local/bin/spotuify",
             "\(home)/.cargo/bin/spotuify",
         ]
         if systemInstalls.contains(where: { fm.isExecutableFile(atPath: $0) }) {
+            // A system install owns the CLI. Also REMOVE any copy this
+            // app previously dropped into ~/.local/bin: it precedes
+            // Homebrew on many PATHs and a stale copy from an older
+            // launch would shadow the real install forever.
+            if fm.fileExists(atPath: dest) {
+                try? fm.removeItem(atPath: dest)
+            }
             return false
         }
-        let binDir = "\(home)/.local/bin"
-        let dest = "\(binDir)/spotuify"
-        // Already installed + same size → assume current, skip.
-        if let destAttrs = try? fm.attributesOfItem(atPath: dest),
-           let srcAttrs = try? fm.attributesOfItem(atPath: bundled),
-           (destAttrs[.size] as? Int) == (srcAttrs[.size] as? Int) {
+        // Already installed + identical bytes → current, skip. (The old
+        // size-equality heuristic could mistake a different build of
+        // similar size for current.)
+        if fm.contentsEqual(atPath: dest, andPath: bundled) {
             return true
         }
         do {

@@ -141,6 +141,9 @@ struct AppShell: View {
                 }
                 Button { model.dismissUpdate() } label: { Image(systemName: "xmark") }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
+                    // Dismissing mid-install orphaned a completed swap
+                    // with no Relaunch button anywhere.
+                    .disabled(model.updater.phase.isBusy)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)

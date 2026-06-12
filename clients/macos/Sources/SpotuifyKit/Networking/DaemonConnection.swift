@@ -11,6 +11,13 @@ import Darwin
 ///   (AppModel) can reconnect and re-seed.
 ///
 /// Raw byte I/O lives in `IPCSocket`; this actor owns only protocol state.
+/// Identity tag for `handleClose` — set once right after the socket is
+/// created, read from its own close callback. Weak so a replaced
+/// socket can deallocate (a nil tag then never matches the live one).
+private final class SocketRef: @unchecked Sendable {
+    weak var value: IPCSocket?
+}
+
 public actor DaemonConnection {
     private var socket: IPCSocket?
     private var nextID: UInt64 = 1
@@ -39,13 +46,20 @@ public actor DaemonConnection {
         teardown()
         let fd = try Self.openSocket(path: path)
         let cont = inboundContinuation
-        socket = IPCSocket(
+        let ref = SocketRef()
+        let newSocket = IPCSocket(
             fd: fd,
             onFrame: { frame in cont.yield(frame) },
             onClose: { [weak self] error in
                 guard let self else { return }
-                Task { await self.handleClose(error) }
+                // Identity-tagged: a STALE socket's close callback
+                // (delivered async after teardown/reconnect) must not
+                // tear down the connection that replaced it.
+                let closing = ref.value
+                Task { await self.handleClose(error, of: closing) }
             })
+        ref.value = newSocket
+        socket = newSocket
     }
 
     public func close() {
@@ -67,9 +81,13 @@ public actor DaemonConnection {
         if hadSocket { resumeCloseWaiters() }
     }
 
-    private func handleClose(_ error: Error?) {
-        guard socket != nil else { return } // already torn down
-        socket = nil
+    private func handleClose(_ error: Error?, of closing: IPCSocket?) {
+        // Only the CURRENT socket's close tears the connection down; a
+        // stale callback from a replaced socket nilled the fresh one,
+        // failed its pending requests, and sent the supervisor through
+        // a phantom reconnect.
+        guard let socket, socket === closing else { return }
+        self.socket = nil
         failAllPending()
         resumeCloseWaiters()
     }
