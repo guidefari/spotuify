@@ -368,6 +368,7 @@ pub(crate) async fn dispatch(
                     }
                     let device_name = target_device.name.clone();
                     let device_id = target_device.id.clone();
+                    let target_device_for_heal = target_device.clone();
                     let result = match actions::execute(
                         &mut client,
                         CommandKind::Transfer {
@@ -410,12 +411,74 @@ pub(crate) async fn dispatch(
                         .own_device_id()
                         .is_some_and(|own| device_id.as_deref() == Some(own.as_str()));
                     state_for.set_we_are_active(to_own_device);
+                    // Heal silent transfers. When the source was our embedded
+                    // librespot playing a contextless single track (loaded via
+                    // `from_tracks`), the Spotify transfer state has no
+                    // resolvable context — the target accepts the transfer but
+                    // plays nothing, and Spotify reports no active device.
+                    // Detect that the target did not become active and
+                    // re-assert the current track on it so audio actually
+                    // starts. Real context playback (playlist/album) already
+                    // activates the target, so this leaves it untouched.
+                    let mut healed_snapshot: Option<spotuify_core::Playback> = None;
+                    if play && !to_own_device {
+                        let target_active = result.playback.as_ref().is_some_and(|p| {
+                            p.device.as_ref().and_then(|d| d.id.as_deref())
+                                == device_id.as_deref()
+                        });
+                        if !target_active {
+                            if let (Some(target_id), Some(uri)) = (
+                                device_id.as_deref(),
+                                playback.item.as_ref().map(|item| item.uri.clone()),
+                            ) {
+                                match client
+                                    .play_uri_on_device(target_id, &uri, playback.progress_ms)
+                                    .await
+                                {
+                                    Ok(()) => {
+                                        tracing::info!(
+                                            device = %device_name, %uri,
+                                            "re-asserted playback on target after contextless transfer"
+                                        );
+                                        healed_snapshot = Some(spotuify_core::Playback {
+                                            item: playback.item.clone(),
+                                            device: Some(target_device_for_heal.clone()),
+                                            is_playing: true,
+                                            progress_ms: playback.progress_ms,
+                                            shuffle: playback.shuffle,
+                                            repeat: playback.repeat.clone(),
+                                            sampled_at_ms: Some(spotuify_core::now_ms()),
+                                            provider_timestamp_ms: None,
+                                            source: Some(
+                                                spotuify_core::PlaybackStateSource::CommandResult,
+                                            ),
+                                        });
+                                    }
+                                    Err(err) => tracing::warn!(
+                                        error = %err, device = %device_name,
+                                        "post-transfer re-assert failed"
+                                    ),
+                                }
+                            }
+                        }
+                    }
                     // Phase 1: capture any playback/devices snapshot the
                     // Transfer ACK returned so subscribers don't need a
                     // re-fetch round-trip.
                     let _outcome =
                         persist_command_result(&state_for, captured_seq, &result, "transfer", None)
                             .await;
+                    // Apply the heal snapshot AFTER persist so it wins over the
+                    // post-transfer readback (which still shows the source
+                    // device): optimistically move the clock to the target so
+                    // every client reflects the hand-off immediately, rather
+                    // than waiting for a poll to age past the stale local
+                    // PlayerEvent.
+                    if let Some(healed) = healed_snapshot {
+                        state_for
+                            .playback_clock()
+                            .apply_command_result(&healed, spotuify_core::now_ms());
+                    }
                     let message = result
                         .message
                         .clone()

@@ -1007,6 +1007,30 @@ impl SpotifyClient {
         Ok(())
     }
 
+    /// Start a single track on a specific device at a position. Used to heal
+    /// transfers that land on a silent target: when the source was playing a
+    /// contextless track (our embedded librespot loads single tracks via
+    /// `from_tracks`, so the Spotify transfer state has no resolvable
+    /// context), the target receives nothing to play. Re-asserting the track
+    /// with `device_id` forces it to actually start.
+    pub async fn play_uri_on_device(
+        &mut self,
+        device_id: &str,
+        uri: &str,
+        position_ms: u64,
+    ) -> SpotifyResult<()> {
+        if self.fake {
+            let _ = (device_id, uri, position_ms);
+            return Ok(());
+        }
+        let encoded_id =
+            url::form_urlencoded::byte_serialize(device_id.as_bytes()).collect::<String>();
+        let path = format!("{}?device_id={encoded_id}", endpoints::PLAY);
+        let body = serde_json::json!({ "uris": [uri], "position_ms": position_ms });
+        self.empty(Method::PUT, &path, Some(body)).await?;
+        Ok(())
+    }
+
     pub async fn next(&mut self) -> SpotifyResult<()> {
         if self.fake {
             return Ok(());
