@@ -1365,6 +1365,7 @@ fn exit_code_for_error(err: &anyhow::Error) -> i32 {
     if message.contains("provide ")
         || message.contains("invalid ")
         || message.contains("expected ")
+        || message.contains("no spotify result")
         || message.contains("re-run with --confirm")
     {
         return 2;
