@@ -211,7 +211,7 @@ pub(crate) async fn dispatch(
                             // persist) and fetch real state. Mirrors the late-
                             // failure recovery in spawn_fast_transport_ack_watcher.
                             let reconcile_seq = state_for.bump_mutation_seq();
-                            spawn_playback_refresh(state_for.clone());
+                            spawn_playback_refresh_forced(state_for.clone());
                             spawn_queue_refresh_with_seq(state_for.clone(), reconcile_seq);
                             return Err(err);
                         }

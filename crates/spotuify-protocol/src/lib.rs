@@ -52,7 +52,7 @@ use spotuify_core::{
 /// reminders + notifications; v2 added `saved-tracks`/`show-episodes`/
 /// `queue-add-many` + enriched `MediaItem`. Clients gate their UI on
 /// `protocol_version >= IPC_PROTOCOL_VERSION`.
-pub const IPC_PROTOCOL_VERSION: u32 = 6;
+pub const IPC_PROTOCOL_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcMessage {
@@ -1606,6 +1606,11 @@ pub enum DaemonEvent {
         release_url: Option<String>,
         upgrade: UpgradeHint,
     },
+    /// Forward-compat: an event variant this build doesn't know.
+    /// Clients ignore it instead of killing the whole IPC stream the
+    /// way an unknown tag used to.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Redact token-shaped substrings before user-visible events are logged,

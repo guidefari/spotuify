@@ -60,6 +60,15 @@ impl IpcListener {
                         "rejecting IPC connection from a different uid"
                     );
                 }
+                Err(err) if err.raw_os_error() == Some(57) => {
+                    // ENOTCONN: the peer connected and hung up before we
+                    // could read credentials — that's the documented
+                    // connect-then-drop health probe every client uses
+                    // (launcher socket_accepts_connections, macOS app
+                    // probe). 5.7k WARNs/day of this buried real
+                    // warnings; it's routine, not a security event.
+                    tracing::debug!("IPC peer disconnected before credential check");
+                }
                 Err(err) => {
                     tracing::warn!(
                         error = %err,

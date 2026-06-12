@@ -2863,7 +2863,21 @@ fn render_search(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     } else {
         area_title(" Results ", items.len())
     };
-    if items.is_empty() {
+    if items.is_empty() && app.is_searching {
+        // First pages are still streaming in — skeletons, not the
+        // empty-state copy (waiting and no-results must look different).
+        let block = crate::widgets::style::card_block(&title);
+        let inner = pad_pane_top(block.inner(rows[1]));
+        frame.render_widget(block, rows[1]);
+        frame.render_widget(
+            Paragraph::new(crate::widgets::skeleton::skeleton_rows(
+                ((inner.height as usize) / 2).min(5),
+                inner.width,
+            ))
+            .style(Style::default().bg(PANEL)),
+            inner,
+        );
+    } else if items.is_empty() {
         render_media_list(frame, title, &items, app.selected, app, rows[1], true);
     } else {
         let artwork = app.selected_artwork_subject();
@@ -3401,6 +3415,24 @@ fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(up_block, rows[2]);
     if items.is_empty() {
         let _ = section_chip; // explicitly unused in empty branch
+                              // First seconds after launch: no queue snapshot has arrived
+                              // yet. Show skeleton rows, not "No active session" — loading
+                              // and empty used to be indistinguishable.
+        if app.queue_updated_at.is_none() {
+            let mut lines = vec![Line::from(Span::styled(
+                "Loading queue…",
+                Style::default().fg(MUTED),
+            ))];
+            lines.extend(crate::widgets::skeleton::skeleton_rows(
+                ((up_inner.height as usize).saturating_sub(1) / 2).min(4),
+                up_inner.width,
+            ));
+            frame.render_widget(
+                Paragraph::new(lines).style(Style::default().bg(PANEL)),
+                up_inner,
+            );
+            return;
+        }
         let empty_lines = if !app.queue.session_active {
             vec![
                 Line::from(Span::styled(

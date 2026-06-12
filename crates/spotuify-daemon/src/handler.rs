@@ -1281,6 +1281,15 @@ pub(crate) async fn skip_refresh_due_to_rate_limit(
                 remaining_ms,
                 "skipping refresh while Spotify rate-limit cooldown is active"
             );
+            // Tell subscribers — the TUI's rate-limit banner has
+            // existed for months but nothing ever emitted this event,
+            // so cooldowns looked like silent staleness.
+            if state.should_notify_rate_limit(domain, now_ms()) {
+                state.emit_event(DaemonEvent::RateLimited {
+                    retry_after_secs: (remaining_ms.max(0) as u64).div_ceil(1000).max(1),
+                    scope: domain.to_string(),
+                });
+            }
             true
         }
         Ok(None) => false,
@@ -1296,7 +1305,46 @@ pub(crate) async fn skip_refresh_due_to_rate_limit(
     }
 }
 
+/// Minimum gap between on-demand `/me/player` fetches while playback
+/// runs on a FOREIGN device (bursty client reads coalesce into one).
+const PLAYBACK_WEB_FETCH_GAP_MS: i64 = 3_000;
+/// Gap while OUR embedded device is the active player: librespot's
+/// PlayerEvents are the truth and the web poll is pure reconciliation
+/// (mirrors the sync loop's PLAYBACK_RECONCILE_CADENCE).
+const PLAYBACK_WEB_FETCH_GAP_EMBEDDED_MS: i64 = 30_000;
+/// Local-truth freshness: skip the web poll entirely when a librespot
+/// PlayerEvent re-seated the clock this recently.
+const PLAYER_EVENT_FRESH_MS: i64 = 5_000;
+const QUEUE_WEB_FETCH_GAP_MS: i64 = 10_000;
+const DEVICES_WEB_FETCH_GAP_MS: i64 = 60_000;
+
 pub(crate) fn spawn_playback_refresh(state: Arc<DaemonState>) {
+    let now = now_ms();
+    let snapshot = state.snapshot_playback();
+    if snapshot.source == Some(spotuify_core::PlaybackStateSource::PlayerEvent)
+        && snapshot
+            .sampled_at_ms
+            .is_some_and(|sampled| now.saturating_sub(sampled) < PLAYER_EVENT_FRESH_MS)
+    {
+        // A fresh PlayerEvent outranks anything `/me/player` could say.
+        return;
+    }
+    let min_gap = if state.embedded_owns_playback() {
+        PLAYBACK_WEB_FETCH_GAP_EMBEDDED_MS
+    } else {
+        PLAYBACK_WEB_FETCH_GAP_MS
+    };
+    if !state.playback_refresh_gate.try_claim(now, min_gap) {
+        return;
+    }
+    spawn_playback_refresh_forced(state);
+}
+
+/// Ungated playback refresh — for mutation-failure reconciles where a
+/// fetch is mandatory regardless of coalescing. Stamps the gate so
+/// gated callers right after it still coalesce.
+pub(crate) fn spawn_playback_refresh_forced(state: Arc<DaemonState>) {
+    state.playback_refresh_gate.stamp(now_ms());
     let task_state = state.clone();
     let captured_seq = state.current_mutation_seq();
     state.spawn_background("playback-refresh", async move {
@@ -1441,6 +1489,15 @@ pub(crate) async fn cache_queue_if_fresh(
 }
 
 pub(crate) fn spawn_queue_refresh(state: Arc<DaemonState>) {
+    // Coalesce read-driven refreshes (QueueGet from every connecting
+    // client). Mutation reconciles use `spawn_queue_refresh_with_seq`
+    // directly and bypass the gate.
+    if !state
+        .queue_refresh_gate
+        .try_claim(now_ms(), QUEUE_WEB_FETCH_GAP_MS)
+    {
+        return;
+    }
     let captured_seq = state.current_mutation_seq();
     spawn_queue_refresh_with_seq(state, captured_seq);
 }
@@ -1450,6 +1507,7 @@ pub(crate) fn spawn_queue_refresh(state: Arc<DaemonState>) {
 /// one that scheduled it (capturing at fetch time would adopt a racing
 /// mutation's seq and apply a mid-transition snapshot).
 pub(crate) fn spawn_queue_refresh_with_seq(state: Arc<DaemonState>, captured_seq: u64) {
+    state.queue_refresh_gate.stamp(now_ms());
     let task_state = state.clone();
     state.spawn_background("queue-refresh", async move {
         let started = std::time::Instant::now();
@@ -1664,6 +1722,14 @@ pub(crate) fn playback_has_live_signal(playback: &Playback) -> bool {
 }
 
 pub(crate) fn spawn_devices_refresh(state: Arc<DaemonState>) {
+    // The device list changes rarely; DevicesList fires on every
+    // client seed, so coalesce hard.
+    if !state
+        .devices_refresh_gate
+        .try_claim(now_ms(), DEVICES_WEB_FETCH_GAP_MS)
+    {
+        return;
+    }
     let task_state = state.clone();
     let captured_seq = state.current_mutation_seq();
     state.spawn_background("devices-refresh", async move {
@@ -2794,7 +2860,7 @@ pub(crate) fn spawn_fast_transport_ack_watcher(
         let reconcile = |reason: &str| {
             tracing::warn!(action = %action, reason, "fast transport did not hold; reconciling");
             state.bump_mutation_seq();
-            spawn_playback_refresh(state.clone());
+            spawn_playback_refresh_forced(state.clone());
         };
         match tokio::time::timeout(FAST_TRANSPORT_ACK_GRACE, ack).await {
             Ok(Ok(Ok(()))) => {}

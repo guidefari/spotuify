@@ -208,3 +208,13 @@ fn existing_legacy_events_still_round_trip_after_additions() {
     let back: DaemonEvent = serde_json::from_value(json).unwrap();
     assert_eq!(back, event);
 }
+
+#[test]
+fn unknown_event_variants_decode_to_unknown_instead_of_erroring() {
+    // A newer daemon emitting an event this build doesn't know must
+    // NOT kill the client's IPC stream — decode to Unknown and ignore.
+    let json = r#"{"event":"some-future-event","detail":{"x":1}}"#;
+    let event: spotuify_protocol::DaemonEvent =
+        serde_json::from_str(json).expect("future event tags decode");
+    assert!(matches!(event, spotuify_protocol::DaemonEvent::Unknown));
+}

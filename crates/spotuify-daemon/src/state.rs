@@ -265,6 +265,32 @@ enum PlayerWarmCommand {
 /// timestamp of the fetch (sort + limit are applied per request).
 type CachedEpisodeFeed = (Vec<spotuify_core::MediaItem>, i64);
 
+/// Claim-style rate gate for on-demand Web-API refreshes. `try_claim`
+/// succeeds at most once per `min_gap_ms`; concurrent callers race on
+/// a CAS so exactly one wins the fetch and the rest skip.
+#[derive(Default)]
+pub(crate) struct RefreshGate {
+    last_attempt_ms: std::sync::atomic::AtomicI64,
+}
+
+impl RefreshGate {
+    pub(crate) fn try_claim(&self, now_ms: i64, min_gap_ms: i64) -> bool {
+        let last = self.last_attempt_ms.load(Ordering::Acquire);
+        if now_ms.saturating_sub(last) < min_gap_ms {
+            return false;
+        }
+        self.last_attempt_ms
+            .compare_exchange(last, now_ms, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Record a fetch that bypassed the gate (mutation reconciles) so
+    /// gated callers right after it still coalesce.
+    pub(crate) fn stamp(&self, now_ms: i64) {
+        self.last_attempt_ms.store(now_ms, Ordering::Release);
+    }
+}
+
 pub(crate) struct DaemonState {
     started_at: Instant,
     shutdown_tx: watch::Sender<bool>,
@@ -369,6 +395,17 @@ pub(crate) struct DaemonState {
     /// otherwise clobber the optimistic local cache. Same shape as
     /// Linear's `lastSyncId`.
     mutation_seq: Arc<AtomicU64>,
+    /// Web-API fetch gates for the on-demand refresh spawners. Every
+    /// `PlaybackGet` used to fire a `/me/player` poll on top of the
+    /// sync loop's cadence — with the TUI heartbeat, the macOS app,
+    /// and CLI `status` calls that added up to ~13k calls/day and
+    /// recurring hour-long 429 penalties. The gates coalesce bursts
+    /// and defer to librespot's local truth while our device plays.
+    pub(crate) playback_refresh_gate: RefreshGate,
+    pub(crate) queue_refresh_gate: RefreshGate,
+    pub(crate) devices_refresh_gate: RefreshGate,
+    /// Per-domain dedup for `DaemonEvent::RateLimited` notices.
+    rate_limit_notice_gates: parking_lot::Mutex<HashMap<String, i64>>,
     pending_queue_appends: Arc<parking_lot::Mutex<Vec<PendingQueueAppend>>>,
     /// Whether the user currently intends THIS device to be the playback
     /// target. Set true when our embedded device starts/resumes/changes a
@@ -602,6 +639,10 @@ impl DaemonState {
             system_integration,
             viz_coordinator,
             mutation_seq: Arc::new(AtomicU64::new(0)),
+            playback_refresh_gate: RefreshGate::default(),
+            queue_refresh_gate: RefreshGate::default(),
+            devices_refresh_gate: RefreshGate::default(),
+            rate_limit_notice_gates: parking_lot::Mutex::new(HashMap::new()),
             pending_queue_appends: Arc::new(parking_lot::Mutex::new(Vec::new())),
             we_are_active,
             reconnect_in_flight,
@@ -759,6 +800,34 @@ impl DaemonState {
     ///
     /// Mirrors the device_id librespot publishes — see
     /// `spotuify_player::backends::embedded::derive_device_id`.
+    /// Our embedded device is the live source iff the clock shows our
+    /// own device id. While paused, polling `/me/player` every 3s is
+    /// still redundant; slow reconciliation catches external handoff.
+    /// True at most once a minute per domain — gates the
+    /// `DaemonEvent::RateLimited` notice so cooldown-skipped refreshes
+    /// don't spam subscribers on every attempt.
+    pub(crate) fn should_notify_rate_limit(&self, domain: &str, now_ms: i64) -> bool {
+        let mut gates = self.rate_limit_notice_gates.lock();
+        let last = gates.get(domain).copied().unwrap_or(0);
+        if now_ms.saturating_sub(last) < 60_000 {
+            return false;
+        }
+        gates.insert(domain.to_string(), now_ms);
+        true
+    }
+
+    pub(crate) fn embedded_owns_playback(&self) -> bool {
+        let Some(own) = self.own_device_id() else {
+            return false;
+        };
+        let playback = self.playback_clock.snapshot();
+        playback
+            .device
+            .as_ref()
+            .and_then(|device| device.id.as_deref())
+            == Some(own.as_str())
+    }
+
     pub(crate) fn own_device_id(&self) -> Option<String> {
         self.own_device_name
             .lock()
@@ -2416,18 +2485,7 @@ impl spotuify_sync::SyncContext for DaemonState {
         DaemonState::snapshot_playback(self)
     }
     fn embedded_is_active_playback(&self) -> bool {
-        // Our embedded device is the live source iff the clock shows our own
-        // device id. While paused, polling `/me/player` every 3s is still
-        // redundant; slow reconciliation is enough to catch external handoff.
-        let Some(own) = self.own_device_id() else {
-            return false;
-        };
-        let playback = self.playback_clock.snapshot();
-        playback
-            .device
-            .as_ref()
-            .and_then(|device| device.id.as_deref())
-            == Some(own.as_str())
+        DaemonState::embedded_owns_playback(self)
     }
     async fn snapshot_queue(&self) -> spotuify_spotify::client::Queue {
         self.store

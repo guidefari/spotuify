@@ -1941,6 +1941,9 @@ impl App {
         async_tx: &mpsc::UnboundedSender<AsyncResult>,
     ) {
         match event {
+            // Forward-compat: a newer daemon emitted an event this build
+            // doesn't know. Ignoring it is the whole point.
+            DaemonEvent::Unknown => {}
             DaemonEvent::ShutdownRequested => {
                 self.error = Some("Daemon is shutting down".to_string());
             }
