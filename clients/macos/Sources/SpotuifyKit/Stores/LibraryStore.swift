@@ -60,7 +60,7 @@ public final class LibraryStore {
         loadingLiked = true
         defer { loadingLiked = false }
         if case .mediaItems(let items) = try? await model.request(
-            .savedTracks(limit: 50, offset: 0), timeout: .seconds(20)) {
+            .savedTracks(limit: 1000, offset: 0), timeout: .seconds(45)) {
             likedSongs = items
         }
     }

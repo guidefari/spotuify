@@ -23,12 +23,26 @@ pub(crate) async fn dispatch(
         }),
         Request::SavedTracks { limit, offset } => {
             // Liked songs — live `/me/tracks`, cache fallback on failure.
+            // Spotify caps each page at 50, so limits above that paginate.
             let mut client = state.spotify_client().await?;
-            match client
-                .saved_tracks_page(limit.min(50) as u8, offset as u64)
-                .await
-            {
-                Ok(page) => Ok(ResponseData::MediaItems { items: page.items }),
+            let fetch = async {
+                let limit = limit as usize;
+                let mut offset = offset as u64;
+                let mut items: Vec<MediaItem> = Vec::new();
+                while items.len() < limit {
+                    let page_size = (limit - items.len()).min(50) as u8;
+                    let page = client.saved_tracks_page(page_size, offset).await?;
+                    let fetched = page.items.len();
+                    items.extend(page.items);
+                    offset += fetched as u64;
+                    if fetched == 0 || offset >= page.total {
+                        break;
+                    }
+                }
+                anyhow::Ok(items)
+            };
+            match fetch.await {
+                Ok(items) => Ok(ResponseData::MediaItems { items }),
                 Err(err) => {
                     tracing::warn!(error = %err, "saved tracks live fetch failed; serving cache");
                     Ok(ResponseData::MediaItems {
