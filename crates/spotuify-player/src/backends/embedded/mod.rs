@@ -323,7 +323,20 @@ impl EmbeddedBackend {
         .await
         .map_err(|_| PlayerError::Timeout(SPIRC_CONNECT_TIMEOUT))?
         .map_err(|err| PlayerError::Playback(format!("librespot spirc init: {err}")))?;
-        let task = tokio::spawn(task);
+        // librespot's Spirc task ends when the underlying session/dealer
+        // closes — most importantly on a silent AP keepalive drop
+        // ("Connection to server closed"), which librespot does NOT surface as
+        // a player event. Wrap the task so its natural completion emits a
+        // SessionDisconnected, giving the daemon a reliable reconnect trigger.
+        // On an intentional teardown (`shutdown`) we abort this handle BEFORE
+        // the spirc loop ends, so the emit cannot fire spuriously.
+        let session_lost_tx = self.events_tx.clone();
+        let task = tokio::spawn(async move {
+            task.await;
+            let _ = session_lost_tx.send(PlayerEvent::SessionDisconnected {
+                reason: "librespot session closed".to_string(),
+            });
+        });
 
         let mut state = self.state.lock();
         state.player = Some(player);
@@ -505,11 +518,21 @@ impl PlayerBackend for EmbeddedBackend {
     }
 
     async fn is_connected(&self) -> bool {
-        self.state
-            .lock()
+        let state = self.state.lock();
+        // The session can be resurrected as a bare login5 session (for Web API
+        // token minting via `session()`) independently of the Spirc playback
+        // device. Require the Spirc task to still be running so a dead playback
+        // device can't be masked by a live bare session — otherwise the health
+        // loop reads "connected" and never reconnects the silent drop.
+        let session_ok = state
             .session
             .as_ref()
-            .is_some_and(|session| !session.is_invalid())
+            .is_some_and(|session| !session.is_invalid());
+        let spirc_ok = state
+            .spirc_task
+            .as_ref()
+            .is_some_and(|task| !task.is_finished());
+        session_ok && spirc_ok
     }
 
     /// Mint a full-scope Web API bearer from the live librespot session
@@ -566,13 +589,17 @@ impl PlayerBackend for EmbeddedBackend {
 
     async fn shutdown(&mut self) -> PlayerResult<()> {
         let mut state = self.state.lock();
+        // Abort the Spirc monitor task FIRST. It emits SessionDisconnected when
+        // the spirc loop ends, and an intentional shutdown ends that loop;
+        // aborting before `spirc.shutdown()` keeps the teardown from scheduling
+        // a spurious reconnect.
+        if let Some(task) = state.spirc_task.take() {
+            task.abort();
+        }
         if let Some(spirc) = state.spirc.take() {
             if let Err(err) = spirc.shutdown() {
                 tracing::debug!(error = %err, "librespot spirc shutdown failed during cleanup");
             }
-        }
-        if let Some(task) = state.spirc_task.take() {
-            task.abort();
         }
         if let Some(task) = state.player_event_task.take() {
             task.abort();

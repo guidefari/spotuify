@@ -145,6 +145,10 @@ enum PlayerCommand {
     },
     Reconnect {
         name: String,
+        /// When the session dropped while we were the active player, the
+        /// `(uri, position_ms)` to resume after re-registering so audio
+        /// continues instead of coming up idle. `None` = re-register only.
+        resume: Option<(String, u32)>,
         resp: oneshot::Sender<Result<DeviceId>>,
     },
     SetAudioOutput {
@@ -925,6 +929,7 @@ impl DaemonState {
         self.player_tx
             .send(PlayerCommand::Reconnect {
                 name: name.to_string(),
+                resume: None,
                 resp,
             })
             .await
@@ -976,7 +981,15 @@ impl DaemonState {
     /// logging/tests.
     pub(crate) async fn probe_player_health(&self, now_ms: i64) -> PlayerHealth {
         let connected = self.player_is_connected().await;
-        let active = self.is_we_are_active();
+        // "Wants this device" = tracked-active OR the clock shows we were
+        // playing on our own device (robust when `we_are_active` lags). The
+        // resume target is reused below so a backstop reconnect also continues
+        // playback when the clock is still fresh enough to know the position.
+        let resume = resume_target_after_drop(
+            &self.playback_clock.snapshot(),
+            self.own_device_id().as_deref(),
+        );
+        let active = self.is_we_are_active() || resume.is_some();
         let in_flight = self.reconnect_in_flight.load(Ordering::Acquire);
 
         let (snapshot, reconnect) = {
@@ -1013,7 +1026,11 @@ impl DaemonState {
                 consecutive_failures = snapshot.consecutive_failures,
                 "player session is down while active; auto-reconnecting"
             );
-            schedule_player_reconnect(self.player_tx.clone(), self.reconnect_in_flight.clone());
+            schedule_player_reconnect(
+                self.player_tx.clone(),
+                self.reconnect_in_flight.clone(),
+                resume,
+            );
         }
         snapshot
     }
@@ -1832,7 +1849,7 @@ fn spawn_player_actor(
                         PlayerCommand::RegisterDevice { name, resp } => {
                             let _ = resp.send(player_result(player.register_device(&name).await));
                         }
-                        PlayerCommand::Reconnect { name, resp } => {
+                        PlayerCommand::Reconnect { name, resume, resp } => {
                             if let Err(err) = player.shutdown().await {
                                 tracing::warn!(
                                     error = %err,
@@ -1840,6 +1857,24 @@ fn spawn_player_actor(
                                 );
                             }
                             let result = player.register_device(&name).await;
+                            // Resume playback where it dropped so a silent
+                            // session loss doesn't leave the device idle.
+                            if result.is_ok() {
+                                if let Some((uri, position_ms)) = resume {
+                                    match player.play_uri(&uri, position_ms).await {
+                                        Ok(()) => tracing::info!(
+                                            uri,
+                                            position_ms,
+                                            "resumed playback after reconnect"
+                                        ),
+                                        Err(err) => tracing::warn!(
+                                            error = %err,
+                                            uri,
+                                            "resume after reconnect failed"
+                                        ),
+                                    }
+                                }
+                            }
                             let _ = resp.send(player_result(result));
                         }
                         PlayerCommand::SetAudioOutput { device, resp } => {
@@ -2234,8 +2269,29 @@ async fn forward_player_events(
         // After a hand-off to another device, `we_are_active` is false, so a
         // session drop leaves us idle instead of re-registering and letting
         // librespot grab playback back. The next user transport re-registers.
-        if should_reconnect && ctx.we_are_active.load(Ordering::Acquire) {
-            schedule_player_reconnect(ctx.player_tx.clone(), ctx.reconnect_in_flight.clone());
+        if should_reconnect {
+            // Snapshot resume intent now, while the clock is still fresh: the
+            // Web API "no active session" confirmation hasn't landed yet, so
+            // is_playing/position still reflect what we were doing at drop time.
+            let own_id = ctx
+                .own_device_name
+                .lock()
+                .as_deref()
+                .map(derive_device_id_for_name);
+            let resume =
+                resume_target_after_drop(&ctx.playback_clock.snapshot(), own_id.as_deref());
+            // Reconnect when the user still wants this device active: either
+            // it's the tracked active target, or the clock shows we were
+            // playing on it (a robust fallback for when `we_are_active` lags
+            // behind the macOS app's play path). A genuine hand-off to another
+            // device leaves both false, so a drop correctly leaves us idle.
+            if ctx.we_are_active.load(Ordering::Acquire) || resume.is_some() {
+                schedule_player_reconnect(
+                    ctx.player_tx.clone(),
+                    ctx.reconnect_in_flight.clone(),
+                    resume,
+                );
+            }
         }
     }
 }
@@ -2304,9 +2360,43 @@ fn emit_daemon_event(
     });
 }
 
+/// Decide whether an auto-reconnect should resume playback, and from where.
+///
+/// Returns `Some((uri, position_ms))` only when we were actively playing on our
+/// own device (or on no recorded device — the silent-drop case). A genuine
+/// hand-off to a *different* active device returns `None`, so the reconnect
+/// re-registers our device without stealing playback back from the phone/etc.
+fn resume_target_after_drop(
+    playback: &spotuify_core::Playback,
+    own_device_id: Option<&str>,
+) -> Option<(String, u32)> {
+    if !playback.is_playing {
+        return None;
+    }
+    let item = playback.item.as_ref()?;
+    if item.uri.is_empty() {
+        return None;
+    }
+    let on_other_device = matches!(
+        (
+            playback.device.as_ref().and_then(|d| d.id.as_deref()),
+            own_device_id,
+        ),
+        (Some(active), Some(own)) if active != own
+    );
+    if on_other_device {
+        return None;
+    }
+    Some((
+        item.uri.clone(),
+        playback.progress_ms.min(u32::MAX as u64) as u32,
+    ))
+}
+
 fn schedule_player_reconnect(
     player_tx: mpsc::Sender<PlayerCommand>,
     reconnect_in_flight: Arc<AtomicBool>,
+    resume: Option<(String, u32)>,
 ) {
     if reconnect_in_flight.swap(true, Ordering::AcqRel) {
         return;
@@ -2318,6 +2408,7 @@ fn schedule_player_reconnect(
         let sent = player_tx
             .send(PlayerCommand::Reconnect {
                 name: device_name,
+                resume,
                 resp,
             })
             .await;
@@ -3270,6 +3361,58 @@ mod auth_revocation_tests {
             false,
             PLAYER_RECONNECT_GIVE_UP_AFTER
         ));
+    }
+
+    #[test]
+    fn resume_target_only_when_playing_on_our_device() {
+        use super::resume_target_after_drop;
+        use spotuify_core::{Device, MediaItem, Playback};
+
+        let own = "ourdevice";
+        let device = |id: &str| Device {
+            id: Some(id.to_string()),
+            name: "d".to_string(),
+            kind: "Speaker".to_string(),
+            is_active: true,
+            is_restricted: false,
+            volume_percent: None,
+            supports_volume: true,
+        };
+        let item = MediaItem {
+            uri: "spotify:track:abc".to_string(),
+            ..Default::default()
+        };
+        let playing_on = |dev: Option<Device>| Playback {
+            item: Some(item.clone()),
+            device: dev,
+            is_playing: true,
+            progress_ms: 42_000,
+            ..Default::default()
+        };
+
+        // Playing on our device → resume at the dropped position.
+        assert_eq!(
+            resume_target_after_drop(&playing_on(Some(device(own))), Some(own)),
+            Some(("spotify:track:abc".to_string(), 42_000))
+        );
+        // Silent drop with no recorded device → assume ours, resume.
+        assert_eq!(
+            resume_target_after_drop(&playing_on(None), Some(own)),
+            Some(("spotify:track:abc".to_string(), 42_000))
+        );
+        // Handed off to a different active device → do NOT steal playback back.
+        assert_eq!(
+            resume_target_after_drop(&playing_on(Some(device("phone"))), Some(own)),
+            None
+        );
+        // Paused at drop time → nothing to resume (matches the chosen policy).
+        let mut paused = playing_on(Some(device(own)));
+        paused.is_playing = false;
+        assert_eq!(resume_target_after_drop(&paused, Some(own)), None);
+        // Playing but no known track URI → nothing actionable.
+        let mut no_uri = playing_on(Some(device(own)));
+        no_uri.item = None;
+        assert_eq!(resume_target_after_drop(&no_uri, Some(own)), None);
     }
 }
 
