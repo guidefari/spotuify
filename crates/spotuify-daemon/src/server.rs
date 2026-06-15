@@ -634,11 +634,38 @@ async fn serve_client_connection(
             biased;
             joined = request_tasks.join_next(), if !request_tasks.is_empty() => {
                 match joined {
-                    Some(Ok(ref response))
-                        if can_send && sink.send(response.clone()).await.is_err() =>
-                    {
-                        can_send = false;
-                        accept_requests = false;
+                    Some(Ok(response)) if can_send => {
+                        let id = response.id;
+                        if let Err(err) = sink.send(response).await {
+                            // The send failed. Most often this is the encoder
+                            // rejecting an un-encodable response payload (a
+                            // serde error mapped to io::Error), not a dead
+                            // socket — and this site historically swallowed
+                            // the error and silently tore the connection down,
+                            // which is how the GetDoctorReport response failure
+                            // stayed invisible. Log it, then try to inform the
+                            // client with a typed error for this id so a single
+                            // bad response cannot kill a long-lived session.
+                            tracing::error!(
+                                request_id = id,
+                                error = %err,
+                                "failed to send IPC response; replying with a typed error",
+                            );
+                            let fallback = IpcMessage {
+                                id,
+                                source: None,
+                                payload: IpcPayload::Response(Response::error_with_kind(
+                                    "daemon failed to encode the response",
+                                    IpcErrorKind::Internal,
+                                )),
+                            };
+                            if sink.send(fallback).await.is_err() {
+                                // The fallback failed too — the socket itself
+                                // is gone, so tear the connection down.
+                                can_send = false;
+                                accept_requests = false;
+                            }
+                        }
                     }
                     Some(Ok(_response)) => {}
                     Some(Err(err)) => tracing::warn!(error = %err, "IPC request task failed"),
@@ -661,7 +688,11 @@ async fn serve_client_connection(
             event = event_rx.recv(), if events_subscribed && can_send => {
                 match event {
                     Ok(event) => {
-                        if sink.send(event).await.is_err() {
+                        if let Err(err) = sink.send(event).await {
+                            tracing::error!(
+                                error = %err,
+                                "failed to send IPC event; closing connection",
+                            );
                             can_send = false;
                             accept_requests = false;
                         }
@@ -678,7 +709,11 @@ async fn serve_client_connection(
                                 spotuify_protocol::DaemonEvent::EventStreamLagged { skipped },
                             ),
                         };
-                        if sink.send(lagged_msg).await.is_err() {
+                        if let Err(err) = sink.send(lagged_msg).await {
+                            tracing::error!(
+                                error = %err,
+                                "failed to send lagged-event marker; closing connection",
+                            );
                             can_send = false;
                             accept_requests = false;
                         }
@@ -752,7 +787,11 @@ async fn serve_client_connection(
             if can_send {
                 let snapshot = build_subscribe_snapshot(&state).await;
                 for msg in snapshot {
-                    if sink.send(msg).await.is_err() {
+                    if let Err(err) = sink.send(msg).await {
+                        tracing::error!(
+                            error = %err,
+                            "failed to send subscribe snapshot; closing connection",
+                        );
                         can_send = false;
                         accept_requests = false;
                         break;

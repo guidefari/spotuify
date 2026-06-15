@@ -71,6 +71,21 @@ pub enum IpcPayload {
     Event(DaemonEvent),
 }
 
+impl IpcPayload {
+    /// Coarse discriminant for diagnostics and log correlation. Cheap and
+    /// never allocates. For a response, pair this with the `request_id` to
+    /// recover the exact request kind from the `ipc.request` span (the span
+    /// records `request_kind` for the same id before the response is sent).
+    pub fn kind_label(&self) -> &'static str {
+        match self {
+            Self::Request(req) => req.kind_label(),
+            Self::Response(Response::Ok { .. }) => "response-ok",
+            Self::Response(Response::Error { .. }) => "response-error",
+            Self::Event(_) => "event",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "cmd", rename_all = "kebab-case")]
 pub enum Request {
@@ -2015,7 +2030,13 @@ pub struct DoctorCheck {
     pub name: String,
     pub ok: bool,
     pub message: String,
-    pub elapsed_ms: u128,
+    /// Wall-clock duration of the check, in milliseconds. MUST stay `u64`:
+    /// `serde_json` (built here without `arbitrary_precision`) cannot
+    /// serialize `u128` and returns "u128 is not supported", which failed
+    /// the whole `DoctorReport` encode and silently closed the IPC
+    /// connection (the GetDoctorReport "Connection closed" bug). A timing
+    /// in milliseconds fits `u64` for ~584 million years.
+    pub elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2127,8 +2148,21 @@ impl Encoder<IpcMessage> for IpcCodec {
     type Error = std::io::Error;
 
     fn encode(&mut self, item: IpcMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let json = serde_json::to_vec(&item)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        let json = serde_json::to_vec(&item).map_err(|err| {
+            // A serialize failure here propagates as an `io::Error`; the
+            // sink returns `Err` and the connection task tears the socket
+            // down. Historically that happened with no log, so the client
+            // saw a bare EOF ("Connection closed") and the cause was
+            // invisible — this is exactly how the GetDoctorReport response
+            // failure stayed hidden. Name the payload so it is greppable.
+            tracing::error!(
+                request_id = item.id,
+                payload = item.payload.kind_label(),
+                error = %err,
+                "failed to serialize IPC message for the wire",
+            );
+            std::io::Error::new(std::io::ErrorKind::InvalidData, err)
+        })?;
         self.inner.encode(json.into(), dst)
     }
 }
@@ -2167,6 +2201,132 @@ mod tests {
             .decode(&mut src)
             .expect("boundary frame rejected")
             .is_none());
+    }
+
+    #[test]
+    fn doctor_report_round_trips_through_the_codec() {
+        // Regression for the GetDoctorReport "Connection closed" bug: a
+        // fully-populated DoctorReport response must encode AND decode
+        // cleanly through `IpcCodec`. The original failure was a response
+        // payload that `serde_json::to_vec` rejected at the encoder, which
+        // the send site swallowed and turned into a silent socket EOF.
+        // Exercising every Option=Some / non-empty-Vec field across the
+        // report and its nested diagnostics (DaemonStatus, AudioHealth,
+        // DeviceDiagnostics, SystemDiagnostics, VizDiagnostics) guards every
+        // future field addition against the same regression.
+        use tokio_util::codec::{Decoder as _, Encoder as _};
+
+        let check = |name: &str| super::DoctorCheck {
+            name: name.to_string(),
+            ok: true,
+            message: "ok".to_string(),
+            elapsed_ms: 12,
+        };
+        let device = super::DeviceSummary {
+            name: "spotuify-hume".to_string(),
+            kind: "computer".to_string(),
+            active: true,
+            restricted: false,
+            has_id: true,
+        };
+        let report = super::DoctorReport {
+            healthy: true,
+            health_class: super::HealthClass::Degraded,
+            config_path: "/cfg/config.toml".to_string(),
+            config_ok: true,
+            config_error: Some("none".to_string()),
+            logs_path: "/logs/spotuify.log".to_string(),
+            client_id: Some("client".to_string()),
+            client_secret_present: Some(true),
+            redirect_uri: Some("http://127.0.0.1/callback".to_string()),
+            keychain_token: check("keychain"),
+            daemon: super::DaemonStatus {
+                running: true,
+                socket_path: "/sock".to_string(),
+                socket_exists: true,
+                socket_reachable: true,
+                stale_socket: false,
+                daemon_pid: Some(4242),
+                uptime_secs: Some(99),
+                protocol_version: 1,
+                daemon_version: Some("0.1.71".to_string()),
+                daemon_build_id: Some("abc123".to_string()),
+                audio_health: Some(super::AudioHealth {
+                    connected: true,
+                    is_playing: true,
+                    we_are_active: true,
+                    samples_advancing: false,
+                    reconnect_attempts: 2,
+                    current_backoff_ms: 4_000,
+                    last_stall_ms: Some(1_234),
+                }),
+            },
+            api_checks: vec![check("web-api"), check("playlists")],
+            device_diagnostics: Some(super::DeviceDiagnostics {
+                preferred_configured: Some("spotuify-hume".to_string()),
+                preferred_visible: true,
+                active_device: Some(device.clone()),
+                restricted_devices: vec![device.clone()],
+                visible_unrestricted_devices: vec![device.clone()],
+            }),
+            recommended_next_steps: vec!["spotuify reconnect".to_string()],
+            findings: vec![super::DoctorFinding {
+                category: super::DoctorFindingCategory::Player,
+                severity: super::DoctorFindingSeverity::Warning,
+                message: "connected but no audio flowing".to_string(),
+                remediation: vec!["spotuify reconnect".to_string()],
+            }],
+            system: Some(super::SystemDiagnostics {
+                media_controls_enabled: true,
+                media_controls_bus_name: Some("org.mpris.MediaPlayer2.spotuify".to_string()),
+                hooks_enabled: true,
+                hook_command: Some("/bin/hook".to_string()),
+                hook_timeout_ms: Some(500),
+                notifications_enabled: true,
+                discord_enabled: true,
+                discord_application_id: Some("123".to_string()),
+            }),
+            viz: Some(super::VizDiagnostics {
+                enabled: true,
+                sample_rate: Some(44_100),
+                loopback_device_name: Some("BlackHole".to_string()),
+                hint: Some("install BlackHole".to_string()),
+                playing: true,
+                last_frame_age_ms: Some(16),
+                backend_kind: Some(spotuify_core::BackendKind::Embedded),
+                ..Default::default()
+            }),
+        };
+
+        let message = IpcMessage {
+            id: 7,
+            source: None,
+            payload: IpcPayload::Response(Response::Ok {
+                data: ResponseData::DoctorReport {
+                    report: report.clone(),
+                },
+            }),
+        };
+
+        let mut codec = super::IpcCodec::new();
+        let mut buf = bytes::BytesMut::new();
+        codec
+            .encode(message, &mut buf)
+            .expect("a fully-populated DoctorReport must serialize for the wire");
+        let decoded = codec
+            .decode(&mut buf)
+            .expect("decoding the encoded report must not error")
+            .expect("a complete frame must be present after encoding");
+
+        let IpcPayload::Response(Response::Ok {
+            data: ResponseData::DoctorReport {
+                report: decoded_report,
+            },
+        }) = decoded.payload
+        else {
+            panic!("decoded payload was not a DoctorReport response");
+        };
+        assert_eq!(decoded_report, report);
     }
 
     #[test]

@@ -267,7 +267,7 @@ fn auth_file_check() -> DoctorCheck {
             name: "auth token".to_string(),
             ok: false,
             message: format!("timed out after {}s", AUTH_CHECK_TIMEOUT.as_secs()),
-            elapsed_ms: started.elapsed().as_millis(),
+            elapsed_ms: started.elapsed().as_millis() as u64,
         },
     }
 }
@@ -309,7 +309,7 @@ fn timed_sync<T, E, F>(
     _name: &str,
     timeout: Duration,
     operation: F,
-) -> (Option<Result<T, String>>, u128)
+) -> (Option<Result<T, String>>, u64)
 where
     T: Send + 'static,
     E: std::fmt::Display + Send + 'static,
@@ -321,11 +321,13 @@ where
         let _ = tx.send(operation().map_err(|err| err.to_string()));
     });
     match rx.recv_timeout(timeout) {
-        Ok(result) => (Some(result), started.elapsed().as_millis()),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (None, started.elapsed().as_millis()),
+        Ok(result) => (Some(result), started.elapsed().as_millis() as u64),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            (None, started.elapsed().as_millis() as u64)
+        }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => (
             Some(Err("worker exited before returning result".to_string())),
-            started.elapsed().as_millis(),
+            started.elapsed().as_millis() as u64,
         ),
     }
 }
@@ -344,7 +346,7 @@ where
                 name: name.to_string(),
                 ok: true,
                 message: "ok".to_string(),
-                elapsed_ms: started.elapsed().as_millis(),
+                elapsed_ms: started.elapsed().as_millis() as u64,
             },
             Some(value),
         ),
@@ -353,7 +355,7 @@ where
                 name: name.to_string(),
                 ok: false,
                 message: err.to_string(),
-                elapsed_ms: started.elapsed().as_millis(),
+                elapsed_ms: started.elapsed().as_millis() as u64,
             },
             None,
         ),
@@ -362,7 +364,7 @@ where
                 name: name.to_string(),
                 ok: false,
                 message: format!("timed out after {}s", API_CHECK_TIMEOUT.as_secs()),
-                elapsed_ms: started.elapsed().as_millis(),
+                elapsed_ms: started.elapsed().as_millis() as u64,
             },
             None,
         ),
