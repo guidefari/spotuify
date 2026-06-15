@@ -932,7 +932,10 @@ impl DaemonState {
     /// hand-off (the poll-based [`Self::note_active_device`] otherwise lags by a
     /// poll interval).
     pub(crate) fn set_we_are_active(&self, active: bool) {
-        self.we_are_active.store(active, Ordering::Release);
+        let was_active = self.we_are_active.swap(active, Ordering::AcqRel);
+        if active && !was_active {
+            self.forgive_give_up_on_reactivation();
+        }
     }
 
     /// Whether the user currently intends this device to be the playback target.
@@ -973,7 +976,12 @@ impl DaemonState {
             return;
         };
         match self.own_device_id() {
-            Some(own) if own == active_id => self.we_are_active.store(true, Ordering::Release),
+            Some(own) if own == active_id => {
+                let was_active = self.we_are_active.swap(true, Ordering::AcqRel);
+                if !was_active {
+                    self.forgive_give_up_on_reactivation();
+                }
+            }
             _ => self.we_are_active.store(false, Ordering::Release),
         }
     }
@@ -1012,6 +1020,12 @@ impl DaemonState {
     }
 
     pub(crate) async fn reconnect_player(&self, name: &str) -> Result<DeviceId> {
+        // A manual reconnect is the user's explicit "I want this device now":
+        // forgive any prior give-up so the health-loop backstop resumes even if
+        // this particular attempt fails.
+        if self.reset_give_up() {
+            tracing::info!("manual reconnect cleared prior player reconnect give-up");
+        }
         *self.own_device_name.lock() = Some(name.to_string());
         let (resp, rx) = oneshot::channel();
         self.player_tx
@@ -1136,6 +1150,33 @@ impl DaemonState {
     /// Current player-session health snapshot for diagnostics.
     pub(crate) fn player_health_snapshot(&self) -> PlayerHealth {
         *self.player_health.lock()
+    }
+
+    /// Forgive a prior reconnect give-up: clear `gave_up` and zero the
+    /// consecutive-failure count so the health-loop backstop
+    /// ([`should_auto_reconnect_player`]) resumes. Without this the daemon
+    /// latches permanently — once `consecutive_failures` hits
+    /// [`PLAYER_RECONNECT_GIVE_UP_AFTER`] it stops reconnecting and the count
+    /// only ever grows, so it never auto-recovers even when the user clearly
+    /// still wants the device. Called on explicit fresh intent (a manual
+    /// `reconnect`, or `we_are_active` transitioning to active). Returns whether
+    /// a give-up was actually cleared, for logging.
+    pub(crate) fn reset_give_up(&self) -> bool {
+        let mut health = self.player_health.lock();
+        let cleared = health.gave_up;
+        health.gave_up = false;
+        health.consecutive_failures = 0;
+        cleared
+    }
+
+    /// Clear a prior give-up when the user (re)activates this device, logging
+    /// only when something was actually latched.
+    fn forgive_give_up_on_reactivation(&self) {
+        if self.reset_give_up() {
+            tracing::info!(
+                "device re-activated; resuming player auto-reconnect after prior give-up"
+            );
+        }
     }
 
     /// Total PCM samples the embedded sink has emitted (ground truth that audio
@@ -3662,6 +3703,94 @@ mod auth_revocation_tests {
         let mut no_uri = playing_on(Some(device(own)));
         no_uri.item = None;
         assert_eq!(resume_target_after_drop(&no_uri, Some(own)), None);
+    }
+
+    #[tokio::test]
+    async fn reactivation_and_manual_reset_clear_reconnect_give_up() {
+        let (_env, state) = test_state().await;
+        // Simulate the health loop having latched into "gave up" after repeated
+        // failed probes.
+        {
+            let mut health = state.player_health.lock();
+            health.gave_up = true;
+            health.consecutive_failures = super::PLAYER_RECONNECT_GIVE_UP_AFTER + 1;
+        }
+
+        // Re-activating this device (false -> true transition) must forgive the
+        // give-up so the backstop resumes.
+        state.set_we_are_active(true);
+        {
+            let health = state.player_health.lock();
+            assert!(!health.gave_up, "re-activation must clear gave_up");
+            assert_eq!(
+                health.consecutive_failures, 0,
+                "re-activation must zero the failure count"
+            );
+        }
+
+        // `reset_give_up` reports whether anything was latched: true once, then
+        // false (idempotent).
+        {
+            let mut health = state.player_health.lock();
+            health.gave_up = true;
+        }
+        assert!(state.reset_give_up(), "first reset clears the latch");
+        assert!(!state.reset_give_up(), "second reset is a no-op");
+
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn audio_stall_recovery_fires_only_when_device_is_wanted() {
+        let (_env, state) = test_state().await;
+
+        // Not active and nothing to resume → the watchdog must not reconnect.
+        state.set_we_are_active(false);
+        assert!(
+            !state.trigger_audio_stall_recovery(1_000),
+            "stall recovery must not fire when the device is not wanted"
+        );
+
+        // Active → schedule a reconnect and record the attempt. `schedule_player_
+        // reconnect` flips `reconnect_in_flight` synchronously (swap before the
+        // spawn), so the recovery is observable immediately.
+        state.set_we_are_active(true);
+        let before = state.player_health_snapshot().reconnect_attempts;
+        assert!(
+            state.trigger_audio_stall_recovery(2_000),
+            "stall recovery must fire when the device is active"
+        );
+        let after = state.player_health_snapshot().reconnect_attempts;
+        assert_eq!(after, before + 1, "a reconnect attempt must be recorded");
+
+        // A reconnect is now in flight → a duplicate stall must be suppressed.
+        assert!(
+            !state.trigger_audio_stall_recovery(2_500),
+            "a reconnect already in flight must suppress a duplicate recovery"
+        );
+
+        shutdown_state(state).await;
+    }
+
+    #[tokio::test]
+    async fn fake_backend_keeps_audio_watchdog_inert() {
+        // The fake/mock backend exposes no audio counter, so `audio_samples()`
+        // is None and `classify_audio_flow` returns NotPlaying every tick — the
+        // watchdog stays inert and smoke.sh can never trigger a spurious
+        // stall-reconnect. This guard documents that invariant: if a future
+        // change gives the mock a live counter, re-check the false-stall risk
+        // (a flat counter while the clock reads playing would fire recovery).
+        let (_env, state) = test_state().await;
+        assert_eq!(
+            state.audio_samples(),
+            None,
+            "fake backend must expose no audio counter"
+        );
+        assert!(
+            state.status().audio_health.is_none(),
+            "no counter → no audio_health surfaced"
+        );
+        shutdown_state(state).await;
     }
 }
 
