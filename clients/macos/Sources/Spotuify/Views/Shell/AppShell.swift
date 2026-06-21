@@ -18,11 +18,6 @@ struct AppShell: View {
     /// Whether to surface the "newer release available" banner. Mirrors the
     /// Settings toggle; the daemon's check itself is opt-out via env/config.
     @AppStorage("autoCheckUpdates") private var autoCheckUpdates = true
-    /// User-chosen appearance. Drives the global tint and the
-    /// `preferredColorScheme` override. The album surfaces (Now Playing,
-    /// Mini Player, Menu Bar) ignore this and stay artwork-driven.
-    @AppStorage(ThemePreference.storageKey) private var themePreference: ThemePreference = .system
-    private var globalTint: Color { themePreference.isAdaptive ? theme.accent : .accentColor }
 
     var body: some View {
         @Bindable var nav = navigator
@@ -60,13 +55,9 @@ struct AppShell: View {
         .overlay(alignment: .bottom) { toastView }
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: model.toast)
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: model.availableUpdate)
-        // In Adaptive mode the artwork drives the whole app's tint (selections,
-        // sliders, page-header text). In the fixed themes the tint falls back to
-        // the system accent so the chrome reads as a single, native surface.
-        .tint(globalTint)
-        // Force a color scheme for Light/Dark; nil (Follow-system + Adaptive)
-        // means respect the OS appearance.
-        .preferredColorScheme(themePreference.colorScheme)
+        // The window-level `ThemedView` (in `SpotuifyApp`) already applies the
+        // preferred color scheme and the tint, so `AppShell` only needs to
+        // forward `ArtworkTheme` to its descendants.
         .environment(theme)
         .task(id: model.player.currentItem?.imageURL) {
             await theme.update(for: model.player.currentItem?.imageURL)

@@ -13,31 +13,33 @@ struct SpotuifyApp: App {
         // re-invoking `openWindow(id: "player")` focuses the existing one
         // instead of spawning a new window each time.
         Window("Spotuify", id: "player") {
-            RootView()
-                .environment(model)
-                .environment(theme)
-                .environment(navigator)
-                .task {
-                    // Self-contained install: drop the bundled daemon+CLI onto
-                    // the user's PATH so the backend is available everywhere.
-                    DaemonLauncher.installBundledCLIIfNeeded()
-                    model.start()
-                    SystemMediaController.shared.configure(model: model)
-                    KeyboardController.shared.configure(model: model)
-                    ReminderNotificationScheduler.shared.configure(model: model)
-                }
-                .onChange(of: model.player.playback) { _, _ in
-                    Task { await SystemMediaController.shared.updateNowPlaying(player: model.player) }
-                }
-                // The displayed track can also change via a queue update (which
-                // doesn't touch `playback`), and play/pause must refresh the
-                // Now Playing state — republish on both.
-                .onChange(of: model.player.currentItem?.uri) { _, _ in
-                    Task { await SystemMediaController.shared.updateNowPlaying(player: model.player) }
-                }
-                .onChange(of: model.player.isPlaying) { _, _ in
-                    Task { await SystemMediaController.shared.updateNowPlaying(player: model.player) }
-                }
+            ThemedView(usesArtworkAccent: true) {
+                RootView()
+            }
+            .environment(model)
+            .environment(theme)
+            .environment(navigator)
+            .task {
+                // Self-contained install: drop the bundled daemon+CLI onto
+                // the user's PATH so the backend is available everywhere.
+                DaemonLauncher.installBundledCLIIfNeeded()
+                model.start()
+                SystemMediaController.shared.configure(model: model)
+                KeyboardController.shared.configure(model: model)
+                ReminderNotificationScheduler.shared.configure(model: model)
+            }
+            .onChange(of: model.player.playback) { _, _ in
+                Task { await SystemMediaController.shared.updateNowPlaying(player: model.player) }
+            }
+            // The displayed track can also change via a queue update (which
+            // doesn't touch `playback`), and play/pause must refresh the
+            // Now Playing state — republish on both.
+            .onChange(of: model.player.currentItem?.uri) { _, _ in
+                Task { await SystemMediaController.shared.updateNowPlaying(player: model.player) }
+            }
+            .onChange(of: model.player.isPlaying) { _, _ in
+                Task { await SystemMediaController.shared.updateNowPlaying(player: model.player) }
+            }
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 980, height: 720)
@@ -53,6 +55,8 @@ struct SpotuifyApp: App {
         }
 
         // Single floating HUD window — likewise reused, never duplicated.
+        // Mini Player pins `theme.accent` itself (the album stage), so it
+        // intentionally doesn't go through `ThemedView`.
         Window("Mini Player", id: "mini-player") {
             MiniPlayerView()
                 .environment(model)
@@ -70,8 +74,10 @@ struct SpotuifyApp: App {
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView()
-                .environment(model)
+            ThemedView(usesArtworkAccent: false) {
+                SettingsView()
+            }
+            .environment(model)
         }
     }
 }
