@@ -17,6 +17,14 @@ struct NowPlayingBar: View {
     /// system accent, which matches the rest of the chrome.
     private var washAccent: Color { themePreference.isAdaptive ? theme.accent : Color("AccentColor") }
 
+    /// Foreground for transport icons on the bar. Inactive icons ride at 60%
+    /// opacity so active / inactive states stay readable without recoding
+    /// every site.
+    private func chromeIcon(active: Bool) -> Color {
+        let base = themePreference.chromeIconForeground(albumPalette: theme.palette)
+        return active ? base : base.opacity(0.6)
+    }
+
     private func togglePanel(_ target: GlobalPanel) {
         globalPanelRaw = (globalPanel == target ? GlobalPanel.none : target).rawValue
     }
@@ -79,7 +87,7 @@ struct NowPlayingBar: View {
     private var controls: some View {
         HStack(spacing: 14) {
             TransportButton(systemName: "shuffle", size: 12) { model.toggleShuffle() }
-                .foregroundStyle(model.player.shuffle ? AnyShapeStyle(theme.palette.primary) : AnyShapeStyle(theme.palette.primary.opacity(0.6)))
+                .foregroundStyle(chromeIcon(active: model.player.shuffle))
             TransportButton(systemName: "backward.fill", size: 14) { model.previous() }
             TransportButton(
                 systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
@@ -88,25 +96,21 @@ struct NowPlayingBar: View {
             TransportButton(
                 systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat",
                 size: 12) { model.cycleRepeat() }
-                .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(theme.palette.primary.opacity(0.6)) : AnyShapeStyle(theme.palette.primary))
+                .foregroundStyle(chromeIcon(active: model.player.repeatMode != .off))
         }
     }
 
     private var trailing: some View {
         HStack(spacing: 10) {
             TransportButton(systemName: "quote.bubble", size: 13) { togglePanel(.lyrics) }
-                .foregroundStyle(globalPanel == .lyrics
-                                 ? AnyShapeStyle(theme.palette.primary)
-                                 : AnyShapeStyle(theme.palette.primary.opacity(0.6)))
+                .foregroundStyle(chromeIcon(active: globalPanel == .lyrics))
                 .help("Lyrics")
             TransportButton(systemName: "list.bullet", size: 13) { togglePanel(.queue) }
-                .foregroundStyle(globalPanel == .queue
-                                 ? AnyShapeStyle(theme.palette.primary)
-                                 : AnyShapeStyle(theme.palette.primary.opacity(0.6)))
+                .foregroundStyle(chromeIcon(active: globalPanel == .queue))
                 .help("Up next")
             Text("\(Theme.timeString(model.player.displayProgressMs)) / \(Theme.timeString(model.player.durationMs))")
                 .font(.caption2.monospacedDigit())
-                .foregroundStyle(theme.palette.primary.opacity(0.6))
+                .foregroundStyle(chromeIcon(active: true).opacity(0.6))
                 .lineLimit(1)
                 .fixedSize()
             DeviceMenu(showsActiveName: false)

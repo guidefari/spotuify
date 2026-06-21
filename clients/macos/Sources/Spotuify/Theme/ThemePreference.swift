@@ -81,4 +81,12 @@ enum ThemePreference: String, CaseIterable, Identifiable {
     /// `UserDefaults` key shared with the chrome surfaces that read the
     /// preference directly via `@AppStorage`.
     static let storageKey = "themePreference"
+
+    /// Foreground for chrome transport controls (NowPlayingBar, Mini Player).
+    /// Adaptive = the album palette's own contrast token, so icons pick up
+    /// the cover's mood. Fixed themes = system `Color.primary`, so icons
+    /// read on the chrome surface rather than disappearing into a wash.
+    func chromeIconForeground(albumPalette: ArtworkPalette) -> Color {
+        isAdaptive ? albumPalette.primary : Color.primary
+    }
 }

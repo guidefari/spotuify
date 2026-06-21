@@ -40,9 +40,18 @@ struct MiniPlayerView: View {
     @Environment(ArtworkTheme.self) private var theme
     @Environment(\.openWindow) private var openWindow
     @AppStorage("miniSize") private var sizeRaw = MiniSize.full.rawValue
+    @AppStorage(ThemePreference.storageKey) private var themePreference: ThemePreference = .system
 
     private var size: MiniSize { MiniSize(rawValue: sizeRaw) ?? .full }
     private var item: MediaItem? { model.player.currentItem }
+    /// Adaptive = the album gradient + album-tinted icons (the original look).
+    /// Fixed themes = a neutral chrome HUD with the system accent — the album
+    /// gradient still shows behind the content, but text and controls read
+    /// against it as on a normal light/dark surface.
+    private var isAdaptive: Bool { themePreference.isAdaptive }
+    private var titleColor: Color { themePreference.chromeIconForeground(albumPalette: theme.palette) }
+    private var subtitleColor: Color { isAdaptive ? theme.palette.secondary : Color.secondary }
+    private var chromeIcon: Color { themePreference.chromeIconForeground(albumPalette: theme.palette) }
 
     var body: some View {
         ZStack {
@@ -53,7 +62,9 @@ struct MiniPlayerView: View {
                 .padding(size == .tiny ? 8 : 14)
         }
         .frame(width: width, height: height)
-        .tint(theme.accent)
+        // Adaptive: tint the HUD with the album accent. Fixed themes: use the
+        // system accent so the controls feel like part of the chrome.
+        .tint(isAdaptive ? theme.accent : Color("AccentColor"))
         .background(FloatingWindowAccessor())
         .background(.ultraThinMaterial)
         .task(id: item?.imageURL) { await theme.update(for: item?.imageURL) }
@@ -91,10 +102,10 @@ struct MiniPlayerView: View {
             VStack(spacing: 3) {
                 Text(item?.name ?? "Nothing playing")
                     .font(.displayHero(20))
-                    .foregroundStyle(theme.palette.primary)
+                    .foregroundStyle(titleColor)
                     .lineLimit(1).minimumScaleFactor(0.6)
                 Text(item?.subtitle ?? "")
-                    .font(.caption).foregroundStyle(theme.palette.secondary).lineLimit(1)
+                    .font(.caption).foregroundStyle(subtitleColor).lineLimit(1)
             }
             SeekBar(
                 progress: model.player.progressFraction,
@@ -109,8 +120,14 @@ struct MiniPlayerView: View {
             AsyncCoverImage(url: item?.imageURL, cornerRadius: RadiusTokens.thumb)
                 .frame(width: 56, height: 56)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item?.name ?? "Nothing playing").font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                Text(item?.subtitle ?? "").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                Text(item?.name ?? "Nothing playing")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(titleColor)
+                    .lineLimit(1)
+                Text(item?.subtitle ?? "")
+                    .font(.caption2)
+                    .foregroundStyle(subtitleColor)
+                    .lineLimit(1)
                 transport(size: 12)
             }
             Spacer(minLength: 0)
@@ -120,7 +137,10 @@ struct MiniPlayerView: View {
 
     private var tinyContent: some View {
         HStack(spacing: 10) {
-            Text(item?.name ?? "—").font(.system(size: 12, weight: .medium)).lineLimit(1)
+            Text(item?.name ?? "—")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(titleColor)
+                .lineLimit(1)
             Spacer(minLength: 4)
             Button { model.togglePlayPause() } label: {
                 Image(systemName: model.player.isPlaying ? "pause.fill" : "play.fill")
@@ -140,6 +160,7 @@ struct MiniPlayerView: View {
             Button { model.next() } label: { Image(systemName: "forward.fill") }.buttonStyle(.plain)
         }
         .font(.system(size: iconSize))
+        .foregroundStyle(chromeIcon)
     }
 
     private var sizeButton: some View {
