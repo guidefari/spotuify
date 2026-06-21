@@ -240,17 +240,74 @@ private struct AppearancePaneBody: View {
 
     var body: some View {
         Section("Theme") {
-            Picker("Theme", selection: $preference) {
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
+                spacing: 12
+            ) {
                 ForEach(ThemePreference.allCases) { p in
-                    Text(p.displayName).tag(p)
+                    ThemeTile(
+                        preference: p,
+                        isSelected: p == preference,
+                        action: { preference = p })
                 }
             }
-            .pickerStyle(.inline)
-            .labelsHidden()
             Text(preference.explanation)
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+}
+
+/// One option in the theme grid: an SF Symbol, the option's display name,
+/// and a short blurb. Selected = accent border + tinted fill; unselected =
+/// translucent neutral fill that adapts to the color scheme. Subtle scale
+/// on hover so the tiles feel clickable.
+private struct ThemeTile: View {
+    let preference: ThemePreference
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 10) {
+                Image(systemName: preference.icon)
+                    .font(.system(size: 30, weight: .medium))
+                    .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+                    .frame(height: 36)
+                Text(preference.displayName)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text(preference.tileBlurb)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, minHeight: 140)
+            .padding(16)
+            .background {
+                RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
+                    .fill(isSelected
+                          ? AnyShapeStyle(.tint.opacity(0.12))
+                          : AnyShapeStyle(Color.primary.opacity(0.05)))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        isSelected
+                            ? AnyShapeStyle(.tint)
+                            : AnyShapeStyle(Color.primary.opacity(0.18)),
+                        lineWidth: isSelected ? 2 : 1)
+            }
+            .scaleEffect(hovering ? 1.015 : 1.0)
+            .animation(.easeInOut(duration: 0.15), value: hovering)
+            .animation(.easeInOut(duration: 0.15), value: isSelected)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : [.isButton])
     }
 }
 
