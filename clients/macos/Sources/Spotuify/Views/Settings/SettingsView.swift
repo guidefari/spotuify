@@ -17,6 +17,11 @@ struct SettingsView: View {
             get: { AppTheme(rawValue: desktopThemeRaw) ?? .adaptive },
             set: { desktopThemeRaw = $0.rawValue })
     }
+    /// Locked to `.all` so the macOS system default doesn't render a sidebar
+    /// toggle in the window toolbar (its placement looked out of place against
+    /// the otherwise empty titlebar). The Settings window has no use for a
+    /// collapsible sidebar.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     enum Pane: String, CaseIterable, Identifiable {
         case account, appearance, playback, audio, notifications, privacy, updates, daemon, about
@@ -50,10 +55,11 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             List(Pane.allCases, selection: $pane) { p in
-                Label(p.title, systemImage: p.icon).tag(p)
+                SettingsPaneRow(pane: p).tag(p)
             }
+            .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(190)
         } detail: {
             Form {
@@ -100,22 +106,6 @@ struct SettingsView: View {
     }
 
     // MARK: Panes
-
-    @ViewBuilder private var appearancePane: some View {
-        Section("Theme") {
-            Picker("Appearance", selection: desktopTheme) {
-                ForEach(AppTheme.allCases) { theme in
-                    Label(theme.label, systemImage: theme.systemImage).tag(theme)
-                }
-            }
-            .pickerStyle(.inline)
-            .labelsHidden()
-        }
-        Section {
-            Text("Adaptive tints the app with colors pulled from the current album artwork — the classic Spotuify look. Light, Dark, and Follow System use a fixed appearance instead.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
 
     @ViewBuilder private var accountPane: some View {
         Section("Spotify app") {
@@ -333,6 +323,24 @@ private struct ThemeTile: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : [.isButton])
+    }
+}
+
+/// Sidebar row used in the Settings Pane list. Forces the title to
+/// `.primary` so it stays high-contrast in both light and dark modes
+/// regardless of how the host's `Label` resolves its default foreground.
+/// The icon keeps the system default so it picks up the accent tint on
+/// the selected row.
+private struct SettingsPaneRow: View {
+    let pane: SettingsView.Pane
+
+    var body: some View {
+        Label {
+            Text(pane.title)
+                .foregroundStyle(.primary)
+        } icon: {
+            Image(systemName: pane.icon)
+        }
     }
 }
 
