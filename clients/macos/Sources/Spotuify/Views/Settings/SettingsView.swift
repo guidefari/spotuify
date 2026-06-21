@@ -10,11 +10,12 @@ struct SettingsView: View {
     @State private var pane: Pane = .account
 
     enum Pane: String, CaseIterable, Identifiable {
-        case account, playback, audio, notifications, privacy, updates, daemon, about
+        case account, appearance, playback, audio, notifications, privacy, updates, daemon, about
         var id: String { rawValue }
         var title: String {
             switch self {
             case .account: "Account"
+            case .appearance: "Appearance"
             case .playback: "Playback"
             case .audio: "Audio Output"
             case .notifications: "Notifications"
@@ -27,6 +28,7 @@ struct SettingsView: View {
         var icon: String {
             switch self {
             case .account: "person.crop.circle"
+            case .appearance: "paintbrush"
             case .playback: "play.circle"
             case .audio: "hifispeaker"
             case .notifications: "bell"
@@ -48,6 +50,7 @@ struct SettingsView: View {
             Form {
                 switch pane {
                 case .account: accountPane
+                case .appearance: appearancePane
                 case .playback: playbackPane
                 case .audio: audioPane
                 case .notifications: notificationsPane
@@ -97,6 +100,10 @@ struct SettingsView: View {
         }
         Text("Create an app at the Spotify Developer Dashboard with redirect URI `http://127.0.0.1:8888/callback`. A secret is optional for PKCE.")
             .font(.caption).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder private var appearancePane: some View {
+        AppearancePaneBody()
     }
 
     @ViewBuilder private var playbackPane: some View {
@@ -222,6 +229,27 @@ struct SettingsView: View {
         case .reconnecting(let n): "Reconnecting (\(n))"
         case .ready: "Connected"
         case .failed: "Offline"
+        }
+    }
+}
+
+/// Appearance pane — single radio Picker, persisted via `@AppStorage` so
+/// every chrome surface that also reads the key updates in lockstep.
+private struct AppearancePaneBody: View {
+    @AppStorage(ThemePreference.storageKey) private var preference: ThemePreference = .system
+
+    var body: some View {
+        Section("Theme") {
+            Picker("Theme", selection: $preference) {
+                ForEach(ThemePreference.allCases) { p in
+                    Text(p.displayName).tag(p)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+            Text(preference.explanation)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
