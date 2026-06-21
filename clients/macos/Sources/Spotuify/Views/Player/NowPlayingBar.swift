@@ -53,7 +53,7 @@ struct NowPlayingBar: View {
         }
         .overlay(alignment: .top) {
             LinearGradient(
-                colors: [washAccent.opacity(tokens.accentEdge), washAccent.opacity(0.0)],
+                colors: [washAccent.opacity(tokens.accentEdge), .clear],
                 startPoint: .leading, endPoint: .trailing)
                 .frame(height: 1)
         }

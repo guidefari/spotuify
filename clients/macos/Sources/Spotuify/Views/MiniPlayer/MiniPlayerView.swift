@@ -47,7 +47,7 @@ struct MiniPlayerView: View {
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [theme.background.opacity(0.95), theme.palette.accent.opacity(0.22), .black.opacity(0.9)],
+                colors: [theme.background.opacity(OpacityTokens.level95), theme.palette.accent.opacity(OpacityTokens.level22), AlbumStageTokens.default.scrimHeavier],
                 startPoint: .top, endPoint: .bottom)
             content
                 .padding(size == .tiny ? 8 : 14)

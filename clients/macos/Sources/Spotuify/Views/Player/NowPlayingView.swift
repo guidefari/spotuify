@@ -89,11 +89,11 @@ struct NowPlayingView: View {
                 Button { minimized = false } label: {
                     Label("Show controls", systemImage: "chevron.up")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(AlbumStageTokens.default.text)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
                         .background(.ultraThinMaterial, in: Capsule())
-                        .shadow(color: .black.opacity(0.3), radius: 6, y: 2)
+                        .shadow(color: ShadowTokens.default.medium, radius: 6, y: 2)
                 }
                 .buttonStyle(.plain)
                 .help("Show the player controls")
@@ -108,7 +108,7 @@ struct NowPlayingView: View {
                         Button { minimized = true } label: {
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(AlbumStageTokens.default.text)
                                 .padding(8)
                                 .background(.ultraThinMaterial, in: Circle())
                                 .contentShape(Rectangle())
@@ -132,7 +132,7 @@ struct NowPlayingView: View {
                 ForEach(VizStyle.allCases) { vizStyleButton($0) }
             }
             .padding(5)
-            .glassEffect(.regular.tint(palette.accent.opacity(0.18)).interactive(), in: .capsule)
+            .glassEffect(.regular.tint(palette.accent.opacity(OpacityTokens.level18)).interactive(), in: .capsule)
         }
     }
 
@@ -143,9 +143,9 @@ struct NowPlayingView: View {
         } label: {
             Image(systemName: target.icon)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(active ? AnyShapeStyle(palette.background) : AnyShapeStyle(.white))
+                .foregroundStyle(active ? AnyShapeStyle(palette.background) : AnyShapeStyle(AlbumStageTokens.default.text))
                 .frame(width: 30, height: 30)
-                .background(active ? AnyShapeStyle(.white) : AnyShapeStyle(Color.clear), in: Circle())
+                .background(active ? AnyShapeStyle(AlbumStageTokens.default.text) : AnyShapeStyle(Color.clear), in: Circle())
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -170,7 +170,7 @@ struct NowPlayingView: View {
                     .animation(.easeInOut(duration: 0.5), value: item?.uri)
                 // Slight top darkening so the mode picker reads on bright covers.
                 LinearGradient(
-                    colors: [.black.opacity(0.4), .clear],
+                    colors: [AlbumStageTokens.default.scrimSoft, .clear],
                     startPoint: .top, endPoint: .center)
             }
         } else {
@@ -180,10 +180,10 @@ struct NowPlayingView: View {
                     AsyncCoverImage(url: item?.imageURL, cornerRadius: 0)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .clipped()
-                        .blur(radius: 80).opacity(0.55).saturation(1.4)
+                        .blur(radius: 80).opacity(OpacityTokens.level55).saturation(1.4)
                 }
                 // Darken so the visualizer / lyrics read clearly over the art.
-                Color.black.opacity(0.4)
+                AlbumStageTokens.default.scrimSoft
             }
         }
     }
@@ -230,9 +230,9 @@ struct NowPlayingView: View {
             LinearGradient(
                 stops: [
                     .init(color: .clear, location: 0),
-                    .init(color: palette.background.opacity(0.82), location: 0.22),
-                    .init(color: palette.background.opacity(0.96), location: 0.5),
-                    .init(color: .black.opacity(0.96), location: 1),
+                    .init(color: palette.background.opacity(OpacityTokens.level80), location: 0.22),
+                    .init(color: palette.background.opacity(OpacityTokens.level96), location: 0.5),
+                    .init(color: AlbumStageTokens.default.scrimDeep, location: 1),
                 ],
                 startPoint: .top, endPoint: .bottom)
             .allowsHitTesting(false))
@@ -250,7 +250,7 @@ struct NowPlayingView: View {
                 modeButton(.queue, help: "Up next")
             }
             .padding(5)
-            .glassEffect(.regular.tint(palette.accent.opacity(0.18)).interactive(), in: .capsule)
+            .glassEffect(.regular.tint(palette.accent.opacity(OpacityTokens.level18)).interactive(), in: .capsule)
         }
     }
 
@@ -261,9 +261,9 @@ struct NowPlayingView: View {
         } label: {
             Image(systemName: target.icon)
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(active ? AnyShapeStyle(palette.background) : AnyShapeStyle(.white))
+                .foregroundStyle(active ? AnyShapeStyle(palette.background) : AnyShapeStyle(AlbumStageTokens.default.text))
                 .frame(width: 34, height: 34)
-                .background(active ? AnyShapeStyle(.white) : AnyShapeStyle(Color.clear), in: Circle())
+                .background(active ? AnyShapeStyle(AlbumStageTokens.default.text) : AnyShapeStyle(Color.clear), in: Circle())
                 // The whole 34x34 cell is the hit target — without this an
                 // inactive button is only tappable on the glyph itself (a clear
                 // background doesn't hit-test).
@@ -281,7 +281,7 @@ struct NowPlayingView: View {
             eyebrowLabel
             Text(item?.name ?? "Nothing playing")
                 .font(.displayHero(42))
-                .foregroundStyle(.white)
+                .foregroundStyle(AlbumStageTokens.default.text)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
                 .minimumScaleFactor(0.5)
@@ -292,7 +292,7 @@ struct NowPlayingView: View {
             }
         }
         .frame(maxWidth: 560)
-        .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
+        .shadow(color: ShadowTokens.default.strong, radius: 8, y: 2)
     }
 
     /// Album eyebrow — links to the album detail when the track carries an
@@ -304,13 +304,13 @@ struct NowPlayingView: View {
     private var eyebrowLabel: some View {
         if let album = item?.albumNavItem {
             NavigationLink(value: album) {
-                NowPlayingLink(text: eyebrow, font: .displayAccent(15), color: .white.opacity(0.92))
+                NowPlayingLink(text: eyebrow, font: .displayAccent(15), color: AlbumStageTokens.default.textStrong)
             }
             .buttonStyle(.plain)
         } else {
             Text(eyebrow)
                 .font(.displayAccent(15))
-                .foregroundStyle(.white.opacity(0.92))
+                .foregroundStyle(AlbumStageTokens.default.textStrong)
                 .lineLimit(1)
         }
     }
@@ -324,10 +324,10 @@ struct NowPlayingView: View {
             HStack(spacing: 4) {
                 ForEach(Array(artists.enumerated()), id: \.element.id) { index, artist in
                     if index > 0 {
-                        Text(",").font(.title3).foregroundStyle(.white.opacity(0.8))
+                        Text(",").font(.title3).foregroundStyle(AlbumStageTokens.default.textMedium)
                     }
                     NavigationLink(value: artist) {
-                        NowPlayingLink(text: artist.name, font: .title3, color: .white.opacity(0.8))
+                        NowPlayingLink(text: artist.name, font: .title3, color: AlbumStageTokens.default.textMedium)
                     }
                     .buttonStyle(.plain)
                 }
@@ -335,7 +335,7 @@ struct NowPlayingView: View {
         } else {
             Text(item?.subtitle ?? "")
                 .font(.title3)
-                .foregroundStyle(.white.opacity(0.8))
+                .foregroundStyle(AlbumStageTokens.default.textMedium)
                 .lineLimit(1)
         }
     }
@@ -354,7 +354,7 @@ struct NowPlayingView: View {
                 Spacer()
                 Text(Theme.timeString(model.player.durationMs))
             }
-            .font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.7)).frame(maxWidth: 460)
+            .font(.caption.monospacedDigit()).foregroundStyle(AlbumStageTokens.default.textMuted).frame(maxWidth: 460)
         }
     }
 
@@ -362,24 +362,24 @@ struct NowPlayingView: View {
         GlassEffectContainer(spacing: 12) {
             HStack(spacing: 22) {
                 TransportButton(systemName: "shuffle", size: 14) { model.toggleShuffle() }
-                    .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(.white.opacity(0.6)))
+                    .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(AlbumStageTokens.default.textFaint))
                 // Forward / backward sit on the always-dark album scrim, so they
                 // need an explicit light foreground. `TransportButton`'s default
                 // is `.primary` which would resolve to black under the Light theme
                 // and disappear against the scrim.
                 TransportButton(systemName: "backward.fill", size: 18) { model.previous() }
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(AlbumStageTokens.default.textFaint)
                 TransportButton(
                     systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
                     size: 20, prominent: true) { model.togglePlayPause() }
                 TransportButton(systemName: "forward.fill", size: 18) { model.next() }
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(AlbumStageTokens.default.textFaint)
                 TransportButton(systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat", size: 14) { model.cycleRepeat() }
-                    .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(.white.opacity(0.6)) : AnyShapeStyle(.tint))
+                    .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(AlbumStageTokens.default.textFaint) : AnyShapeStyle(.tint))
             }
             .padding(.horizontal, 26)
             .padding(.vertical, 12)
-            .glassEffect(.regular.tint(palette.accent.opacity(0.22)).interactive(), in: .capsule)
+            .glassEffect(.regular.tint(palette.accent.opacity(OpacityTokens.level22)).interactive(), in: .capsule)
         }
     }
 
@@ -415,9 +415,9 @@ struct NowPlayingQueue: View {
         if current == nil && upcoming.isEmpty {
             VStack(spacing: 10) {
                 Image(systemName: "list.bullet")
-                    .font(.system(size: 34)).foregroundStyle(.white.opacity(0.5))
+                    .font(.system(size: 34)).foregroundStyle(AlbumStageTokens.default.textVeryFaint)
                 Text("Queue is empty")
-                    .font(.title3).foregroundStyle(.white.opacity(0.7))
+                    .font(.title3).foregroundStyle(AlbumStageTokens.default.textMuted)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -458,10 +458,10 @@ struct NowPlayingQueue: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.name)
                         .font(.system(size: 14, weight: isCurrent ? .semibold : .regular))
-                        .foregroundStyle(.white).lineLimit(1)
+                        .foregroundStyle(AlbumStageTokens.default.text).lineLimit(1)
                     if !item.subtitle.isEmpty {
                         Text(item.subtitle)
-                            .font(.caption).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
+                            .font(.caption).foregroundStyle(AlbumStageTokens.default.textMuted).lineLimit(1)
                     }
                 }
                 Spacer(minLength: 8)
@@ -470,13 +470,13 @@ struct NowPlayingQueue: View {
                         .font(.caption).foregroundStyle(accent)
                 } else {
                     Text(Theme.timeString(item.durationMs))
-                        .font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.5))
+                        .font(.caption.monospacedDigit()).foregroundStyle(AlbumStageTokens.default.textVeryFaint)
                 }
             }
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(isCurrent ? AnyShapeStyle(.white.opacity(0.12)) : AnyShapeStyle(.clear)))
+                    .fill(isCurrent ? AnyShapeStyle(AlbumStageTokens.default.wash) : AnyShapeStyle(.clear)))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -505,9 +505,9 @@ private struct NowPlayingLikeButton: View {
         } label: {
             Image(systemName: liked ? "heart.fill" : "heart")
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(liked ? AnyShapeStyle(accent) : AnyShapeStyle(.white.opacity(0.85)))
+                .foregroundStyle(liked ? AnyShapeStyle(accent) : AnyShapeStyle(AlbumStageTokens.default.textDim))
                 .frame(width: 38, height: 38)
-                .background(.white.opacity(0.12), in: Circle())
+                .background(AlbumStageTokens.default.wash, in: Circle())
                 .contentShape(Circle())
                 .contentTransition(.symbolEffect(.replace))
                 .symbolEffect(.bounce, value: bounce)
