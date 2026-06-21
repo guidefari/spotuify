@@ -58,7 +58,7 @@ private struct DeviceRow: View {
             }
             .padding(12)
             .background {
-                RoundedRectangle(cornerRadius: 10)
+                RoundedRectangle(cornerRadius: RadiusTokens.chrome)
                     .fill(device.isActive ? AnyShapeStyle(.tint.opacity(OpacityTokens.level12))
                           : (hovering ? AnyShapeStyle(.primary.opacity(OpacityTokens.level06)) : AnyShapeStyle(.quaternary.opacity(OpacityTokens.level40))))
             }

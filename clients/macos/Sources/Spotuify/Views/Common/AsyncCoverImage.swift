@@ -4,7 +4,12 @@ import SwiftUI
 /// graceful placeholder while loading or when missing.
 struct AsyncCoverImage: View {
     let url: String?
-    var cornerRadius: CGFloat = Theme.artCornerRadius
+    var cornerRadius: CGFloat = RadiusTokens.artwork
+    /// When true, clips to a perfect `Circle` instead of a rounded rectangle.
+    /// Use for artist avatars and any other square source that should read as
+    /// round regardless of rendered size — passing a numeric corner radius
+    /// would otherwise force you to recompute it per size.
+    var isCircle: Bool = false
 
     @State private var image: NSImage?
     @State private var loadedURL: String?
@@ -25,13 +30,22 @@ struct AsyncCoverImage: View {
                 }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .clipShape(clipShape)
         .animation(.easeInOut(duration: 0.25), value: image)
         .task(id: url) {
             guard loadedURL != url else { return }
             image = nil
             loadedURL = url
             image = await CoverArtCache.shared.image(for: url)
+        }
+    }
+
+    @ViewBuilder
+    private var clipShape: some Shape {
+        if isCircle {
+            Circle()
+        } else {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         }
     }
 }

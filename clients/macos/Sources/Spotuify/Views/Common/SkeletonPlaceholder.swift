@@ -33,12 +33,12 @@ struct SkeletonRows: View {
         VStack(spacing: 0) {
             ForEach(0..<rows, id: \.self) { index in
                 HStack(spacing: 12) {
-                    RoundedRectangle(cornerRadius: 6)
+                    RoundedRectangle(cornerRadius: RadiusTokens.thumb)
                         .frame(width: 36, height: 36)
                     VStack(alignment: .leading, spacing: 6) {
-                        RoundedRectangle(cornerRadius: 3)
+                        RoundedRectangle(cornerRadius: RadiusTokens.chip)
                             .frame(width: Self.titleWidths[index % Self.titleWidths.count], height: 10)
-                        RoundedRectangle(cornerRadius: 3)
+                        RoundedRectangle(cornerRadius: RadiusTokens.chip)
                             .frame(width: Self.subtitleWidths[index % Self.subtitleWidths.count], height: 8)
                     }
                     Spacer()
@@ -66,11 +66,11 @@ struct SkeletonTiles: View {
             ) {
                 ForEach(0..<tiles, id: \.self) { _ in
                     VStack(alignment: .leading, spacing: 8) {
-                        RoundedRectangle(cornerRadius: Theme.tileCornerRadius)
+                        RoundedRectangle(cornerRadius: RadiusTokens.tile)
                             .aspectRatio(1, contentMode: .fit)
-                        RoundedRectangle(cornerRadius: 3)
+                        RoundedRectangle(cornerRadius: RadiusTokens.chip)
                             .frame(width: 110, height: 10)
-                        RoundedRectangle(cornerRadius: 3)
+                        RoundedRectangle(cornerRadius: RadiusTokens.chip)
                             .frame(width: 70, height: 8)
                     }
                     .padding(6)

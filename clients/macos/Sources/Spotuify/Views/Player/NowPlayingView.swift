@@ -469,7 +469,7 @@ struct NowPlayingQueue: View {
             if !isCurrent { model.play(uri: item.uri) }
         } label: {
             HStack(spacing: 12) {
-                AsyncCoverImage(url: item.imageURL, cornerRadius: 5)
+                AsyncCoverImage(url: item.imageURL, cornerRadius: RadiusTokens.thumb)
                     .frame(width: 40, height: 40)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.name)
@@ -491,7 +491,7 @@ struct NowPlayingQueue: View {
             }
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: RadiusTokens.row)
                     .fill(isCurrent ? AnyShapeStyle(AlbumStageTokens.default.wash) : AnyShapeStyle(.clear)))
             .contentShape(Rectangle())
         }

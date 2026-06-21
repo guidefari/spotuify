@@ -104,7 +104,7 @@ struct CollectionRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            AsyncCoverImage(url: item.imageURL, cornerRadius: item.kind == .artist ? 100 : 6)
+            AsyncCoverImage(url: item.imageURL, isCircle: item.kind == .artist, cornerRadius: RadiusTokens.thumb)
                 .frame(width: 48, height: 48)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.name).font(.system(size: 14, weight: .medium)).lineLimit(1)
@@ -133,7 +133,7 @@ struct CollectionRow: View {
         }
         .padding(.vertical, 4).padding(.horizontal, 8)
         .background {
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: RadiusTokens.row)
                 .fill(hovering ? AnyShapeStyle(.primary.opacity(OpacityTokens.level06)) : AnyShapeStyle(.clear))
         }
         .contentShape(Rectangle())

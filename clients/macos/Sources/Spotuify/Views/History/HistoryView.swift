@@ -84,7 +84,7 @@ struct SessionRow: View {
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(.primary.opacity(OpacityTokens.level04)))
+        .background(RoundedRectangle(cornerRadius: RadiusTokens.chrome).fill(.primary.opacity(OpacityTokens.level04)))
     }
 
     static func when(_ ms: Int64) -> String {
@@ -132,7 +132,7 @@ struct StackedCover: View {
         let covers = Array(urls.prefix(3))
         ZStack {
             ForEach(Array(covers.enumerated()), id: \.offset) { index, url in
-                AsyncCoverImage(url: url, cornerRadius: 6)
+                AsyncCoverImage(url: url, cornerRadius: RadiusTokens.thumb)
                     .frame(width: size, height: size)
                     .scaleEffect(1 - CGFloat(index) * 0.08)
                     .offset(x: CGFloat(index) * 5, y: CGFloat(index) * 5)

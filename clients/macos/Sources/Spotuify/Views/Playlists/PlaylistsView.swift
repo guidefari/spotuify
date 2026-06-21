@@ -51,7 +51,7 @@ struct PlaylistDetailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 16) {
-                AsyncCoverImage(url: playlist.imageURL, cornerRadius: 10)
+                AsyncCoverImage(url: playlist.imageURL, cornerRadius: RadiusTokens.chrome)
                     .frame(width: 120, height: 120)
                     .shadow(radius: 8, y: 4)
                 VStack(alignment: .leading, spacing: 8) {
