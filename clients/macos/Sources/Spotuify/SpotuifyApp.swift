@@ -44,7 +44,12 @@ struct SpotuifyApp: App {
         .windowResizability(.contentSize)
         .defaultSize(width: 980, height: 720)
         .commands {
-            CommandGroup(after: .appSettings) {
+            // We swapped the `Settings` scene for a plain `Window` (so the
+            // titlebar matches the main app), which means the auto-injected
+            // "Settings…" menu item is gone. Re-add it at its standard slot
+            // and keep the "Check for Updates…" item right after.
+            CommandGroup(replacing: .appSettings) {
+                SettingsCommand()
                 CheckForUpdatesCommand(model: model)
             }
             CommandGroup(after: .windowArrangement) {
@@ -80,13 +85,20 @@ struct SpotuifyApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Settings {
+        // Plain `Window` (not `Settings`) so the titlebar chrome matches the
+        // player window: standard traffic lights + macOS sidebar toggle. The
+        // `Settings` scene on macOS 26 ships a Liquid Glass "go back" pill
+        // that doesn't match the main app's look. We re-add the ⌘, shortcut
+        // and "Settings…" menu item below via `appSettings` CommandGroup.
+        Window("Settings", id: "settings") {
             ThemedView(usesArtworkAccent: false) {
                 SettingsView()
             }
             .environment(model)
             .environment(theme)
         }
+        .windowResizability(.contentSize)
+        .defaultSize(width: 760, height: 540)
     }
 }
 
@@ -172,12 +184,23 @@ private struct GoCommands: View {
 /// Settings so the result (Updates pane + banner) is visible.
 private struct CheckForUpdatesCommand: View {
     let model: AppModel
-    @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
     var body: some View {
         Button("Check for Updates…") {
             model.checkUpdate(force: true)
-            openSettings()
+            openWindow(id: "settings")
         }
+    }
+}
+
+/// "Settings…" menu item with the ⌘, shortcut. Provided manually because we
+/// use a `Window` scene instead of the `Settings` scene (which would normally
+/// inject this command for free).
+private struct SettingsCommand: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Settings…") { openWindow(id: "settings") }
+            .keyboardShortcut(",", modifiers: .command)
     }
 }
 
