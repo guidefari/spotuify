@@ -42,6 +42,29 @@ enum ThemePreference: String, CaseIterable, Identifiable {
         }
     }
 
+    /// SF Symbol used in the Appearance pane tile. Picked to be
+    /// unambiguous at a glance (no overlap with the Audio Output / Playback
+    /// icons used in the Settings Pane list).
+    var icon: String {
+        switch self {
+        case .system: "circle.lefthalf.filled"
+        case .light: "sun.max.fill"
+        case .dark: "moon.fill"
+        case .adaptive: "paintpalette.fill"
+        }
+    }
+
+    /// One short line shown under the title in the tile. The longer
+    /// `explanation` is shown below the grid once an option is picked.
+    var tileBlurb: String {
+        switch self {
+        case .system: "Match your Mac"
+        case .light: "Always light"
+        case .dark: "Always dark"
+        case .adaptive: "Album colors"
+        }
+    }
+
     var explanation: String {
         switch self {
         case .system:
