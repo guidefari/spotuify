@@ -98,8 +98,8 @@ struct MiniPlayerView: View {
             }
             SeekBar(
                 progress: model.player.progressFraction,
-                knobColor: AlbumStageTokens.default.text,
-                onSeek: { model.seek(toFraction: $0) })
+                onSeek: { model.seek(toFraction: $0) },
+                knobColor: AlbumStageTokens.default.text)
             transport(size: 16)
         }
     }
