@@ -264,7 +264,23 @@ pub struct MediaItem {
     pub subtitle: String,
     pub context: String,
     pub duration_ms: u64,
+    /// Default (medium) image URL — the size Spotify ships closest to 300px.
+    /// Right for 200–300pt list / grid tiles, menu-bar covers, and
+    /// system-media art. Use `image_url_small` for thumbnails and
+    /// `image_url_large` for the now-playing hero.
     pub image_url: Option<String>,
+    /// Smallest image URL Spotify returned (≈ 64px source). Right for
+    /// 40–50pt row thumbnails (now-playing footer, queue rows, history
+    /// chips, reminder rows). Falls back to `image_url` when Spotify only
+    /// returned a single size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url_small: Option<String>,
+    /// Largest image URL Spotify returned (≈ 640px+, sometimes 1200+ for
+    /// shows / podcasts). Right for the now-playing hero (contained square
+    /// or full-bleed) where the cover is rendered at 480pt or larger.
+    /// Falls back to `image_url` when Spotify only returned a single size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url_large: Option<String>,
     pub kind: MediaKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -607,6 +623,8 @@ mod tests {
             context: String::new(),
             duration_ms: 1000,
             image_url: None,
+            image_url_small: None,
+            image_url_large: None,
             kind: MediaKind::Track,
             source: None,
             freshness: None,
@@ -625,6 +643,8 @@ mod tests {
         assert!(!obj.contains_key("resume_position_ms"));
         assert!(!obj.contains_key("fully_played"));
         assert!(!obj.contains_key("release_date"));
+        assert!(!obj.contains_key("image_url_small"));
+        assert!(!obj.contains_key("image_url_large"));
     }
 
     #[test]

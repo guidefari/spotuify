@@ -2256,6 +2256,7 @@ impl RawTrack {
     fn into_media_item(self) -> MediaItem {
         let subtitle = join_names(&self.artists);
         let artists = artist_refs(&self.artists);
+        let (image_url, image_url_small, image_url_large) = image_urls(&self.album.images);
         MediaItem {
             id: self.id,
             uri: self.uri,
@@ -2263,7 +2264,9 @@ impl RawTrack {
             subtitle,
             context: self.album.name.clone(),
             duration_ms: self.duration_ms,
-            image_url: image_url(&self.album.images),
+            image_url,
+            image_url_small,
+            image_url_large,
             kind: MediaKind::Track,
             source: Some("spotify".to_string()),
             freshness: None,
@@ -2346,6 +2349,7 @@ impl RawEpisode {
             fully_played: None,
             resume_position_ms: None,
         });
+        let (image_url, image_url_small, image_url_large) = image_urls(&self.images);
         MediaItem {
             id: self.id,
             uri: self.uri,
@@ -2353,7 +2357,9 @@ impl RawEpisode {
             subtitle: show.clone(),
             context: show,
             duration_ms: self.duration_ms,
-            image_url: image_url(&self.images),
+            image_url,
+            image_url_small,
+            image_url_large,
             kind: MediaKind::Episode,
             source: Some("spotify".to_string()),
             freshness: None,
@@ -2380,6 +2386,7 @@ struct RawShow {
 
 impl RawShow {
     fn into_media_item(self) -> MediaItem {
+        let (image_url, image_url_small, image_url_large) = image_urls(&self.images);
         MediaItem {
             id: self.id,
             uri: self.uri,
@@ -2390,7 +2397,9 @@ impl RawShow {
                 .map(|count| format!("{count} episodes"))
                 .unwrap_or_default(),
             duration_ms: 0,
-            image_url: image_url(&self.images),
+            image_url,
+            image_url_small,
+            image_url_large,
             kind: MediaKind::Show,
             source: Some("spotify".to_string()),
             freshness: None,
@@ -2427,6 +2436,7 @@ impl RawAlbum {
         let subtitle = join_names(&self.artists);
         let artists = artist_refs(&self.artists);
         let album_group = self.album_group.or(self.album_type);
+        let (image_url, image_url_small, image_url_large) = image_urls(&self.images);
         MediaItem {
             id: self.id,
             uri: self.uri,
@@ -2437,7 +2447,9 @@ impl RawAlbum {
                 .map(|n| format!("{n} tracks"))
                 .unwrap_or_default(),
             duration_ms: 0,
-            image_url: image_url(&self.images),
+            image_url,
+            image_url_small,
+            image_url_large,
             kind: MediaKind::Album,
             source: Some("spotify".to_string()),
             freshness: None,
@@ -2463,6 +2475,7 @@ struct RawArtist {
 
 impl RawArtist {
     fn into_media_item(self) -> MediaItem {
+        let (image_url, image_url_small, image_url_large) = image_urls(&self.images);
         MediaItem {
             id: self.id,
             uri: self.uri,
@@ -2473,7 +2486,9 @@ impl RawArtist {
                 .map(|followers| format_followers(followers.total))
                 .unwrap_or_default(),
             duration_ms: 0,
-            image_url: image_url(&self.images),
+            image_url,
+            image_url_small,
+            image_url_large,
             kind: MediaKind::Artist,
             source: Some("spotify".to_string()),
             freshness: None,
@@ -2518,6 +2533,7 @@ impl RawPlaylist {
     fn into_media_item(self) -> Option<MediaItem> {
         let id = self.id?;
         let tracks_total = self.tracks.as_ref().map_or(0, |tracks| tracks.total);
+        let (image_url, image_url_small, image_url_large) = image_urls(&self.images);
         Some(MediaItem {
             uri: self.uri.unwrap_or_else(|| format!("spotify:playlist:{id}")),
             id: Some(id),
@@ -2525,7 +2541,9 @@ impl RawPlaylist {
             subtitle: playlist_owner_name(self.owner),
             context: format!("{tracks_total} tracks"),
             duration_ms: 0,
-            image_url: image_url(&self.images),
+            image_url,
+            image_url_small,
+            image_url_large,
             kind: MediaKind::Playlist,
             source: Some("spotify".to_string()),
             freshness: None,
@@ -2734,12 +2752,53 @@ fn artist_refs(items: &[SimpleNamed]) -> Vec<ArtistRef> {
         .collect()
 }
 
-fn image_url(images: &[ImageRef]) -> Option<String> {
+/// Spotify ships up to three standard sizes for album / show / episode art
+/// (640/300/64), plus one-off larger sizes for some shows and podcasts. The
+/// Mac app and TUI render the same `image_url` field at very different
+/// resolutions (a 40pt thumbnail vs a 480pt now-playing hero), so we expose
+/// three purpose-tuned URLs per item and let the consumer pick the one
+/// matching its target size. The helper picks the image whose `width` is
+/// closest to the requested target; if Spotify only returned a single size
+/// (e.g. only 640) it falls back to that one.
+fn image_url_for_size(images: &[ImageRef], target: u32) -> Option<String> {
     images
         .iter()
         .filter(|image| image.url.is_some())
-        .min_by_key(|image| image.width.unwrap_or(u32::MAX).abs_diff(300))
+        .min_by_key(|image| image.width.unwrap_or(target).abs_diff(target))
         .and_then(|image| image.url.clone())
+}
+
+/// Default image URL — the size Spotify ships closest to 300, which is the
+/// right source for medium surfaces (200–300pt list tiles, menu-bar headers,
+/// system-media covers). Thumbnails and the now-playing hero use the
+/// dedicated small / large variants below.
+fn image_url(images: &[ImageRef]) -> Option<String> {
+    image_url_for_size(images, 300)
+}
+
+/// Smallest sensible URL — closest to 64, which is the right source for
+/// 40–50pt row thumbnails, history chip stacks, and reminder rows.
+fn image_url_small(images: &[ImageRef]) -> Option<String> {
+    image_url_for_size(images, 64)
+}
+
+/// Largest URL Spotify returned — closest to (and at least) 640, the right
+/// source for the now-playing hero / full-window backgrounds.
+fn image_url_large(images: &[ImageRef]) -> Option<String> {
+    image_url_for_size(images, 1024)
+}
+
+/// Returns the (default, small, large) URL triple for a single image
+/// payload. Each variant falls back to whichever single size Spotify
+/// actually returned, so a one-size response lands the same URL in all
+/// three slots and the consumer can pick whichever is closest to its
+/// target without a `None` check.
+fn image_urls(images: &[ImageRef]) -> (Option<String>, Option<String>, Option<String>) {
+    (
+        image_url(images),
+        image_url_small(images),
+        image_url_large(images),
+    )
 }
 
 fn fake_playback() -> Playback {
@@ -2941,9 +3000,11 @@ fn selection_like_uri_check(uri: &str) -> AnyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_followers, group_items_by_position, library_endpoint_for_uri,
+        format_followers, group_items_by_position, image_url, image_url_for_size,
+        image_url_large, image_url_small, library_endpoint_for_uri,
         normalize_spotify_response, parse_rfc3339_ms, playlist_remove_items_body,
-        playlist_reorder_body, search_path, Config, MediaKind, RawEpisode, SpotifyClient,
+        playlist_reorder_body, search_path, Config, ImageRef, MediaKind, RawEpisode,
+        SpotifyClient,
     };
 
     #[test]
@@ -3055,6 +3116,119 @@ mod tests {
         assert_eq!(
             search_path("luther vandross", &[MediaKind::Track], 10, 0),
             "/search?q=luther+vandross&type=track&limit=10&offset=0"
+        );
+    }
+
+    #[test]
+    fn image_url_picks_size_closest_to_300() {
+        // Standard 640/300/64 set Spotify returns for album + show art.
+        // The default URL should land on 300 for medium surfaces; if 300
+        // isn't present, the nearest neighbour wins regardless of
+        // overshoot/undershoot.
+        let images = vec![
+            ImageRef { url: Some("https://i.scdn.co/image/small".into()), width: Some(64) },
+            ImageRef { url: Some("https://i.scdn.co/image/large".into()), width: Some(640) },
+            ImageRef { url: Some("https://i.scdn.co/image/medium".into()), width: Some(300) },
+        ];
+        assert_eq!(
+            image_url(&images).as_deref(),
+            Some("https://i.scdn.co/image/medium")
+        );
+
+        // No exact 300 — 298 is closer than 320, so it wins.
+        let offset = vec![
+            ImageRef { url: Some("https://i.scdn.co/image/small".into()), width: Some(64) },
+            ImageRef { url: Some("https://i.scdn.co/image/320".into()), width: Some(320) },
+            ImageRef { url: Some("https://i.scdn.co/image/298".into()), width: Some(298) },
+        ];
+        assert_eq!(
+            image_url(&offset).as_deref(),
+            Some("https://i.scdn.co/image/298")
+        );
+    }
+
+    #[test]
+    fn image_url_small_picks_closest_to_64_for_thumbnails() {
+        let images = vec![
+            ImageRef { url: Some("https://i.scdn.co/image/small".into()), width: Some(64) },
+            ImageRef { url: Some("https://i.scdn.co/image/large".into()), width: Some(640) },
+            ImageRef { url: Some("https://i.scdn.co/image/medium".into()), width: Some(300) },
+        ];
+        assert_eq!(
+            image_url_small(&images).as_deref(),
+            Some("https://i.scdn.co/image/small")
+        );
+    }
+
+    #[test]
+    fn image_url_large_picks_largest_for_hero_surfaces() {
+        // Standard sizes — 640 wins for the 1024 target.
+        let images = vec![
+            ImageRef { url: Some("https://i.scdn.co/image/small".into()), width: Some(64) },
+            ImageRef { url: Some("https://i.scdn.co/image/large".into()), width: Some(640) },
+            ImageRef { url: Some("https://i.scdn.co/image/medium".into()), width: Some(300) },
+        ];
+        assert_eq!(
+            image_url_large(&images).as_deref(),
+            Some("https://i.scdn.co/image/large")
+        );
+
+        // Some shows ship a 1200+ variant; that wins over 640.
+        let oversized = vec![
+            ImageRef { url: Some("https://i.scdn.co/image/640".into()), width: Some(640) },
+            ImageRef { url: Some("https://i.scdn.co/image/1200".into()), width: Some(1200) },
+        ];
+        assert_eq!(
+            image_url_large(&oversized).as_deref(),
+            Some("https://i.scdn.co/image/1200")
+        );
+    }
+
+    #[test]
+    fn image_url_falls_back_to_only_size_when_spotify_returns_one() {
+        // Some endpoints (e.g. artist discography for less-popular acts)
+        // ship only a single 640 image. All three purpose pickers should
+        // hand back that same URL — there is no better option.
+        let images = vec![ImageRef {
+            url: Some("https://i.scdn.co/image/only".into()),
+            width: Some(640),
+        }];
+        assert_eq!(
+            image_url(&images).as_deref(),
+            Some("https://i.scdn.co/image/only")
+        );
+        assert_eq!(
+            image_url_small(&images).as_deref(),
+            Some("https://i.scdn.co/image/only")
+        );
+        assert_eq!(
+            image_url_large(&images).as_deref(),
+            Some("https://i.scdn.co/image/only")
+        );
+    }
+
+    #[test]
+    fn image_url_returns_none_when_every_entry_lacks_a_url() {
+        let images = vec![
+            ImageRef { url: None, width: Some(640) },
+            ImageRef { url: None, width: Some(300) },
+        ];
+        assert_eq!(image_url(&images), None);
+        assert_eq!(image_url_small(&images), None);
+        assert_eq!(image_url_large(&images), None);
+    }
+
+    #[test]
+    fn image_url_for_size_skips_size_unknown_entries() {
+        // Spotify sometimes returns an image object with no `width` (newer
+        // variants); prefer the explicitly-sized one we can plan around.
+        let images = vec![
+            ImageRef { url: Some("https://i.scdn.co/image/unknown".into()), width: None },
+            ImageRef { url: Some("https://i.scdn.co/image/640".into()), width: Some(640) },
+        ];
+        assert_eq!(
+            image_url_for_size(&images, 300).as_deref(),
+            Some("https://i.scdn.co/image/640")
         );
     }
 

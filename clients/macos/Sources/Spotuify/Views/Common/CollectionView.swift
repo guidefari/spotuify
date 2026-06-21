@@ -104,7 +104,7 @@ struct CollectionRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            AsyncCoverImage(url: item.imageURL, cornerRadius: RadiusTokens.thumb, isCircle: item.kind == .artist)
+            AsyncCoverImage(url: item.imageURL(for: .small), cornerRadius: RadiusTokens.thumb, isCircle: item.kind == .artist)
                 .frame(width: 48, height: 48)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.name).font(.system(size: 14, weight: .medium)).lineLimit(1)

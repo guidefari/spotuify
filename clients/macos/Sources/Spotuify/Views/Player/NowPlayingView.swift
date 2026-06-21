@@ -90,9 +90,11 @@ struct NowPlayingView: View {
     /// Contained-square hero for the artwork mode. Matches the 480pt width
     /// the queue / lyrics / visualizer feature column uses, so the player
     /// stage reads as a single proportional layout regardless of mode.
-    /// The shadow sells the depth that the full-bleed backdrop used to.
+    /// Uses the largest source Spotify returned (≈ 640px+) so a 480pt
+    /// render downsamples cleanly instead of upscaling from 300. The
+    /// shadow sells the depth that the full-bleed backdrop used to.
     private var artworkTile: some View {
-        AsyncCoverImage(url: item?.imageURL, cornerRadius: RadiusTokens.artwork)
+        AsyncCoverImage(url: item?.imageURL(for: .large), cornerRadius: RadiusTokens.artwork)
             .aspectRatio(1, contentMode: .fit)
             .frame(maxWidth: 480, maxHeight: 480)
             .shadow(color: ShadowTokens.default.heavy, radius: 28, x: 0, y: 12)
@@ -190,7 +192,7 @@ struct NowPlayingView: View {
         } else if minimized {
             ZStack {
                 palette.background
-                AsyncCoverImage(url: item?.imageURL, cornerRadius: 0)
+                AsyncCoverImage(url: item?.imageURL(for: .large), cornerRadius: 0)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
                     .id(item?.uri)
@@ -204,7 +206,7 @@ struct NowPlayingView: View {
             ZStack {
                 palette.background
                 if !reduceTransparency {
-                    AsyncCoverImage(url: item?.imageURL, cornerRadius: 0)
+                    AsyncCoverImage(url: item?.imageURL(for: .large), cornerRadius: 0)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .clipped()
                         .blur(radius: 80).opacity(OpacityTokens.level55).saturation(1.4)
@@ -496,7 +498,7 @@ struct NowPlayingQueue: View {
             if !isCurrent { model.play(uri: item.uri) }
         } label: {
             HStack(spacing: 12) {
-                AsyncCoverImage(url: item.imageURL, cornerRadius: RadiusTokens.thumb)
+                AsyncCoverImage(url: item.imageURL(for: .small), cornerRadius: RadiusTokens.thumb)
                     .frame(width: 40, height: 40)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.name)

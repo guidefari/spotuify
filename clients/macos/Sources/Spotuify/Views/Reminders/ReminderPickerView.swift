@@ -63,7 +63,7 @@ struct ReminderPickerView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            AsyncCoverImage(url: item.imageURL, cornerRadius: RadiusTokens.thumb)
+            AsyncCoverImage(url: item.imageURL(for: .small), cornerRadius: RadiusTokens.thumb)
                 .frame(width: 48, height: 48)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Remind me about").font(.caption).foregroundStyle(.secondary)
