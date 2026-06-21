@@ -8,11 +8,6 @@ import SpotuifyKit
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var pane: Pane = .account
-    /// Locked to `.all` so the macOS system default doesn't render a sidebar
-    /// toggle in the window toolbar (its placement looked out of place against
-    /// the otherwise empty titlebar). The Settings window has no use for a
-    /// collapsible sidebar.
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     enum Pane: String, CaseIterable, Identifiable {
         case account, appearance, playback, audio, notifications, privacy, updates, daemon, about
@@ -46,7 +41,7 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        NavigationSplitView {
             List(Pane.allCases, selection: $pane) { p in
                 SettingsPaneRow(pane: p).tag(p)
             }
