@@ -10,15 +10,16 @@ final class Navigator {
 
     /// Numeric-key order for ⌘1…⌘9, ⌘0 (mirrors the TUI's 1–9/0 + sidebar).
     static let numbered: [Destination] = [
-        .nowPlaying, .queue, .search, .likedSongs, .albums,
+        .nowPlaying, .search, .likedSongs, .albums,
         .artists, .podcasts, .playlists, .history, .devices,
     ]
 }
 
-/// Sidebar destinations.
+/// Sidebar destinations. The queue is no longer a top-level destination;
+/// it lives behind the Now Playing mode switch (and as a global side panel
+/// from the footer) so the sidebar stays focused on library + nav.
 enum Destination: String, CaseIterable, Identifiable {
     case nowPlaying
-    case queue
     case search
     case likedSongs
     case albums
@@ -40,7 +41,6 @@ enum Destination: String, CaseIterable, Identifiable {
         case .artists: "Artists"
         case .podcasts: "Podcasts"
         case .playlists: "Playlists"
-        case .queue: "Queue"
         case .history: "History"
         case .notifications: "Notifications"
         case .devices: "Devices"
@@ -56,7 +56,6 @@ enum Destination: String, CaseIterable, Identifiable {
         case .artists: "music.mic"
         case .podcasts: "mic.fill"
         case .playlists: "music.note.list"
-        case .queue: "list.bullet"
         case .history: "clock.arrow.circlepath"
         case .notifications: "bell.fill"
         case .devices: "hifispeaker.2.fill"
