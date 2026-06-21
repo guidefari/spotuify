@@ -161,7 +161,7 @@ struct ArtworkTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            AsyncCoverImage(url: item.imageURL, isCircle: isCircle, cornerRadius: RadiusTokens.tile)
+            AsyncCoverImage(url: item.imageURL, cornerRadius: RadiusTokens.tile, isCircle: isCircle)
                 .aspectRatio(1, contentMode: .fit)
                 .shadow(color: hovering ? ShadowTokens.default.heavy : ShadowTokens.default.soft,
                         radius: hovering ? 18 : 8, y: hovering ? 10 : 4)

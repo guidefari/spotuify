@@ -37,7 +37,7 @@ struct MediaRow: View {
     var body: some View {
         HStack(spacing: TrackColumnLayout.spacing) {
             if showsArtwork {
-                AsyncCoverImage(url: item.imageURL ?? fallbackImageURL, isCircle: item.kind == .artist, cornerRadius: RadiusTokens.thumb)
+                AsyncCoverImage(url: item.imageURL ?? fallbackImageURL, cornerRadius: RadiusTokens.thumb, isCircle: item.kind == .artist)
                     .frame(width: Theme.TrackColumn.artwork, height: Theme.TrackColumn.artwork)
             }
             VStack(alignment: .leading, spacing: 2) {
