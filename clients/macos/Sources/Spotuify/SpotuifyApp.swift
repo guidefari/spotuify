@@ -89,6 +89,7 @@ struct SpotuifyApp: App {
                 SettingsView()
             }
             .environment(model)
+            .environment(theme)
         }
     }
 }
