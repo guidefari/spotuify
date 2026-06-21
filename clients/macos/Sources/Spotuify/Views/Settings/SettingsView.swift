@@ -127,6 +127,10 @@ struct SettingsView: View {
             .font(.caption).foregroundStyle(.secondary)
     }
 
+    @ViewBuilder private var appearancePane: some View {
+        AppearancePaneBody()
+    }
+
     @ViewBuilder private var playbackPane: some View {
         Section("Player") {
             TextField("Backend", text: text("player.backend"))
@@ -250,6 +254,27 @@ struct SettingsView: View {
         case .reconnecting(let n): "Reconnecting (\(n))"
         case .ready: "Connected"
         case .failed: "Offline"
+        }
+    }
+}
+
+/// Appearance pane — single radio Picker, persisted via `@AppStorage` so
+/// every chrome surface that also reads the key updates in lockstep.
+private struct AppearancePaneBody: View {
+    @AppStorage(ThemePreference.storageKey) private var preference: ThemePreference = .system
+
+    var body: some View {
+        Section("Theme") {
+            Picker("Theme", selection: $preference) {
+                ForEach(ThemePreference.allCases) { p in
+                    Text(p.displayName).tag(p)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+            Text(preference.explanation)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
