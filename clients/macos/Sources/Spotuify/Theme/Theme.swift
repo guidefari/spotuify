@@ -76,12 +76,15 @@ extension View {
 
 /// A transport icon button with a consistent hit area and hover feel.
 struct TransportButton: View {
+    @Environment(ArtworkTheme.self) private var theme
     let systemName: String
     var size: CGFloat = 16
     var prominent: Bool = false
     let action: () -> Void
 
     @State private var hovering = false
+
+    private var palette: ArtworkPalette { theme.palette }
 
     var body: some View {
         Button(action: action) {
@@ -90,12 +93,18 @@ struct TransportButton: View {
                 .frame(width: prominent ? 44 : 32, height: prominent ? 44 : 32)
                 .background {
                     if prominent {
-                        Circle().fill(.tint)
+                        // Prominent play button: brand tint on a dark palette,
+                        // dark surface on a light palette. The dark surface
+                        // keeps the button readable when the wash is a pastel
+                        // cover accent (otherwise the green fill blends in).
+                        Circle().fill(palette.isLight ? AnyShapeStyle(palette.background) : AnyShapeStyle(.tint))
                     } else {
                         Circle().fill(hovering ? AnyShapeStyle(.primary.opacity(OpacityTokens.level08)) : AnyShapeStyle(.clear))
                     }
                 }
-                .foregroundStyle(prominent ? AnyShapeStyle(AlbumStageTokens.default.text) : AnyShapeStyle(.primary))
+                .foregroundStyle(prominent
+                                 ? AnyShapeStyle(palette.isLight ? Color.white : AlbumStageTokens.default.text)
+                                 : AnyShapeStyle(palette.primary))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
