@@ -64,14 +64,20 @@ struct NowPlayingView: View {
         .animation(.easeInOut(duration: 0.3), value: minimized)
     }
 
-    /// Flexible middle between the top controls and the bottom transport. Artwork
-    /// shows the cover (the background) through empty space; visualizer/lyrics
-    /// render their feature here, width-capped so a wider window never changes
-    /// their vertical size.
+    /// Flexible middle between the top controls and the bottom transport.
+    /// Artwork shows the cover as a contained square (capped to the same
+    /// 480pt column the queue / lyrics feature uses, so it scales down with
+    /// the window but never bleeds into the controls). Visualizer/lyrics
+    /// render their feature here, width-capped so a wider window never
+    /// changes their vertical size. Minimised keeps the full-bleed cover
+    /// (the whole point of minimising is to see the art without chrome).
     @ViewBuilder
     private var middle: some View {
-        if minimized || mode == .artwork {
+        if minimized {
             Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if mode == .artwork {
+            artworkTile
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             featureContent
                 .frame(maxWidth: 600)
@@ -79,6 +85,19 @@ struct NowPlayingView: View {
                 .padding(.horizontal, 32)
                 .padding(.vertical, 12)
         }
+    }
+
+    /// Contained-square hero for the artwork mode. Matches the 480pt width
+    /// the queue / lyrics / visualizer feature column uses, so the player
+    /// stage reads as a single proportional layout regardless of mode.
+    /// The shadow sells the depth that the full-bleed backdrop used to.
+    private var artworkTile: some View {
+        AsyncCoverImage(url: item?.imageURL, cornerRadius: RadiusTokens.artwork)
+            .aspectRatio(1, contentMode: .fit)
+            .frame(maxWidth: 480, maxHeight: 480)
+            .shadow(color: ShadowTokens.default.heavy, radius: 28, x: 0, y: 12)
+            .id(item?.uri)
+            .animation(.easeInOut(duration: 0.5), value: item?.uri)
     }
 
     /// Top bar: the mode switch (centered) + minimise toggle, or the labelled
@@ -157,14 +176,18 @@ struct NowPlayingView: View {
 
     // MARK: Layers
 
-    /// Full-bleed art: the sharp cover fills the whole stage in artwork mode; a
-    /// blurred ambient wash backs the visualizer/lyrics stages so they still sit
-    /// on the album's colour.
+    /// Stage backdrop. In artwork mode the cover is rendered as a contained
+    /// square in the middle (see `artworkTile`); the background is just the
+    /// album-derived flood so the hero tile reads against it. The blurred
+    /// ambient wash + scrim is kept for visualizer / lyrics so those modes
+    /// still feel rooted in the album's colour. Minimised reverts to the
+    /// full-bleed cover backdrop — the whole point of minimising is to
+    /// enjoy the art without chrome.
     @ViewBuilder
     private var backgroundLayer: some View {
-        // Minimised always shows the sharp cover (the whole point is to see the
-        // art) regardless of the active mode.
-        if mode == .artwork || minimized {
+        if mode == .artwork && !minimized {
+            palette.background
+        } else if minimized {
             ZStack {
                 palette.background
                 AsyncCoverImage(url: item?.imageURL, cornerRadius: 0)
