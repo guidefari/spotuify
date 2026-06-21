@@ -23,9 +23,14 @@ struct ArtworkPalette: Equatable, Sendable {
         background: Color(white: 0.13),
         primary: .white,
         secondary: Color(white: 0.72),
-        accent: .accentColor,
+        accent: Color("AccentColor"),
         isLight: false)
 }
+
+/// Brand accent (`#A6E3A1`). Mirrors the `AccentColor` asset-catalog entry
+/// in both light and dark appearance. The cover extraction falls back to it
+/// when the artwork doesn't carry a vivid hue of its own.
+private let brandAccent = NSColor(srgbRed: 0.651, green: 0.890, blue: 0.631, alpha: 1)
 
 extension ArtworkPalette {
     static func extract(from image: NSImage) -> ArtworkPalette? {
@@ -40,8 +45,17 @@ extension ArtworkPalette {
         // brightness), ignoring near-grays and the dark/bright extremes. For a
         // monochrome cover, fall back to a clean neutral rather than fake a hue.
         let colorful = swatches.filter { $0.saturation > 0.25 && $0.brightness > 0.2 }
-        let accentNS = (colorful.max { $0.colorfulScore < $1.colorfulScore })?.vivid()
+        let topSwatch = colorful.max { $0.colorfulScore < $1.colorfulScore }
+        let vividAccent = topSwatch?.vivid()
             ?? (isLight ? NSColor(white: 0.15, alpha: 1) : NSColor(white: 0.92, alpha: 1))
+
+        // Only override the brand accent when the cover actually carries a
+        // vivid hue. Muted covers (brown rock, sepia, grey) would otherwise
+        // promote a random desaturated swatch into the chrome tint, which
+        // reads as off-brand blue/teal next to the warm album flood.
+        let baseAccent: NSColor = (topSwatch?.saturation ?? 0) > 0.5
+            ? vividAccent
+            : brandAccent
 
         let primary: Color = isLight ? Color(white: 0.08) : .white
         let secondary: Color = isLight ? Color(white: 0.30) : Color(white: 0.78)
@@ -50,7 +64,7 @@ extension ArtworkPalette {
             background: Color(nsColor: background),
             primary: primary,
             secondary: secondary,
-            accent: Color(nsColor: accentNS.contrasting(against: background)),
+            accent: Color(nsColor: baseAccent.contrasting(against: background)),
             isLight: isLight)
     }
 }
