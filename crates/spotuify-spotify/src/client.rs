@@ -2734,11 +2734,19 @@ fn artist_refs(items: &[SimpleNamed]) -> Vec<ArtistRef> {
         .collect()
 }
 
+/// Pick the highest-resolution URL Spotify returned for an item.
+///
+/// Spotify ships up to three standard sizes (640/300/64) for album and show
+/// art, plus one-off larger sizes for some shows and podcasts. We pick the
+/// largest one available so the Mac now-playing stage and other large
+/// surfaces can scale to a 1080p-plus window without upscaling artefacts.
+/// Callers that need a smaller variant (e.g. a 64×64 chip) downscale in
+/// their own image pipeline.
 fn image_url(images: &[ImageRef]) -> Option<String> {
     images
         .iter()
         .filter(|image| image.url.is_some())
-        .min_by_key(|image| image.width.unwrap_or(u32::MAX).abs_diff(300))
+        .max_by_key(|image| image.width.unwrap_or(0))
         .and_then(|image| image.url.clone())
 }
 
@@ -2941,9 +2949,10 @@ fn selection_like_uri_check(uri: &str) -> AnyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_followers, group_items_by_position, library_endpoint_for_uri,
+        format_followers, group_items_by_position, image_url, library_endpoint_for_uri,
         normalize_spotify_response, parse_rfc3339_ms, playlist_remove_items_body,
-        playlist_reorder_body, search_path, Config, MediaKind, RawEpisode, SpotifyClient,
+        playlist_reorder_body, search_path, Config, ImageRef, MediaKind, RawEpisode,
+        SpotifyClient,
     };
 
     #[test]
@@ -3056,6 +3065,43 @@ mod tests {
             search_path("luther vandross", &[MediaKind::Track], 10, 0),
             "/search?q=luther+vandross&type=track&limit=10&offset=0"
         );
+    }
+
+    #[test]
+    fn image_url_picks_largest_among_spotify_standard_sizes() {
+        // Standard 640/300/64 set Spotify returns for album + show art.
+        let images = vec![
+            ImageRef { url: Some("https://i.scdn.co/image/small".into()), width: Some(64) },
+            ImageRef { url: Some("https://i.scdn.co/image/large".into()), width: Some(640) },
+            ImageRef { url: Some("https://i.scdn.co/image/medium".into()), width: Some(300) },
+        ];
+        assert_eq!(
+            image_url(&images).as_deref(),
+            Some("https://i.scdn.co/image/large")
+        );
+    }
+
+    #[test]
+    fn image_url_skips_size_unknown_entries_when_a_known_size_exists() {
+        // Spotify sometimes returns an image object with no `width` (newer
+        // variants); prefer the explicitly-sized one we can plan around.
+        let images = vec![
+            ImageRef { url: Some("https://i.scdn.co/image/unknown".into()), width: None },
+            ImageRef { url: Some("https://i.scdn.co/image/640".into()), width: Some(640) },
+        ];
+        assert_eq!(
+            image_url(&images).as_deref(),
+            Some("https://i.scdn.co/image/640")
+        );
+    }
+
+    #[test]
+    fn image_url_returns_none_when_every_entry_lacks_a_url() {
+        let images = vec![
+            ImageRef { url: None, width: Some(640) },
+            ImageRef { url: None, width: Some(300) },
+        ];
+        assert_eq!(image_url(&images), None);
     }
 
     #[test]
