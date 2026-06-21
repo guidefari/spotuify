@@ -2,9 +2,10 @@
 import AppKit
 import CoreGraphics
 
-// Renders the Spotuify app icon: a violet squircle with a white "equalizer"
-// motif (matching the in-app spectrum visualizer). Writes pixel-accurate PNGs
-// and the AppIcon.appiconset Contents.json. Run:
+// Renders the Spotuify app icon: a pastel-green squircle (`#A6E3A1` → `#7BC97F`)
+// with two beamed eighth notes (♫) — the universal music symbol — punched in
+// white. Writes pixel-accurate PNGs and the AppIcon.appiconset Contents.json.
+// Run:
 //   swift scripts/make_icon.swift Sources/Spotuify/Assets.xcassets/AppIcon.appiconset
 
 let outDir = CommandLine.arguments.count > 1
@@ -34,11 +35,12 @@ func render(_ px: Int) -> Data {
     ctx.addPath(body)
     ctx.clip()
     let space = CGColorSpaceCreateDeviceRGB()
+    // Pastel green gradient: #A6E3A1 (top-left) → #7BC97F (bottom-right)
     let gradient = CGGradient(
         colorsSpace: space,
         colors: [
-            CGColor(red: 0.58, green: 0.39, blue: 0.98, alpha: 1),
-            CGColor(red: 0.36, green: 0.19, blue: 0.69, alpha: 1),
+            CGColor(red: 0.651, green: 0.890, blue: 0.631, alpha: 1),
+            CGColor(red: 0.482, green: 0.788, blue: 0.498, alpha: 1),
         ] as CFArray,
         locations: [0, 1])!
     ctx.drawLinearGradient(
@@ -48,21 +50,40 @@ func render(_ px: Int) -> Data {
         options: [])
     ctx.restoreGState()
 
-    // Equalizer bars
-    let barCount = 4
-    let heights: [CGFloat] = [0.36, 0.66, 0.48, 0.78]
-    let area = rect.insetBy(dx: rect.width * 0.27, dy: rect.height * 0.20)
-    let gap = area.width * 0.12
-    let barWidth = (area.width - gap * CGFloat(barCount - 1)) / CGFloat(barCount)
+    // Beamed eighth notes (♫) — two tilted heads, two stems, one beam.
+    let headRx = s * 0.105
+    let headRy = s * 0.078
+    let note1Cx = s * 0.33
+    let note2Cx = s * 0.57
+    let noteCy = s * 0.66
+    let stemW = s * 0.024
+    let beamTopY = s * 0.24
+    let beamBotY = s * 0.31
+
     ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 0.96))
-    for index in 0..<barCount {
-        let height = area.height * heights[index]
-        let x = area.minX + CGFloat(index) * (barWidth + gap)
-        let barRect = CGRect(x: x, y: area.minY, width: barWidth, height: height)
-        let corner = barWidth * 0.45
-        ctx.addPath(CGPath(roundedRect: barRect, cornerWidth: corner, cornerHeight: corner, transform: nil))
-        ctx.fillPath()
+
+    // Note heads (tilted ellipses, like a real music note)
+    for cx in [note1Cx, note2Cx] {
+        ctx.saveGState()
+        ctx.translateBy(x: cx, y: noteCy)
+        ctx.rotate(by: -0.32)
+        ctx.fillEllipse(in: CGRect(x: -headRx, y: -headRy, width: headRx * 2, height: headRy * 2))
+        ctx.restoreGState()
     }
+
+    // Stems connect each head's top-right to the beam's bottom.
+    let stemBotY = noteCy - headRy * 0.25
+    let stemX1 = note1Cx + headRx * 0.72
+    let stemX2 = note2Cx + headRx * 0.72
+    ctx.fill(CGRect(x: stemX1 - stemW / 2, y: beamBotY, width: stemW, height: stemBotY - beamBotY))
+    ctx.fill(CGRect(x: stemX2 - stemW / 2, y: beamBotY, width: stemW, height: stemBotY - beamBotY))
+
+    // Beam (thick line connecting the two stem tops)
+    let beamLeft = stemX1
+    let beamRight = stemX2 + stemW / 2
+    let beam = CGRect(x: beamLeft, y: beamTopY, width: beamRight - beamLeft, height: beamBotY - beamTopY)
+    ctx.addPath(CGPath(roundedRect: beam, cornerWidth: (beamBotY - beamTopY) * 0.35, cornerHeight: (beamBotY - beamTopY) * 0.35, transform: nil))
+    ctx.fillPath()
 
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!
