@@ -363,11 +363,17 @@ struct NowPlayingView: View {
             HStack(spacing: 22) {
                 TransportButton(systemName: "shuffle", size: 14) { model.toggleShuffle() }
                     .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(.white.opacity(0.6)))
+                // Forward / backward sit on the always-dark album scrim, so they
+                // need an explicit light foreground. `TransportButton`'s default
+                // is `.primary` which would resolve to black under the Light theme
+                // and disappear against the scrim.
                 TransportButton(systemName: "backward.fill", size: 18) { model.previous() }
+                    .foregroundStyle(.white.opacity(0.6))
                 TransportButton(
                     systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
                     size: 20, prominent: true) { model.togglePlayPause() }
                 TransportButton(systemName: "forward.fill", size: 18) { model.next() }
+                    .foregroundStyle(.white.opacity(0.6))
                 TransportButton(systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat", size: 14) { model.cycleRepeat() }
                     .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(.white.opacity(0.6)) : AnyShapeStyle(.tint))
             }
