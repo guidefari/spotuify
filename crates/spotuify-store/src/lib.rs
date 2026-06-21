@@ -2326,6 +2326,12 @@ fn row_to_media_item(row: sqlx::sqlite::SqliteRow) -> Result<MediaItem> {
         context: row.get("context"),
         duration_ms: row.get::<i64, _>("duration_ms").max(0) as u64,
         image_url: row.get("image_url"),
+        // Phase v2 — sized image URLs for thumbnail / now-playing hero
+        // consumers. The store only persists the medium default, so
+        // the variants stay `None` and consumers fall back to `image_url`
+        // until the next live refresh repopulates them.
+        image_url_small: None,
+        image_url_large: None,
         kind: row.get::<String, _>("kind").parse::<MediaKind>()?,
         source: Some(row.get("source")),
         freshness: Some("cached".to_string()),
