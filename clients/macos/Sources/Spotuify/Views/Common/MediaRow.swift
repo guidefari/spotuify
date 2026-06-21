@@ -105,7 +105,7 @@ struct MediaRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             RoundedRectangle(cornerRadius: 8)
-                .fill(hovering ? AnyShapeStyle(.primary.opacity(0.06)) : AnyShapeStyle(.clear))
+                .fill(hovering ? AnyShapeStyle(.primary.opacity(OpacityTokens.level06)) : AnyShapeStyle(.clear))
         }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { model.play(uri: item.uri) }

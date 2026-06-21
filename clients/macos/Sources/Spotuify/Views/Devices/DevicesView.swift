@@ -59,8 +59,8 @@ private struct DeviceRow: View {
             .padding(12)
             .background {
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(device.isActive ? AnyShapeStyle(.tint.opacity(0.12))
-                          : (hovering ? AnyShapeStyle(.primary.opacity(0.06)) : AnyShapeStyle(.quaternary.opacity(0.4))))
+                    .fill(device.isActive ? AnyShapeStyle(.tint.opacity(OpacityTokens.level12))
+                          : (hovering ? AnyShapeStyle(.primary.opacity(OpacityTokens.level06)) : AnyShapeStyle(.quaternary.opacity(OpacityTokens.level40))))
             }
         }
         .buttonStyle(.plain)

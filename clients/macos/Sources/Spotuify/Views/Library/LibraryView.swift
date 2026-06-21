@@ -105,7 +105,7 @@ struct CollectionHeader: View {
                 .font(.system(size: 30))
                 .foregroundStyle(.tint)
                 .frame(width: 56, height: 56)
-                .background(.tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 10))
+                .background(.tint.opacity(OpacityTokens.level15), in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 8) {
                 Text(title)
                     .font(.displayTitle(26))
@@ -163,7 +163,7 @@ struct ArtworkTile: View {
         VStack(alignment: .leading, spacing: 8) {
             AsyncCoverImage(url: item.imageURL, cornerRadius: isCircle ? 200 : Theme.tileCornerRadius)
                 .aspectRatio(1, contentMode: .fit)
-                .shadow(color: .black.opacity(hovering ? 0.4 : 0.22),
+                .shadow(color: hovering ? ShadowTokens.default.heavy : ShadowTokens.default.soft,
                         radius: hovering ? 18 : 8, y: hovering ? 10 : 4)
                 .scaleEffect(hovering ? 1.03 : 1)
             Text(item.name)

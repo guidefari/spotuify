@@ -134,7 +134,7 @@ struct CollectionRow: View {
         .padding(.vertical, 4).padding(.horizontal, 8)
         .background {
             RoundedRectangle(cornerRadius: 8)
-                .fill(hovering ? AnyShapeStyle(.primary.opacity(0.06)) : AnyShapeStyle(.clear))
+                .fill(hovering ? AnyShapeStyle(.primary.opacity(OpacityTokens.level06)) : AnyShapeStyle(.clear))
         }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }

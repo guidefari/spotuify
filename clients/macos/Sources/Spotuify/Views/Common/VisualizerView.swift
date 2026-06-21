@@ -59,13 +59,13 @@ private struct BarsViz: View {
                     Capsule()
                         .fill(
                             LinearGradient(
-                                colors: [tint, tint.opacity(0.45)],
+                                colors: [tint, tint.opacity(OpacityTokens.level45)],
                                 startPoint: .top, endPoint: .bottom)
                         )
                         .overlay(alignment: .top) {
                             // Glassy sheen on the cap.
                             Capsule()
-                                .fill(.white.opacity(0.35))
+                                .fill(.white.opacity(OpacityTokens.level35))
                                 .frame(height: barWidth)
                                 .blur(radius: 1)
                         }
@@ -74,8 +74,8 @@ private struct BarsViz: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .shadow(color: tint.opacity(0.45), radius: 12)
-            .shadow(color: tint.opacity(0.25), radius: 3)
+            .shadow(color: tint.opacity(OpacityTokens.level45), radius: 12)
+            .shadow(color: tint.opacity(OpacityTokens.level25), radius: 3)
         }
     }
 }
@@ -99,14 +99,14 @@ private struct CircularViz: View {
                 x: center.x - baseRadius * 0.55, y: center.y - baseRadius * 0.55,
                 width: baseRadius * 1.1, height: baseRadius * 1.1))
             ctx.fill(orb, with: .radialGradient(
-                Gradient(colors: [tint.opacity(0.9), tint.opacity(0.0)]),
+                Gradient(colors: [tint.opacity(OpacityTokens.level90), tint.opacity(0.0)]),
                 center: center, startRadius: 0, endRadius: baseRadius * 0.8))
 
             // Faint guide ring.
             let ring = Path(ellipseIn: CGRect(
                 x: center.x - baseRadius, y: center.y - baseRadius,
                 width: baseRadius * 2, height: baseRadius * 2))
-            ctx.stroke(ring, with: .color(tint.opacity(0.22)), lineWidth: 1.5)
+            ctx.stroke(ring, with: .color(tint.opacity(OpacityTokens.level22)), lineWidth: 1.5)
 
             for (index, value) in values.enumerated() {
                 let angle = (Double(index) / Double(count)) * 2 * .pi - .pi / 2
@@ -120,14 +120,14 @@ private struct CircularViz: View {
                 ctx.stroke(
                     spoke,
                     with: .linearGradient(
-                        Gradient(colors: [tint.opacity(0.5), tint]),
+                        Gradient(colors: [tint.opacity(OpacityTokens.level50), tint]),
                         startPoint: CGPoint(x: center.x + cos(angle) * inner, y: center.y + sin(angle) * inner),
                         endPoint: CGPoint(x: center.x + cos(angle) * outer, y: center.y + sin(angle) * outer)),
                     style: StrokeStyle(lineWidth: 4, lineCap: .round))
                 // Bright tip dot.
                 let tip = CGPoint(x: center.x + cos(angle) * outer, y: center.y + sin(angle) * outer)
                 let dot = Path(ellipseIn: CGRect(x: tip.x - 2, y: tip.y - 2, width: 4, height: 4))
-                ctx.fill(dot, with: .color(.white.opacity(0.9)))
+                ctx.fill(dot, with: .color(.white.opacity(OpacityTokens.level90)))
             }
         }
     }
@@ -172,15 +172,15 @@ private struct WaveViz: View {
             }
             fill.closeSubpath()
             ctx.fill(fill, with: .linearGradient(
-                Gradient(colors: [tint.opacity(0.45), tint.opacity(0.08)]),
+                Gradient(colors: [tint.opacity(OpacityTokens.level45), tint.opacity(OpacityTokens.level08)]),
                 startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 0, y: size.height)))
 
             // Bright edges.
             let stroke = StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round)
             ctx.stroke(top, with: .color(tint), style: stroke)
-            ctx.stroke(bottom, with: .color(tint.opacity(0.6)), style: stroke)
+            ctx.stroke(bottom, with: .color(tint.opacity(OpacityTokens.level60)), style: stroke)
         }
-        .shadow(color: tint.opacity(0.4), radius: 10)
+        .shadow(color: tint.opacity(OpacityTokens.level40), radius: 10)
     }
 }
 

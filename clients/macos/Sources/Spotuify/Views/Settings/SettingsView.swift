@@ -222,10 +222,10 @@ struct SettingsView: View {
 
     private var statusColor: Color {
         switch model.connectionState {
-        case .ready: .green
-        case .connecting, .reconnecting: .yellow
-        case .failed: .red
-        case .idle: .gray
+        case .ready: StatusTokens.default.ready
+        case .connecting, .reconnecting: StatusTokens.default.warning
+        case .failed: StatusTokens.default.failed
+        case .idle: StatusTokens.default.idle
         }
     }
     private var statusText: String {
@@ -295,15 +295,15 @@ private struct ThemeTile: View {
             .background {
                 RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
                     .fill(isSelected
-                          ? AnyShapeStyle(.tint.opacity(0.12))
-                          : AnyShapeStyle(Color.primary.opacity(0.05)))
+                          ? AnyShapeStyle(.tint.opacity(OpacityTokens.level12))
+                          : AnyShapeStyle(.primary.opacity(OpacityTokens.level05)))
             }
             .overlay {
                 RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
                     .strokeBorder(
                         isSelected
                             ? AnyShapeStyle(.tint)
-                            : AnyShapeStyle(Color.primary.opacity(0.18)),
+                            : AnyShapeStyle(.primary.opacity(OpacityTokens.level18)),
                         lineWidth: isSelected ? 2 : 1)
             }
             .scaleEffect(hovering ? 1.015 : 1.0)

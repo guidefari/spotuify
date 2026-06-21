@@ -69,7 +69,7 @@ extension View {
     func selectableRowBackground(_ selected: Bool) -> some View {
         background {
             RoundedRectangle(cornerRadius: Theme.cornerRadius)
-                .fill(selected ? AnyShapeStyle(.tint.opacity(0.18)) : AnyShapeStyle(.clear))
+                .fill(selected ? AnyShapeStyle(.tint.opacity(OpacityTokens.level18)) : AnyShapeStyle(.clear))
         }
     }
 }
@@ -92,10 +92,10 @@ struct TransportButton: View {
                     if prominent {
                         Circle().fill(.tint)
                     } else {
-                        Circle().fill(hovering ? AnyShapeStyle(.primary.opacity(0.08)) : AnyShapeStyle(.clear))
+                        Circle().fill(hovering ? AnyShapeStyle(.primary.opacity(OpacityTokens.level08)) : AnyShapeStyle(.clear))
                     }
                 }
-                .foregroundStyle(prominent ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                .foregroundStyle(prominent ? AnyShapeStyle(AlbumStageTokens.default.text) : AnyShapeStyle(.primary))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)

@@ -196,11 +196,11 @@ struct TrackCard: View {
             ZStack(alignment: .bottomTrailing) {
                 AsyncCoverImage(url: item.imageURL ?? fallbackImageURL, cornerRadius: Theme.tileCornerRadius)
                     .aspectRatio(1, contentMode: .fit)
-                    .shadow(color: .black.opacity(hovering ? 0.4 : 0.22),
+                    .shadow(color: hovering ? ShadowTokens.default.heavy : ShadowTokens.default.soft,
                             radius: hovering ? 18 : 8, y: hovering ? 10 : 4)
                 Image(systemName: "play.circle.fill")
                     .font(.largeTitle)
-                    .foregroundStyle(.white, .tint)
+                    .foregroundStyle(AlbumStageTokens.default.text, .tint)
                     .padding(8)
                     .shadow(radius: 4)
                     .opacity(hovering ? 1 : 0)
