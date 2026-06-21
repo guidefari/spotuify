@@ -15,7 +15,7 @@ struct NowPlayingBar: View {
     private var tokens: ThemeTokens { ThemeTokens.tokens(for: colorScheme) }
     /// Adaptive: the artwork accent flows through the wash. Fixed themes: the
     /// system accent, which matches the rest of the chrome.
-    private var washAccent: Color { themePreference.isAdaptive ? theme.accent : .accentColor }
+    private var washAccent: Color { themePreference.isAdaptive ? theme.accent : Color("AccentColor") }
 
     private func togglePanel(_ target: GlobalPanel) {
         globalPanelRaw = (globalPanel == target ? GlobalPanel.none : target).rawValue
