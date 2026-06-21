@@ -119,7 +119,7 @@ struct AlbumDetailView: View {
                     )
                 }
                 .buttonStyle(.bordered)
-                .tint(isSaved ? .secondary : .accentColor)
+                .tint(isSaved ? .secondary : Color("AccentColor"))
                 Spacer()
             }
             .padding(.horizontal, 20).padding(.vertical, 8)
@@ -215,7 +215,7 @@ struct ArtistDetailView: View {
                           systemImage: isFollowing ? "checkmark" : "plus")
                 }
                 .buttonStyle(.bordered)
-                .tint(isFollowing ? .secondary : .accentColor)
+                .tint(isFollowing ? .secondary : Color("AccentColor"))
                 Picker("Scope", selection: $libraryOnly) {
                     Text("All").tag(false)
                     Text("In Library").tag(true)

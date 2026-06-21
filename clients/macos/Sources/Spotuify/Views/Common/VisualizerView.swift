@@ -22,7 +22,7 @@ struct VisualizerView: View {
     @Environment(AppModel.self) private var model
     var style: VizStyle = .bars
     /// Concrete tint (Canvas styles can't read `.tint`); defaults to the accent.
-    var tint: Color = .accentColor
+    var tint: Color = Color("AccentColor")
 
     private var barCount: Int { VizStore.bandCount }
 

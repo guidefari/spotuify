@@ -19,7 +19,7 @@ struct ThemedView<Content: View>: View {
         if usesArtworkAccent && preference.isAdaptive {
             artworkTheme.accent
         } else {
-            .accentColor
+            Color("AccentColor")
         }
     }
 
