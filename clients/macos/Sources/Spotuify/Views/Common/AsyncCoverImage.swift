@@ -1,4 +1,34 @@
 import SwiftUI
+import SpotuifyKit
+
+/// Which source-sized URL to use for a given surface. Daemon populates
+/// three URLs per `MediaItem` (small ≈ 64, default ≈ 300, large ≈ 640+);
+/// the consumer picks the one that matches its rendered size so a 40pt
+/// thumbnail doesn't fetch a 640px source (5x bandwidth) and a 480pt
+/// hero doesn't upscale from 300.
+enum CoverImageSize {
+    /// 40–50pt row thumbnails (footer, queue rows, history chips,
+    /// reminder rows). Falls back to `default` if Spotify only returned
+    /// one size.
+    case small
+    /// 200–300pt list / grid tiles, menu-bar covers, system-media art.
+    case `default`
+    /// 480pt+ now-playing hero (contained square or full-bleed).
+    case large
+}
+
+extension MediaItem {
+    /// The source-sized URL matching the requested surface tier. Always
+    /// returns *some* URL when the item has any art — `default` is the
+    /// ground truth — so consumers never have to nil-coalesce.
+    func imageURL(for size: CoverImageSize) -> String? {
+        switch size {
+        case .small: imageURLSmall ?? imageURL
+        case .default: imageURL
+        case .large: imageURLLarge ?? imageURL
+        }
+    }
+}
 
 /// Loads album artwork from a Spotify CDN URL via `CoverArtCache`, with a
 /// graceful placeholder while loading or when missing.

@@ -73,7 +73,7 @@ struct SessionRow: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            StackedCover(urls: session.tracks.prefix(3).map(\.imageURL), size: 56)
+            StackedCover(urls: session.tracks.prefix(3).map { $0.imageURL(for: .small) }, size: 56)
             VStack(alignment: .leading, spacing: 4) {
                 Text(session.contextLabel ?? "Mixed session")
                     .font(.displayTitle(17)).lineLimit(1)

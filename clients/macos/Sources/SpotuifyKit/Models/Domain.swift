@@ -36,7 +36,21 @@ public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
     public let subtitle: String
     public let context: String
     public let durationMs: UInt64
+    /// Default (medium) image URL — the size Spotify ships closest to 300px.
+    /// Right for 200–300pt list / grid tiles, menu-bar covers, and
+    /// system-media art. Use `imageURLSmall` for thumbnails and
+    /// `imageURLLarge` for the now-playing hero.
     public let imageURL: String?
+    /// Smallest image URL Spotify returned (≈ 64px source). Right for
+    /// 40–50pt row thumbnails (now-playing footer, queue rows, history
+    /// chips, reminder rows). Falls back to `imageURL` when Spotify only
+    /// returned a single size.
+    public let imageURLSmall: String?
+    /// Largest image URL Spotify returned (≈ 640px+, sometimes 1200+ for
+    /// shows / podcasts). Right for the now-playing hero (contained square
+    /// or full-bleed). Falls back to `imageURL` when Spotify only returned
+    /// a single size.
+    public let imageURLLarge: String?
     public let kind: MediaKind
     public let source: String?
     public let freshness: String?
@@ -71,6 +85,8 @@ public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
         context: String = "",
         durationMs: UInt64 = 0,
         imageURL: String? = nil,
+        imageURLSmall: String? = nil,
+        imageURLLarge: String? = nil,
         kind: MediaKind = .track,
         source: String? = nil,
         freshness: String? = nil,
@@ -94,6 +110,8 @@ public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
         self.context = context
         self.durationMs = durationMs
         self.imageURL = imageURL
+        self.imageURLSmall = imageURLSmall
+        self.imageURLLarge = imageURLLarge
         self.kind = kind
         self.source = source
         self.freshness = freshness
@@ -160,6 +178,8 @@ public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
         case uri, name, subtitle, context
         case durationMs = "duration_ms"
         case imageURL = "image_url"
+        case imageURLSmall = "image_url_small"
+        case imageURLLarge = "image_url_large"
         case kind, source, freshness, explicit
         case isPlayable = "is_playable"
         case album
@@ -186,6 +206,8 @@ public struct MediaItem: Codable, Sendable, Hashable, Identifiable {
         context = try c.decodeIfPresent(String.self, forKey: .context) ?? ""
         durationMs = try c.decodeIfPresent(UInt64.self, forKey: .durationMs) ?? 0
         imageURL = try c.decodeIfPresent(String.self, forKey: .imageURL)
+        imageURLSmall = try c.decodeIfPresent(String.self, forKey: .imageURLSmall)
+        imageURLLarge = try c.decodeIfPresent(String.self, forKey: .imageURLLarge)
         kind = try c.decodeIfPresent(MediaKind.self, forKey: .kind) ?? .track
         source = try c.decodeIfPresent(String.self, forKey: .source)
         freshness = try c.decodeIfPresent(String.self, forKey: .freshness)

@@ -26,7 +26,7 @@ struct MenuBarView: View {
         ZStack(alignment: .bottom) {
             ZStack {
                 palette.background
-                AsyncCoverImage(url: item?.imageURL, cornerRadius: 0)
+                AsyncCoverImage(url: item?.imageURL(for: .large), cornerRadius: 0)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
                     .blur(radius: 28).opacity(OpacityTokens.level50)
@@ -35,7 +35,7 @@ struct MenuBarView: View {
                     startPoint: .top, endPoint: .bottom)
             }
             VStack(spacing: 10) {
-                AsyncCoverImage(url: item?.imageURL, cornerRadius: RadiusTokens.chrome)
+                AsyncCoverImage(url: item?.imageURL(for: .default), cornerRadius: RadiusTokens.chrome)
                     .frame(width: 132, height: 132)
                     .shadow(color: palette.accent.opacity(OpacityTokens.level45), radius: 18, y: 8)
                     .shadow(color: ShadowTokens.default.heavy, radius: 12, y: 6)

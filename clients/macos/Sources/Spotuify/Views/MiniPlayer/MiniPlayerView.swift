@@ -96,7 +96,7 @@ struct MiniPlayerView: View {
                 Button { openWindow(id: "player") } label: { Image(systemName: "macwindow") }
                     .buttonStyle(.plain).help("Open main window")
             }
-            AsyncCoverImage(url: item?.imageURL)
+            AsyncCoverImage(url: item?.imageURL(for: .default))
                 .frame(width: 200, height: 200)
                 .shadow(radius: 10, y: 5)
             VStack(spacing: 3) {
@@ -117,7 +117,7 @@ struct MiniPlayerView: View {
 
     private var compactContent: some View {
         HStack(spacing: 12) {
-            AsyncCoverImage(url: item?.imageURL, cornerRadius: RadiusTokens.thumb)
+            AsyncCoverImage(url: item?.imageURL(for: .small), cornerRadius: RadiusTokens.thumb)
                 .frame(width: 56, height: 56)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item?.name ?? "Nothing playing")

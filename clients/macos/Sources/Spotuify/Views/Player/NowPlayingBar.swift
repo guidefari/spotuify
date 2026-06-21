@@ -69,7 +69,7 @@ struct NowPlayingBar: View {
 
     private var trackCell: some View {
         HStack(spacing: 10) {
-            AsyncCoverImage(url: item?.imageURL, cornerRadius: RadiusTokens.thumb)
+            AsyncCoverImage(url: item?.imageURL(for: .small), cornerRadius: RadiusTokens.thumb)
                 .frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item?.name ?? "Nothing playing")
