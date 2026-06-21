@@ -50,7 +50,7 @@ struct LyricsView: View {
                         Text(line.text.isEmpty ? "\u{266A}" : line.text)
                             .font(.system(size: isActive ? 30 : 23,
                                           weight: isActive ? .bold : .semibold))
-                            .foregroundStyle(isActive ? .white : .white.opacity(0.38))
+                            .foregroundStyle(isActive ? AlbumStageTokens.default.text : AlbumStageTokens.default.textGhost)
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)

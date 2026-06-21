@@ -29,25 +29,25 @@ struct MenuBarView: View {
                 AsyncCoverImage(url: item?.imageURL, cornerRadius: 0)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
-                    .blur(radius: 28).opacity(0.5)
+                    .blur(radius: 28).opacity(OpacityTokens.level50)
                 LinearGradient(
-                    colors: [.clear, palette.background.opacity(0.55), .black.opacity(0.85)],
+                    colors: [.clear, palette.background.opacity(OpacityTokens.level55), AlbumStageTokens.default.scrimHeavy],
                     startPoint: .top, endPoint: .bottom)
             }
             VStack(spacing: 10) {
                 AsyncCoverImage(url: item?.imageURL, cornerRadius: 10)
                     .frame(width: 132, height: 132)
-                    .shadow(color: palette.accent.opacity(0.45), radius: 18, y: 8)
-                    .shadow(color: .black.opacity(0.4), radius: 12, y: 6)
+                    .shadow(color: palette.accent.opacity(OpacityTokens.level45), radius: 18, y: 8)
+                    .shadow(color: ShadowTokens.default.heavy, radius: 12, y: 6)
                 VStack(spacing: 3) {
                     Text(item?.name ?? "Nothing playing")
-                        .font(.displayTitle(17)).foregroundStyle(.white)
+                        .font(.displayTitle(17)).foregroundStyle(AlbumStageTokens.default.text)
                         .lineLimit(1).minimumScaleFactor(0.7)
                     Text(item?.subtitle ?? "")
-                        .font(.caption).foregroundStyle(.white.opacity(0.78)).lineLimit(1)
+                        .font(.caption).foregroundStyle(AlbumStageTokens.default.text.opacity(OpacityTokens.level78)).lineLimit(1)
                     if let album = item?.albumLabel {
                         Text(album)
-                            .font(.caption2).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
+                            .font(.caption2).foregroundStyle(AlbumStageTokens.default.textVeryFaint).lineLimit(1)
                     }
                 }
                 SeekBar(
@@ -80,7 +80,7 @@ struct MenuBarView: View {
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 9)
-                .glassEffect(.regular.tint(palette.accent.opacity(0.20)).interactive(), in: .capsule)
+                .glassEffect(.regular.tint(palette.accent.opacity(OpacityTokens.level20)).interactive(), in: .capsule)
             }
 
             Divider()

@@ -16,6 +16,10 @@ struct AlbumStageTokens: Equatable {
     var textMuted: Color
     /// Faint (inactive transport icons).
     var textFaint: Color
+    /// Dim (unliked heart, decorative icons).
+    var textDim: Color
+    /// Very faint (empty-state icons, duration text).
+    var textVeryFaint: Color
     /// Ghost (inactive lyrics lines, very dim metadata).
     var textGhost: Color
 
@@ -29,6 +33,7 @@ struct AlbumStageTokens: Equatable {
     var scrimSoft: Color
     var scrimMedium: Color
     var scrimHeavy: Color
+    var scrimHeavier: Color
     var scrimDeep: Color
 
     static let `default` = AlbumStageTokens(
@@ -37,11 +42,14 @@ struct AlbumStageTokens: Equatable {
         textMedium: .white.opacity(OpacityTokens.level80),
         textMuted: .white.opacity(OpacityTokens.level70),
         textFaint: .white.opacity(OpacityTokens.level60),
+        textDim: .white.opacity(OpacityTokens.level85),
+        textVeryFaint: .white.opacity(OpacityTokens.level50),
         textGhost: .white.opacity(OpacityTokens.level38),
         wash: .white.opacity(OpacityTokens.level12),
         stroke: .white.opacity(OpacityTokens.level08),
         scrimSoft: .black.opacity(OpacityTokens.level40),
         scrimMedium: .black.opacity(OpacityTokens.level55),
         scrimHeavy: .black.opacity(OpacityTokens.level85),
+        scrimHeavier: .black.opacity(OpacityTokens.level90),
         scrimDeep: .black.opacity(OpacityTokens.level96))
 }

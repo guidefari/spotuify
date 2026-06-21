@@ -31,5 +31,6 @@ enum OpacityTokens {
     static let level85: Double = 0.85
     static let level90: Double = 0.90
     static let level92: Double = 0.92
+    static let level95: Double = 0.95
     static let level96: Double = 0.96
 }
