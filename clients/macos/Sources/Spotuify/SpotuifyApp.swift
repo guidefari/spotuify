@@ -57,23 +57,30 @@ struct SpotuifyApp: App {
         }
 
         // Single floating HUD window — likewise reused, never duplicated.
-        // Mini Player pins `theme.accent` itself (the album stage), so it
-        // intentionally doesn't go through `ThemedView`.
+        // The Mini Player pins `theme.accent` itself on its content (the album
+        // stage), but the system chrome around the floating window still needs
+        // to follow the user's chosen color scheme. `ThemedView`'s inner
+        // `.tint(theme.accent)` is harmless here because the content overrides
+        // it; the outer `.preferredColorScheme` is what actually changes.
         Window("Mini Player", id: "mini-player") {
-            MiniPlayerView()
-                .environment(model)
-                .environment(theme)
-                .task { model.start() }
-                .desktopTheme(theme)
+            ThemedView(usesArtworkAccent: true) {
+                MiniPlayerView()
+            }
+            .environment(model)
+            .environment(theme)
+            .task { model.start() }
+            .desktopTheme(theme)
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 320, height: 380)
 
         MenuBarExtra("Spotuify", systemImage: "music.note") {
-            MenuBarView()
-                .environment(model)
-                .environment(theme)
-                .desktopTheme(theme)
+            ThemedView(usesArtworkAccent: true) {
+                MenuBarView()
+            }
+            .environment(model)
+            .environment(theme)
+            .desktopTheme(theme)
         }
         .menuBarExtraStyle(.window)
 
