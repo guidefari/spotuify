@@ -44,7 +44,7 @@ struct RemindersView: View {
             if count > 0 {
                 Text("\(count)").font(.caption.bold())
                     .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(.tint, in: Capsule()).foregroundStyle(.white)
+                    .background(.tint, in: Capsule()).foregroundStyle(AlbumStageTokens.default.text)
             }
             Spacer()
         }
@@ -98,7 +98,7 @@ struct NotificationRow: View {
             }.buttonStyle(.plain).foregroundStyle(.secondary).help("Dismiss")
         }
         .padding(.vertical, 4).padding(.horizontal, 8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(.primary.opacity(0.04)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(.primary.opacity(OpacityTokens.level04)))
     }
 }
 

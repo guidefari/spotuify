@@ -26,8 +26,8 @@ struct SearchFilterChip: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
                 .background(
-                    Capsule().fill(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary.opacity(0.08))))
-                .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                    Capsule().fill(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary.opacity(OpacityTokens.level08))))
+                .foregroundStyle(selected ? AnyShapeStyle(AlbumStageTokens.default.text) : AnyShapeStyle(.primary))
         }
         .buttonStyle(.plain)
     }
@@ -173,7 +173,7 @@ struct SearchView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 6)
-                                .background(.background.opacity(0.96))
+                                .background(.background.opacity(OpacityTokens.level96))
                         }
                     }
                 }

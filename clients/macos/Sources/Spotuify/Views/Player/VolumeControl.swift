@@ -21,7 +21,7 @@ struct VolumeControl: View {
             GeometryReader { geo in
                 let width = geo.size.width
                 ZStack(alignment: .leading) {
-                    Capsule().fill(.primary.opacity(0.15))
+                    Capsule().fill(.primary.opacity(OpacityTokens.level15))
                     Capsule().fill(.tint).frame(width: max(0, min(1, shown)) * width)
                 }
                 .frame(height: 5)

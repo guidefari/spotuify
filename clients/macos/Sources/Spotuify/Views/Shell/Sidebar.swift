@@ -75,10 +75,10 @@ struct Sidebar: View {
 
     private var badgeColor: Color {
         switch model.connectionState {
-        case .ready: .green
-        case .connecting, .reconnecting: .yellow
-        case .failed: .red
-        case .idle: .gray
+        case .ready: StatusTokens.default.ready
+        case .connecting, .reconnecting: StatusTokens.default.warning
+        case .failed: StatusTokens.default.failed
+        case .idle: StatusTokens.default.idle
         }
     }
 

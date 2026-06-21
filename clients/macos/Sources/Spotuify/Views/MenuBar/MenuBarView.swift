@@ -53,7 +53,8 @@ struct MenuBarView: View {
                 SeekBar(
                     progress: model.player.progressFraction,
                     onSeek: { model.seek(toFraction: $0) },
-                    height: 3)
+                    height: 3,
+                    knobColor: AlbumStageTokens.default.text)
                 .tint(palette.accent)
             }
             .padding(.top, 20).padding(.bottom, 14).padding(.horizontal, 14)

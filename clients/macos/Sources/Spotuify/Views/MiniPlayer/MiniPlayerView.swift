@@ -96,7 +96,7 @@ struct MiniPlayerView: View {
                 Text(item?.subtitle ?? "")
                     .font(.caption).foregroundStyle(theme.palette.secondary).lineLimit(1)
             }
-            SeekBar(progress: model.player.progressFraction) { model.seek(toFraction: $0) }
+            SeekBar(progress: model.player.progressFraction, knobColor: AlbumStageTokens.default.text) { model.seek(toFraction: $0) }
             transport(size: 16)
         }
     }

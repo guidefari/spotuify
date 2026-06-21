@@ -10,6 +10,10 @@ struct SeekBar: View {
     let onSeek: (Double) -> Void
 
     var height: CGFloat = 6
+    /// Knob color. The album stage always uses `AlbumStageTokens.default.text`
+    /// (white on the dark scrim); system surfaces default to `.primary` so the
+    /// knob stays visible against the `.bar` material in both color schemes.
+    var knobColor: Color = .primary
 
     @State private var dragFraction: Double?
     @State private var hovering = false
@@ -25,11 +29,11 @@ struct SeekBar: View {
             let barHeight = active ? height + 4 : height
             let knob = barHeight + 8
             ZStack(alignment: .leading) {
-                Capsule().fill(.primary.opacity(0.15)).frame(height: barHeight)
+                Capsule().fill(.primary.opacity(OpacityTokens.level15)).frame(height: barHeight)
                 Capsule().fill(.tint)
                     .frame(width: max(0, min(1, shownFraction)) * width, height: barHeight)
                 Circle()
-                    .fill(.white)
+                    .fill(knobColor)
                     .frame(width: knob, height: knob)
                     .shadow(radius: 2, y: 0.5)
                     .offset(x: max(0, min(1, shownFraction)) * width - knob / 2)

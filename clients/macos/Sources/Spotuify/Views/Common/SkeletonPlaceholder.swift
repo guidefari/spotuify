@@ -11,7 +11,7 @@ private struct SkeletonPulse: ViewModifier {
     func body(content: Content) -> some View {
         content
             .foregroundStyle(.quaternary)
-            .opacity(dimmed ? 0.45 : 1)
+            .opacity(dimmed ? OpacityTokens.level45 : 1)
             .animation(
                 .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
                 value: dimmed
