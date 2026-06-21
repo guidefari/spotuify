@@ -2,11 +2,9 @@ import SwiftUI
 
 /// Shared visual constants and small reusable styles. Cover-derived color lives
 /// in `ArtworkPalette`/`ArtworkTheme`; the editorial type tier lives in
-/// `EditorialFont` (Fraunces). This holds the static layout tokens.
+/// `EditorialFont` (Fraunces); corner radii live in `RadiusTokens`. This holds
+/// the static layout tokens.
 enum Theme {
-    static let cornerRadius: CGFloat = 10
-    static let artCornerRadius: CGFloat = 14
-    static let tileCornerRadius: CGFloat = 12
     static let sidebarWidth: CGFloat = 212
     static let nowPlayingBarHeight: CGFloat = 92
 
@@ -68,7 +66,7 @@ extension View {
     /// Subtle hover-highlightable row used in lists.
     func selectableRowBackground(_ selected: Bool) -> some View {
         background {
-            RoundedRectangle(cornerRadius: Theme.cornerRadius)
+            RoundedRectangle(cornerRadius: RadiusTokens.row)
                 .fill(selected ? AnyShapeStyle(.tint.opacity(OpacityTokens.level18)) : AnyShapeStyle(.clear))
         }
     }

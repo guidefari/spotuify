@@ -35,7 +35,7 @@ struct MenuBarView: View {
                     startPoint: .top, endPoint: .bottom)
             }
             VStack(spacing: 10) {
-                AsyncCoverImage(url: item?.imageURL, cornerRadius: 10)
+                AsyncCoverImage(url: item?.imageURL, cornerRadius: RadiusTokens.chrome)
                     .frame(width: 132, height: 132)
                     .shadow(color: palette.accent.opacity(OpacityTokens.level45), radius: 18, y: 8)
                     .shadow(color: ShadowTokens.default.heavy, radius: 12, y: 6)

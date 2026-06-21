@@ -288,13 +288,13 @@ private struct ThemeTile: View {
             .frame(maxWidth: .infinity, minHeight: 140)
             .padding(16)
             .background {
-                RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: RadiusTokens.chrome, style: .continuous)
                     .fill(isSelected
                           ? AnyShapeStyle(.tint.opacity(OpacityTokens.level12))
                           : AnyShapeStyle(.primary.opacity(OpacityTokens.level05)))
             }
             .overlay {
-                RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: RadiusTokens.chrome, style: .continuous)
                     .strokeBorder(
                         isSelected
                             ? AnyShapeStyle(.tint)

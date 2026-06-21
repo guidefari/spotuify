@@ -56,7 +56,7 @@ struct PodcastsView: View {
                     .onSubmit { store.wrappedValue.runSearch() }
             }
             .padding(.horizontal, 8).padding(.vertical, 5)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: RadiusTokens.row))
             .frame(maxWidth: 320)
 
             Picker("Source", selection: Binding(

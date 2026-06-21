@@ -28,7 +28,7 @@ struct DetailHeader: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 18) {
-            AsyncCoverImage(url: item.imageURL, cornerRadius: artworkIsCircle ? 70 : 12)
+            AsyncCoverImage(url: item.imageURL, isCircle: artworkIsCircle, cornerRadius: RadiusTokens.tile)
                 .frame(width: 140, height: 140)
                 .shadow(radius: 10, y: 5)
             VStack(alignment: .leading, spacing: 8) {

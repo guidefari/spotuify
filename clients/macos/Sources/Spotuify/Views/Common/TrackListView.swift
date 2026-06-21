@@ -194,7 +194,7 @@ struct TrackCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .bottomTrailing) {
-                AsyncCoverImage(url: item.imageURL ?? fallbackImageURL, cornerRadius: Theme.tileCornerRadius)
+                AsyncCoverImage(url: item.imageURL ?? fallbackImageURL, cornerRadius: RadiusTokens.tile)
                     .aspectRatio(1, contentMode: .fit)
                     .shadow(color: hovering ? ShadowTokens.default.heavy : ShadowTokens.default.soft,
                             radius: hovering ? 18 : 8, y: hovering ? 10 : 4)

@@ -36,6 +36,7 @@
 		529ED3AF38C9DFBB9CA18853 /* ConnectionState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 868821DF4FF370EF70704B93 /* ConnectionState.swift */; };
 		5C6CBCB639E8BD91D8A4A772 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F042D749897188A339C6DE8 /* AppDelegate.swift */; };
 		60AA3285D7690C895971A9F4 /* ThemePreference.swift in Sources */ = {isa = PBXBuildFile; fileRef = B762FB11D400D22232562AE0 /* ThemePreference.swift */; };
+		6A1B2C3D4E5F67890ABCDEF12 /* RadiusTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F1E2D3C4B5A69876FEDCBA09 /* RadiusTokens.swift */; };
 		6420AF0946A44FEC3BC8D164 /* AppUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40AA0052EDB92B2E7FB9BACE /* AppUpdater.swift */; };
 		6636E591D0429A715C30D7AD /* TerminalLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CCC6FDC4F625E026DFF9393 /* TerminalLauncher.swift */; };
 		66E5B738ADD9833CEB92CFF3 /* CoverArtCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6474A7356FFAD14E95F5C2E4 /* CoverArtCache.swift */; };
@@ -182,6 +183,7 @@
 		6C1B2B14C6BEACCF7FE61F23 /* RemindersStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemindersStore.swift; sourceTree = "<group>"; };
 		6CDE231ECE9BDF2DD8C0FC39 /* ReminderNotificationScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReminderNotificationScheduler.swift; sourceTree = "<group>"; };
 		71318A846E17E35D727B155F /* ShadowTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShadowTokens.swift; sourceTree = "<group>"; };
+		7F1E2D3C4B5A69876FEDCBA09 /* RadiusTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadiusTokens.swift; sourceTree = "<group>"; };
 		745666BB14E0A167ACD62BA0 /* SmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeTests.swift; sourceTree = "<group>"; };
 		79DC19CE675F5B5A783DDC3C /* KeyboardController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardController.swift; sourceTree = "<group>"; };
 		7E515995FF92C5E2D99BEA25 /* PodcastsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PodcastsView.swift; sourceTree = "<group>"; };
@@ -429,6 +431,7 @@
 				B73CCF9692800CEA6A6F9F88 /* ThemedView.swift */,
 				B762FB11D400D22232562AE0 /* ThemePreference.swift */,
 				0A7FCC8CF94DD23B85FFB212 /* ThemeTokens.swift */,
+				7F1E2D3C4B5A69876FEDCBA09 /* RadiusTokens.swift */,
 			);
 			path = Theme;
 			sourceTree = "<group>";
@@ -832,6 +835,7 @@
 				C8F1A65D8BA7CE052E1EE669 /* Theme.swift in Sources */,
 				60AA3285D7690C895971A9F4 /* ThemePreference.swift in Sources */,
 				EDF1E51AE420487661A5D356 /* ThemeTokens.swift in Sources */,
+				6A1B2C3D4E5F67890ABCDEF12 /* RadiusTokens.swift in Sources */,
 				7910FE68CC146B47180DEE14 /* ThemedView.swift in Sources */,
 				03C69EA0DC11D37ECCDBC9A4 /* TrackListView.swift in Sources */,
 				D4E6234EE0DA39E4A9E11F25 /* VisualizerView.swift in Sources */,

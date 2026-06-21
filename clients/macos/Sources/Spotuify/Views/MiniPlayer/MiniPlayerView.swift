@@ -106,7 +106,7 @@ struct MiniPlayerView: View {
 
     private var compactContent: some View {
         HStack(spacing: 12) {
-            AsyncCoverImage(url: item?.imageURL, cornerRadius: 6)
+            AsyncCoverImage(url: item?.imageURL, cornerRadius: RadiusTokens.thumb)
                 .frame(width: 56, height: 56)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item?.name ?? "Nothing playing").font(.system(size: 13, weight: .semibold)).lineLimit(1)

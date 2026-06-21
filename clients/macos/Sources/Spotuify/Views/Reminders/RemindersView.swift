@@ -67,7 +67,7 @@ struct NotificationRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            AsyncCoverImage(url: notification.imageURL, cornerRadius: 6)
+            AsyncCoverImage(url: notification.imageURL, cornerRadius: RadiusTokens.thumb)
                 .frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 2) {
                 Text(notification.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
@@ -98,7 +98,7 @@ struct NotificationRow: View {
             }.buttonStyle(.plain).foregroundStyle(.secondary).help("Dismiss")
         }
         .padding(.vertical, 4).padding(.horizontal, 8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(.primary.opacity(OpacityTokens.level04)))
+        .background(RoundedRectangle(cornerRadius: RadiusTokens.row).fill(.primary.opacity(OpacityTokens.level04)))
     }
 }
 
@@ -109,7 +109,7 @@ struct ReminderRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            AsyncCoverImage(url: reminder.imageURL, cornerRadius: 6)
+            AsyncCoverImage(url: reminder.imageURL, cornerRadius: RadiusTokens.thumb)
                 .frame(width: 36, height: 36)
             VStack(alignment: .leading, spacing: 2) {
                 Text(reminder.name).font(.system(size: 13, weight: .medium)).lineLimit(1)

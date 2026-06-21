@@ -246,6 +246,6 @@ private struct CommandRow: View {
             .help("Copy")
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
-        .background(.quaternary.opacity(OpacityTokens.level50), in: RoundedRectangle(cornerRadius: 8))
+        .background(.quaternary.opacity(OpacityTokens.level50), in: RoundedRectangle(cornerRadius: RadiusTokens.row))
     }
 }
