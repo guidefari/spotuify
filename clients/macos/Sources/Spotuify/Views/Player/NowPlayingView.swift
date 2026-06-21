@@ -408,7 +408,11 @@ struct NowPlayingView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             transportRow
                 .fixedSize()
-            VolumeControl()
+            // The speaker glyph rides the album stage (artwork backdrop), so it
+            // can't use the chrome's default `.secondary` — that's a mid-grey
+            // that disappears on a light cover. The palette's own primary
+            // guarantees contrast against the artwork.
+            VolumeControl(iconForegroundStyle: AnyShapeStyle(palette.primary))
                 .frame(width: 130)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
