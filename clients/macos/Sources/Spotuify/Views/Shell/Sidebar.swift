@@ -7,7 +7,11 @@ import SpotuifyKit
 struct Sidebar: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(ThemePreference.storageKey) private var themePreference: ThemePreference = .system
     @Binding var selection: Destination
+
+    private var tokens: ThemeTokens { ThemeTokens.tokens(for: colorScheme) }
 
     var body: some View {
         List(selection: selectionBinding) {
@@ -17,18 +21,13 @@ struct Sidebar: View {
             }
         }
         .listStyle(.sidebar)
-        // The accent (tint) already flows from the cover palette; wash the
-        // sidebar itself with the cover's background colour so the whole chrome
-        // — not just selections — shares the now-playing mood. Kept translucent
-        // so the window's vibrancy still reads through.
+        // Adaptive: wash the sidebar with the cover's background colour so the
+        // whole chrome shares the now-playing mood. Fixed themes: use a
+        // hand-tuned chrome tone that matches the active color scheme so the
+        // sidebar doesn't fight the rest of the surface.
         .scrollContentBackground(.hidden)
-        .background {
-            LinearGradient(
-                colors: [theme.background.opacity(0.95), theme.background.opacity(0.6)],
-                startPoint: .top, endPoint: .bottom)
-                .animation(.easeInOut(duration: 0.6), value: theme.background)
-                .ignoresSafeArea()
-        }
+        .background { sidebarBackground }
+        .animation(.easeInOut(duration: 0.6), value: themePreference)
         .safeAreaInset(edge: .top, spacing: 0) {
             Text("spotuify")
                 .font(.displayTitle(22))
@@ -46,6 +45,22 @@ struct Sidebar: View {
     /// Sidebar single-selection wants an optional binding; never clear to nil.
     private var selectionBinding: Binding<Destination?> {
         Binding(get: { selection }, set: { if let value = $0 { selection = value } })
+    }
+
+    /// Adaptive = artwork wash (the original look). Fixed themes = solid
+    /// hand-tuned chrome tone so the sidebar sits in the active color scheme
+    /// without picking up album hues.
+    @ViewBuilder
+    private var sidebarBackground: some View {
+        if themePreference.isAdaptive {
+            LinearGradient(
+                colors: [theme.background.opacity(0.95), theme.background.opacity(0.6)],
+                startPoint: .top, endPoint: .bottom)
+                .animation(.easeInOut(duration: 0.6), value: theme.background)
+                .ignoresSafeArea()
+        } else {
+            tokens.chrome.ignoresSafeArea()
+        }
     }
 
     private var connectionRow: some View {
