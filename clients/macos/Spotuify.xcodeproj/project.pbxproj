@@ -85,7 +85,6 @@
 		C6332736ECE8698865C6B780 /* ProtocolParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F64CF7A3EF584EDF34D86172 /* ProtocolParityTests.swift */; };
 		C843A923D3C0729132E8571A /* CLIRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26E68BA858069EBF07E9ABD /* CLIRunner.swift */; };
 		C8F1A65D8BA7CE052E1EE669 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = F65659D8CFBC046C10E591D1 /* Theme.swift */; };
-		CB768C314D225CCCA5F6048C /* QueueView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6595A95BA4C069AC472A1BF /* QueueView.swift */; };
 		CE5B66ED370020D4DA5E37ED /* SeekBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C358E81BF73A8F2ABA25533 /* SeekBar.swift */; };
 		D1DE6F209A13DEB5F4FBF355 /* Domain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4022AC0A8774E0C3646FE246 /* Domain.swift */; };
 		D4E6234EE0DA39E4A9E11F25 /* VisualizerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8A8F4D2B7672F3E7C11028B /* VisualizerView.swift */; };
@@ -200,7 +199,6 @@
 		B1DC7BC8F98414A14BCDCC2F /* TrackListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackListView.swift; sourceTree = "<group>"; };
 		B1DF10A5E59132EFF74BFCDE /* OpacityTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpacityTokens.swift; sourceTree = "<group>"; };
 		B26E68BA858069EBF07E9ABD /* CLIRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIRunner.swift; sourceTree = "<group>"; };
-		B6595A95BA4C069AC472A1BF /* QueueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueView.swift; sourceTree = "<group>"; };
 		B69CD91F94A6E31DE1293BED /* AppRelaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRelaunch.swift; sourceTree = "<group>"; };
 		B6F93C749B455C2A20563783 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
 		B73CCF9692800CEA6A6F9F88 /* ThemedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemedView.swift; sourceTree = "<group>"; };
@@ -450,7 +448,6 @@
 				17B52919C2BB9FF7EE355258 /* Player */,
 				5B2A13B2986A469E211A8CB2 /* Playlists */,
 				5E613E4EE62698701A1FB5DE /* Podcasts */,
-				F6E0EB02D79FC6E65337AFB9 /* Queue */,
 				FED9069449BC69FCEE18535A /* Reminders */,
 				36F58C7FB55E9C18C7B7D50A /* Search */,
 				91BA813B785AD0D428794C24 /* Settings */,
@@ -591,14 +588,6 @@
 				0A8F36160130529B4AE5F77E /* WireDecodingTests.swift */,
 			);
 			path = SpotuifyKitTests;
-			sourceTree = "<group>";
-		};
-		F6E0EB02D79FC6E65337AFB9 /* Queue */ = {
-			isa = PBXGroup;
-			children = (
-				B6595A95BA4C069AC472A1BF /* QueueView.swift */,
-			);
-			path = Queue;
 			sourceTree = "<group>";
 		};
 		FED9069449BC69FCEE18535A /* Reminders */ = {
@@ -818,7 +807,6 @@
 				11A8147600BBFF9FEC22EA4B /* OpacityTokens.swift in Sources */,
 				3CEFB4417AD45B95D9B96B02 /* PlaylistsView.swift in Sources */,
 				91C4099461389BCE794E0007 /* PodcastsView.swift in Sources */,
-				CB768C314D225CCCA5F6048C /* QueueView.swift in Sources */,
 				5ABA7006FF0269B260C308A1 /* RadiusTokens.swift in Sources */,
 				2FA2887A90E550A9931085BC /* ReminderNotificationScheduler.swift in Sources */,
 				D6DEBD0B39DA859BD42DDD96 /* ReminderPickerView.swift in Sources */,

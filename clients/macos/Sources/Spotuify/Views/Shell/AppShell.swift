@@ -81,7 +81,6 @@ struct AppShell: View {
         case .artists: ArtistsView()
         case .podcasts: PodcastsView()
         case .playlists: PlaylistsView()
-        case .queue: QueueView()
         case .history: HistoryView()
         case .notifications: RemindersView()
         case .devices: DevicesView()
