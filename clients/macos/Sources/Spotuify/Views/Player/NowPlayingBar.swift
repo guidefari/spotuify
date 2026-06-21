@@ -6,10 +6,16 @@ import SpotuifyKit
 struct NowPlayingBar: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("globalSidePanel") private var globalPanelRaw = GlobalPanel.none.rawValue
+    @AppStorage(ThemePreference.storageKey) private var themePreference: ThemePreference = .system
 
     private var item: MediaItem? { model.player.currentItem }
     private var globalPanel: GlobalPanel { GlobalPanel(rawValue: globalPanelRaw) ?? .none }
+    private var tokens: ThemeTokens { ThemeTokens.tokens(for: colorScheme) }
+    /// Adaptive: the artwork accent flows through the wash. Fixed themes: the
+    /// system accent, which matches the rest of the chrome.
+    private var washAccent: Color { themePreference.isAdaptive ? theme.accent : .accentColor }
 
     private func togglePanel(_ target: GlobalPanel) {
         globalPanelRaw = (globalPanel == target ? GlobalPanel.none : target).rawValue
@@ -41,13 +47,13 @@ struct NowPlayingBar: View {
             ZStack {
                 Rectangle().fill(.bar)
                 LinearGradient(
-                    colors: [theme.accent.opacity(0.10), .clear],
+                    colors: [washAccent.opacity(tokens.accentWash), .clear],
                     startPoint: .leading, endPoint: .trailing)
             }
         }
         .overlay(alignment: .top) {
             LinearGradient(
-                colors: [theme.accent.opacity(0.55), theme.accent.opacity(0.0)],
+                colors: [washAccent.opacity(tokens.accentEdge), washAccent.opacity(0.0)],
                 startPoint: .leading, endPoint: .trailing)
                 .frame(height: 1)
         }
