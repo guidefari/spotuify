@@ -7,6 +7,14 @@ struct VolumeControl: View {
     @Environment(AppModel.self) private var model
     @State private var dragValue: Double?
 
+    /// Foreground style for the speaker glyph. Defaults to `.secondary` for
+    /// chrome surfaces (NowPlayingBar sits on a `.bar` material where
+    /// `.secondary` reads fine). Surfaces that sit on a colored or artwork
+    /// backdrop (the immersive Now Playing stage) need to pass a palette-aware
+    /// style — the default `.secondary` is grey and disappears on a light
+    /// cover.
+    var iconForegroundStyle: AnyShapeStyle = AnyShapeStyle(HierarchicalShapeStyle.secondary)
+
     private var deviceVolume: Double {
         Double(model.player.volumePercent ?? 0) / 100.0
     }
@@ -16,7 +24,7 @@ struct VolumeControl: View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(iconForegroundStyle)
                 .frame(width: 16)
             GeometryReader { geo in
                 let width = geo.size.width
