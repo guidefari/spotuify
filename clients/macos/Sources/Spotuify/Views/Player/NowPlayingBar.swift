@@ -79,7 +79,7 @@ struct NowPlayingBar: View {
     private var controls: some View {
         HStack(spacing: 14) {
             TransportButton(systemName: "shuffle", size: 12) { model.toggleShuffle() }
-                .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .foregroundStyle(model.player.shuffle ? AnyShapeStyle(theme.palette.primary) : AnyShapeStyle(theme.palette.primary.opacity(0.6)))
             TransportButton(systemName: "backward.fill", size: 14) { model.previous() }
             TransportButton(
                 systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
@@ -88,21 +88,25 @@ struct NowPlayingBar: View {
             TransportButton(
                 systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat",
                 size: 12) { model.cycleRepeat() }
-                .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+                .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(theme.palette.primary.opacity(0.6)) : AnyShapeStyle(theme.palette.primary))
         }
     }
 
     private var trailing: some View {
         HStack(spacing: 10) {
             TransportButton(systemName: "quote.bubble", size: 13) { togglePanel(.lyrics) }
-                .foregroundStyle(globalPanel == .lyrics ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .foregroundStyle(globalPanel == .lyrics
+                                 ? AnyShapeStyle(theme.palette.primary)
+                                 : AnyShapeStyle(theme.palette.primary.opacity(0.6)))
                 .help("Lyrics")
             TransportButton(systemName: "list.bullet", size: 13) { togglePanel(.queue) }
-                .foregroundStyle(globalPanel == .queue ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .foregroundStyle(globalPanel == .queue
+                                 ? AnyShapeStyle(theme.palette.primary)
+                                 : AnyShapeStyle(theme.palette.primary.opacity(0.6)))
                 .help("Up next")
             Text("\(Theme.timeString(model.player.displayProgressMs)) / \(Theme.timeString(model.player.durationMs))")
                 .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.palette.primary.opacity(0.6))
                 .lineLimit(1)
                 .fixedSize()
             DeviceMenu(showsActiveName: false)

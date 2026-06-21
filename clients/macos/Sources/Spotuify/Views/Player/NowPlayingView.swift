@@ -143,7 +143,11 @@ struct NowPlayingView: View {
         } label: {
             Image(systemName: target.icon)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(active ? AnyShapeStyle(palette.background) : AnyShapeStyle(AlbumStageTokens.default.text))
+                // Active = dark glyph on a white circle (pops on any wash).
+                // Inactive = `palette.primary` (near-black for light palettes,
+                // white for dark), so the glyph reads against the tinted glass
+                // instead of disappearing into a pastel wash.
+                .foregroundStyle(active ? AnyShapeStyle(palette.background) : AnyShapeStyle(palette.primary))
                 .frame(width: 30, height: 30)
                 .background(active ? AnyShapeStyle(AlbumStageTokens.default.text) : AnyShapeStyle(Color.clear), in: Circle())
                 .contentShape(Rectangle())
@@ -261,7 +265,11 @@ struct NowPlayingView: View {
         } label: {
             Image(systemName: target.icon)
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(active ? AnyShapeStyle(palette.background) : AnyShapeStyle(AlbumStageTokens.default.text))
+                // Active = dark glyph on a near-white circle (pops on any wash).
+                // Inactive = `palette.primary` (near-black for light palettes,
+                // white for dark), so the glyph reads against the tinted glass
+                // instead of disappearing into a pastel wash.
+                .foregroundStyle(active ? AnyShapeStyle(palette.background) : AnyShapeStyle(palette.primary))
                 .frame(width: 34, height: 34)
                 .background(active ? AnyShapeStyle(AlbumStageTokens.default.text) : AnyShapeStyle(Color.clear), in: Circle())
                 // The whole 34x34 cell is the hit target — without this an
@@ -287,7 +295,7 @@ struct NowPlayingView: View {
                 .minimumScaleFactor(0.5)
             artistLabel
             if let item {
-                NowPlayingLikeButton(item: item, accent: palette.accent) { model.likeCurrent() }
+                NowPlayingLikeButton(item: item, accent: palette.accent, inactiveColor: palette.primary) { model.likeCurrent() }
                     .padding(.top, 2)
             }
         }
@@ -365,20 +373,25 @@ struct NowPlayingView: View {
         GlassEffectContainer(spacing: 12) {
             HStack(spacing: 22) {
                 TransportButton(systemName: "shuffle", size: 14) { model.toggleShuffle() }
-                    .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(AlbumStageTokens.default.textFaint))
-                // Forward / backward sit on the always-dark album scrim, so they
-                // need an explicit light foreground. `TransportButton`'s default
-                // is `.primary` which would resolve to black under the Light theme
-                // and disappear against the scrim.
+                    .foregroundStyle(model.player.shuffle
+                                     ? AnyShapeStyle(theme.palette.primary)
+                                     : AnyShapeStyle(theme.palette.primary.opacity(0.65)))
+                // Transport icons need contrast against the tinted glass pill
+                // (pastel accent over the album). `palette.primary` is the
+                // palette's own contrast token — near-black for light palettes,
+                // white for dark — so the glyph reads on either wash without
+                // hardcoding white (which disappears on a light pastel wash).
                 TransportButton(systemName: "backward.fill", size: 18) { model.previous() }
-                    .foregroundStyle(AlbumStageTokens.default.textFaint)
+                    .foregroundStyle(theme.palette.primary.opacity(0.65))
                 TransportButton(
                     systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
                     size: 20, prominent: true) { model.togglePlayPause() }
                 TransportButton(systemName: "forward.fill", size: 18) { model.next() }
-                    .foregroundStyle(AlbumStageTokens.default.textFaint)
+                    .foregroundStyle(theme.palette.primary.opacity(0.65))
                 TransportButton(systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat", size: 14) { model.cycleRepeat() }
-                    .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(AlbumStageTokens.default.textFaint) : AnyShapeStyle(.tint))
+                    .foregroundStyle(model.player.repeatMode == .off
+                                     ? AnyShapeStyle(theme.palette.primary.opacity(0.65))
+                                     : AnyShapeStyle(theme.palette.primary))
             }
             .padding(.horizontal, 26)
             .padding(.vertical, 12)
@@ -494,6 +507,11 @@ struct NowPlayingQueue: View {
 private struct NowPlayingLikeButton: View {
     let item: MediaItem
     let accent: Color
+    /// Foreground for the unliked (outline) heart. Passed in (rather than read
+    /// from the environment) so the caller controls the contrast token — near
+    /// black for light palettes, white for dark, so the outline reads on the
+    /// tinted wash instead of disappearing into a pastel accent.
+    let inactiveColor: Color
     let action: () -> Void
     @State private var bounce = 0
     @State private var optimistic: Bool?
@@ -508,7 +526,7 @@ private struct NowPlayingLikeButton: View {
         } label: {
             Image(systemName: liked ? "heart.fill" : "heart")
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(liked ? AnyShapeStyle(accent) : AnyShapeStyle(AlbumStageTokens.default.textDim))
+                .foregroundStyle(liked ? AnyShapeStyle(accent) : AnyShapeStyle(inactiveColor))
                 .frame(width: 38, height: 38)
                 .background(AlbumStageTokens.default.wash, in: Circle())
                 .contentShape(Circle())
