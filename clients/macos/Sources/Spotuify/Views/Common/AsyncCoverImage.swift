@@ -40,12 +40,11 @@ struct AsyncCoverImage: View {
         }
     }
 
-    @ViewBuilder
-    private var clipShape: some Shape {
+    private var clipShape: AnyShape {
         if isCircle {
-            Circle()
+            AnyShape(Circle())
         } else {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            AnyShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
     }
 }
