@@ -4,11 +4,13 @@ use gpui::{AppContext, Application, WindowOptions};
 use spotuify_core::Playback;
 use spotuify_launcher::{daemon_status, ensure_daemon_running, inspect_socket_state, SocketState};
 use spotuify_protocol::{
-    DaemonEvent, DaemonStatus, OperationSource, Request, Response, ResponseData,
+    DaemonEvent, DaemonStatus, OperationSource, Request, Response, ResponseData, SearchScopeData,
+    SearchSourceData,
 };
+use std::time::Duration;
 use tokio::sync::{mpsc, mpsc::UnboundedReceiver, watch};
 
-use crate::views::DesktopApp;
+use crate::views::{DesktopApp, SearchRequest};
 
 pub fn run() {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -95,6 +97,8 @@ async fn bootstrap(view: gpui::Entity<DesktopApp>, mut cx: gpui::AsyncApp) {
         };
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let (slider_tx, slider_rx) = watch::channel(None);
+    let (search_tx, search_rx) = watch::channel(None);
+    spawn_search_debouncer(search_rx, command_tx.clone());
 
     let doctor_report = fetch_doctor_report(&mut client).await;
     let playback = fetch_client_seed(&mut client).await;
@@ -109,12 +113,50 @@ async fn bootstrap(view: gpui::Entity<DesktopApp>, mut cx: gpui::AsyncApp) {
             last_event: None,
         });
         app.set_command_senders(command_tx, slider_tx);
+        app.set_search_sender(search_tx);
         app.playback = playback;
         app.toast = Some("Connected to daemon".to_string());
         cx.notify();
     });
 
     run_connected_loop(view, cx, client, command_client, command_rx, slider_rx).await;
+}
+
+fn spawn_search_debouncer(
+    mut search_rx: watch::Receiver<Option<SearchRequest>>,
+    command_tx: mpsc::UnboundedSender<Request>,
+) {
+    tokio::spawn(async move {
+        loop {
+            if search_rx.changed().await.is_err() {
+                break;
+            }
+
+            let mut request = search_rx.borrow().clone();
+            loop {
+                match tokio::time::timeout(Duration::from_millis(250), search_rx.changed()).await {
+                    Ok(Ok(())) => request = search_rx.borrow().clone(),
+                    Ok(Err(_)) => return,
+                    Err(_) => break,
+                }
+            }
+
+            let Some(request) = request else {
+                continue;
+            };
+            if command_tx
+                .send(Request::SearchStream {
+                    query: request.query,
+                    scope: SearchScopeData::All,
+                    source: SearchSourceData::Spotify,
+                    version: request.version,
+                })
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
 }
 
 async fn run_connected_loop(
@@ -186,17 +228,39 @@ async fn dispatch_transport_request(
         return;
     };
 
+    let search_request = match &command {
+        Request::SearchStream { query, version, .. } => Some((query.clone(), *version)),
+        _ => None,
+    };
+    let is_playlist_list = matches!(&command, Request::PlaylistsList);
     let result = client.request(command).await;
     match result {
+        Ok(Response::Ok { data }) => {
+            let _ = view.update(cx, |app, cx| {
+                app.apply_daemon_response(data);
+                cx.notify();
+            });
+        }
         Ok(Response::Error { message, .. }) => {
             let _ = view.update(cx, |app, cx| {
+                if let Some((query, version)) = &search_request {
+                    app.fail_search(query, *version, message.clone());
+                }
+                if is_playlist_list {
+                    app.playlist_loading = false;
+                }
                 app.toast = Some(format!("Transport failed: {message}"));
                 cx.notify();
             });
         }
-        Ok(Response::Ok { .. }) => {}
         Err(error) => {
             let _ = view.update(cx, |app, cx| {
+                if let Some((query, version)) = &search_request {
+                    app.fail_search(query, *version, error.to_string());
+                }
+                if is_playlist_list {
+                    app.playlist_loading = false;
+                }
                 app.toast = Some(format!("Transport failed: {error}"));
                 cx.notify();
             });
