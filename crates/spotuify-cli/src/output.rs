@@ -975,23 +975,28 @@ pub fn write_basic_receipt<W: Write>(
     message: &str,
     format: OutputFormat,
 ) -> Result<()> {
+    #[derive(Serialize)]
+    struct BasicReceipt<'a> {
+        action: &'a str,
+        message: &'a str,
+        ok: bool,
+    }
+
+    let receipt = BasicReceipt {
+        action,
+        message,
+        ok: true,
+    };
+
     match format {
         OutputFormat::Json => {
-            serde_json::to_writer_pretty(
-                &mut *writer,
-                &serde_json::json!({ "ok": true, "action": action, "message": message }),
-            )?;
+            serde_json::to_writer_pretty(&mut *writer, &receipt)?;
             writeln!(writer)?;
             Ok(())
         }
-        OutputFormat::Jsonl => writeln!(
-            writer,
-            "{}",
-            serde_json::to_string(
-                &serde_json::json!({ "ok": true, "action": action, "message": message })
-            )?
-        )
-        .map_err(Into::into),
+        OutputFormat::Jsonl => {
+            writeln!(writer, "{}", serde_json::to_string(&receipt)?).map_err(Into::into)
+        }
         OutputFormat::Csv => {
             writeln!(writer, "ok,action,message")?;
             writeln!(writer, "{}", csv_row(&["true", action, message]))?;

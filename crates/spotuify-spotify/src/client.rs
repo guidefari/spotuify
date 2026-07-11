@@ -718,9 +718,9 @@ impl SpotifyClient {
             // in the demo (the live path fills this from Spotify's `added_at`).
             let day = 86_400_000;
             let mut first = fake_track();
-            first.added_at_ms = Some(now_ms() as i64 - day);
+            first.added_at_ms = Some(now_ms() - day);
             let mut second = fake_second_track();
-            second.added_at_ms = Some(now_ms() as i64 - 9 * day);
+            second.added_at_ms = Some(now_ms() - 9 * day);
             let all = vec![first, second];
             let items = all
                 .into_iter()
