@@ -2,7 +2,8 @@ build:
 	cargo build -p spotuify-desktop
 
 run:
-	cargo run -p spotuify-desktop
+	cargo build --bin spotuify
+	SPOTUIFY_BIN="$PWD/target/debug/spotuify" cargo run -p spotuify-desktop
 
 bundle:
 	cargo build -p spotuify-desktop --release
