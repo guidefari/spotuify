@@ -1,5 +1,7 @@
 use gpui::prelude::*;
-use gpui::{div, px, rgb, Context, DragMoveEvent, IntoElement, Render, SharedString, Window};
+use gpui::{
+    div, px, rgb, Context, DragMoveEvent, IntoElement, MouseButton, Render, SharedString, Window,
+};
 use spotuify_core::{MediaItem, Playback};
 use spotuify_launcher::SocketState;
 use spotuify_protocol::{
@@ -16,6 +18,8 @@ pub struct DesktopApp {
     pub(crate) toast: Option<String>,
     pub(crate) command_tx: Option<UnboundedSender<Request>>,
     pub(crate) slider_tx: Option<watch::Sender<Option<Request>>>,
+    slider_drag: Option<SliderKind>,
+    slider_preview: Option<SliderPreview>,
 }
 
 pub(crate) enum DesktopState {
@@ -148,6 +152,8 @@ impl DesktopApp {
             toast: None,
             command_tx: None,
             slider_tx: None,
+            slider_drag: None,
+            slider_preview: None,
         }
     }
 
@@ -188,6 +194,27 @@ impl DesktopApp {
         }
     }
 
+    fn preview_slider(&mut self, kind: SliderKind, preview: SliderPreview) {
+        self.slider_drag = Some(kind);
+        self.slider_preview = Some(preview);
+    }
+
+    fn finish_slider_drag(&mut self, kind: SliderKind) {
+        match (kind, self.slider_preview) {
+            (SliderKind::Seek, Some(SliderPreview::Seek(position_ms))) => {
+                self.slider_preview = None;
+                self.slider_drag = None;
+                self.send_slider_command(PlaybackCommand::Seek { position_ms });
+            }
+            (SliderKind::Volume, Some(SliderPreview::Volume(volume_percent))) => {
+                self.slider_preview = None;
+                self.slider_drag = None;
+                self.send_slider_command(PlaybackCommand::Volume { volume_percent });
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn apply_daemon_event(&mut self, event: DaemonEvent) {
         let label = event_label(&event);
 
@@ -199,6 +226,9 @@ impl DesktopApp {
             DaemonEvent::PlaybackChanged { action, playback } => {
                 if let Some(playback) = playback {
                     self.playback = Some(playback);
+                }
+                if self.slider_drag.is_none() {
+                    self.slider_preview = None;
                 }
                 if should_toast_playback_action(&action) {
                     self.toast = Some(format!("Playback updated: {action}"));
@@ -465,7 +495,7 @@ impl DesktopApp {
                     .flex_col()
                     .items_center()
                     .gap_3()
-                    .child(seek_bar(playback, cx))
+                    .child(seek_bar(playback, self.slider_preview, cx))
                     .child(
                         div()
                             .flex()
@@ -529,7 +559,7 @@ impl DesktopApp {
                             .text_color(rgb(0x918698))
                             .child(summary.progress),
                     )
-                    .child(volume_bar(playback, cx))
+                    .child(volume_bar(playback, self.slider_preview, cx))
                     .child(
                         div()
                             .text_xs()
@@ -616,6 +646,18 @@ fn toast_surface(message: &str) -> impl IntoElement {
 
 const SLIDER_WIDTH: f32 = 420.0;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SliderKind {
+    Seek,
+    Volume,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SliderPreview {
+    Seek(u64),
+    Volume(u8),
+}
+
 #[derive(Clone, Copy, Debug)]
 struct SeekDrag;
 
@@ -654,12 +696,20 @@ fn transport_button(
         .child(label.into())
 }
 
-fn seek_bar(playback: Option<&Playback>, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+fn seek_bar(
+    playback: Option<&Playback>,
+    preview: Option<SliderPreview>,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
     let fraction = playback
         .and_then(|playback| playback.item.as_ref().map(|item| (playback, item)))
         .filter(|(_, item)| item.duration_ms > 0)
         .map_or(0.0, |(playback, item)| {
-            (playback_progress_ms(playback) as f32 / item.duration_ms as f32).clamp(0.0, 1.0)
+            let position_ms = match preview {
+                Some(SliderPreview::Seek(position_ms)) => position_ms,
+                _ => playback_progress_ms(playback),
+            };
+            (position_ms as f32 / item.duration_ms as f32).clamp(0.0, 1.0)
         });
 
     div()
@@ -677,24 +727,46 @@ fn seek_bar(playback: Option<&Playback>, cx: &mut Context<'_, DesktopApp>) -> im
                 .bg(rgb(0xf0b78f)),
         )
         .on_drag(SeekDrag, |_, _, _, cx| cx.new(|_| SliderGhost))
-        .on_drag_move(cx.listener(|app, event: &DragMoveEvent<SeekDrag>, _, _| {
-            let fraction = slider_fraction(event);
-            let Some(playback) = app.playback.as_ref() else {
-                return;
-            };
-            let Some(item) = playback.item.as_ref() else {
-                return;
-            };
-            let position_ms = seek_position_ms(item.duration_ms, fraction);
-            app.send_slider_command(PlaybackCommand::Seek { position_ms });
+        .on_drag_move(cx.listener(|app, event: &DragMoveEvent<SeekDrag>, _, cx| {
+            if let Some(item) = app
+                .playback
+                .as_ref()
+                .and_then(|playback| playback.item.as_ref())
+            {
+                let position_ms = seek_position_ms(item.duration_ms, slider_fraction(event));
+                app.preview_slider(SliderKind::Seek, SliderPreview::Seek(position_ms));
+                cx.notify();
+            }
         }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|app, _, _, cx| {
+                app.finish_slider_drag(SliderKind::Seek);
+                cx.notify();
+            }),
+        )
+        .on_mouse_up_out(
+            MouseButton::Left,
+            cx.listener(|app, _, _, cx| {
+                app.finish_slider_drag(SliderKind::Seek);
+                cx.notify();
+            }),
+        )
 }
 
-fn volume_bar(playback: Option<&Playback>, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+fn volume_bar(
+    playback: Option<&Playback>,
+    preview: Option<SliderPreview>,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
     let device = playback.and_then(|playback| playback.device.as_ref());
     let fraction = device
         .and_then(|device| device.volume_percent)
         .map_or(0.0, |volume| f32::from(volume) / 100.0);
+    let fraction = match preview {
+        Some(SliderPreview::Volume(volume_percent)) => f32::from(volume_percent) / 100.0,
+        _ => fraction,
+    };
     let supports_volume = device.is_some_and(|device| device.supports_volume);
 
     let bar = div()
@@ -714,11 +786,27 @@ fn volume_bar(playback: Option<&Playback>, cx: &mut Context<'_, DesktopApp>) -> 
 
     if supports_volume {
         bar.on_drag(VolumeDrag, |_, _, _, cx| cx.new(|_| SliderGhost))
-            .on_drag_move(cx.listener(|app, event: &DragMoveEvent<VolumeDrag>, _, _| {
-                let fraction = slider_fraction(event);
-                let volume_percent = volume_percent(fraction);
-                app.send_slider_command(PlaybackCommand::Volume { volume_percent });
-            }))
+            .on_drag_move(
+                cx.listener(|app, event: &DragMoveEvent<VolumeDrag>, _, cx| {
+                    let volume_percent = volume_percent(slider_fraction(event));
+                    app.preview_slider(SliderKind::Volume, SliderPreview::Volume(volume_percent));
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|app, _, _, cx| {
+                    app.finish_slider_drag(SliderKind::Volume);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|app, _, _, cx| {
+                    app.finish_slider_drag(SliderKind::Volume);
+                    cx.notify();
+                }),
+            )
     } else {
         bar.opacity(0.45)
     }
@@ -985,6 +1073,46 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn slider_preview_is_local_until_release_then_commits_latest_value() {
+        let mut app = DesktopApp::new();
+        let (slider_tx, slider_rx) = watch::channel::<Option<Request>>(None);
+        app.slider_tx = Some(slider_tx);
+
+        app.preview_slider(SliderKind::Seek, SliderPreview::Seek(98_765));
+        assert_eq!(
+            app.slider_preview,
+            Some(SliderPreview::Seek(98_765)),
+            "drag feedback should be available before the daemon replies"
+        );
+        assert_eq!(*slider_rx.borrow(), None);
+
+        app.finish_slider_drag(SliderKind::Seek);
+
+        assert_eq!(app.slider_preview, None);
+        assert_eq!(
+            *slider_rx.borrow(),
+            Some(Request::PlaybackCommand {
+                command: PlaybackCommand::Seek {
+                    position_ms: 98_765,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn releasing_over_another_slider_does_not_abort_the_active_preview() {
+        let mut app = DesktopApp::new();
+        let (slider_tx, slider_rx) = watch::channel::<Option<Request>>(None);
+        app.slider_tx = Some(slider_tx);
+
+        app.preview_slider(SliderKind::Seek, SliderPreview::Seek(12_345));
+        app.finish_slider_drag(SliderKind::Volume);
+
+        assert_eq!(app.slider_preview, Some(SliderPreview::Seek(12_345)));
+        assert_eq!(*slider_rx.borrow(), None);
     }
 
     #[test]
