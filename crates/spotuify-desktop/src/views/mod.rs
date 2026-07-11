@@ -392,6 +392,7 @@ impl DesktopApp {
             .flex_col()
             .child(
                 div()
+                    .w_full()
                     .flex()
                     .items_center()
                     .justify_between()
@@ -407,6 +408,11 @@ impl DesktopApp {
                     )
                     .child(
                         div()
+                            .w(px(LAST_EVENT_WIDTH))
+                            .flex_shrink_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
                             .text_xs()
                             .text_color(rgb(0xa9b0bc))
                             .child(format!("last event: {}", state.last_event.as_deref().unwrap_or("none"))),
@@ -645,6 +651,8 @@ fn toast_surface(message: &str) -> impl IntoElement {
 }
 
 const SLIDER_WIDTH: f32 = 420.0;
+const LAST_EVENT_WIDTH: f32 = 360.0;
+const MAX_EVENT_LABEL_CHARS: usize = 48;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SliderKind {
@@ -935,14 +943,71 @@ fn format_duration(ms: u64) -> String {
 }
 
 fn event_label(event: &DaemonEvent) -> String {
-    match event {
+    let label = match event {
+        DaemonEvent::ShutdownRequested => "shutdown-requested".to_string(),
         DaemonEvent::PlaybackChanged { action, .. } => format!("playback:{action}"),
+        DaemonEvent::QueueChanged { action, .. } => format!("queue:{action}"),
+        DaemonEvent::DevicesChanged { action, .. } => format!("devices:{action}"),
+        DaemonEvent::PlaylistsChanged { action, .. } => format!("playlists:{action}"),
+        DaemonEvent::LibraryChanged { action, .. } => format!("library:{action}"),
+        DaemonEvent::SearchUpdated { count, .. } => format!("search-updated:{count}"),
+        DaemonEvent::SearchPage { kind, offset, .. } => {
+            format!("search-page:{kind:?}:{offset}")
+        }
+        DaemonEvent::SearchComplete { .. } => "search-complete".to_string(),
+        DaemonEvent::SearchFailed { .. } => "search-failed".to_string(),
+        DaemonEvent::EventStreamLagged { skipped } => format!("event-stream-lagged:{skipped}"),
+        DaemonEvent::SyncStarted { target } => format!("sync-started:{}", target.label()),
+        DaemonEvent::SyncFinished { summary } => {
+            format!("sync-finished:{}", summary.target.label())
+        }
+        DaemonEvent::MutationFinished { action, .. } => format!("mutation:{action}"),
+        DaemonEvent::RateLimited { scope, .. } => format!("rate-limited:{scope}"),
+        DaemonEvent::AuthError { kind } => format!("auth-error:{kind:?}"),
+        DaemonEvent::MutationAccepted { action, .. } => format!("mutation-accepted:{action}"),
+        DaemonEvent::MutationFinalized { .. } => "mutation-finalized".to_string(),
+        DaemonEvent::SchemaCompat { endpoint, .. } => format!("schema-compat:{endpoint}"),
+        DaemonEvent::PlayerReady { name, .. } => format!("player-ready:{name}"),
+        DaemonEvent::PlayerDegraded { .. } => "player-degraded".to_string(),
+        DaemonEvent::PremiumRequired => "premium-required".to_string(),
+        DaemonEvent::SessionDisconnected { .. } => "session-disconnected".to_string(),
+        DaemonEvent::PlayerFailed { .. } => "player-failed".to_string(),
+        DaemonEvent::ListenQualified { .. } => "listen-qualified".to_string(),
+        DaemonEvent::AnalyticsImportProgress { phase, .. } => {
+            format!("analytics-import:{phase}")
+        }
+        DaemonEvent::OperationRecorded { .. } => "operation-recorded".to_string(),
+        DaemonEvent::OperationUndone { success, .. } => {
+            format!(
+                "operation-undone:{}",
+                if *success { "ok" } else { "failed" }
+            )
+        }
+        DaemonEvent::ConfigReloaded => "config-reloaded".to_string(),
+        DaemonEvent::SpectrumFrame { .. } => "spectrum-frame".to_string(),
+        DaemonEvent::VizSourceChanged { .. } => "viz-source-changed".to_string(),
+        DaemonEvent::ReminderDue { .. } => "reminder-due".to_string(),
+        DaemonEvent::RemindersChanged { action } => format!("reminders:{action}"),
         DaemonEvent::UpdateAvailable { latest_version, .. } => {
             format!("update-available:{latest_version}")
         }
-        DaemonEvent::AuthError { kind } => format!("auth-error:{kind:?}"),
-        other => format!("{other:?}"),
+        DaemonEvent::Unknown => "unknown".to_string(),
+    };
+
+    bounded_event_label(label)
+}
+
+fn bounded_event_label(label: String) -> String {
+    if label.chars().count() <= MAX_EVENT_LABEL_CHARS {
+        return label;
     }
+
+    let mut bounded = label
+        .chars()
+        .take(MAX_EVENT_LABEL_CHARS.saturating_sub(1))
+        .collect::<String>();
+    bounded.push('…');
+    bounded
 }
 
 fn should_toast_playback_action(action: &str) -> bool {
@@ -1181,6 +1246,27 @@ mod tests {
             Some("brew upgrade spotuify")
         );
         assert_eq!(app.toast.as_deref(), Some("Update available: 0.1.79"));
+    }
+
+    #[test]
+    fn diagnostic_event_label_does_not_render_full_sync_payload() {
+        let label = event_label(&DaemonEvent::SyncFinished {
+            summary: spotuify_protocol::CacheSyncSummary {
+                target: spotuify_protocol::SyncTargetData::Queue,
+                playback_snapshots: 0,
+                queue_snapshots: 0,
+                queue_items: 20,
+                devices: 0,
+                playlists: 0,
+                playlist_items: 0,
+                recent_items: 0,
+                library_items: 0,
+                media_items: 0,
+            },
+        });
+
+        assert_eq!(label, "sync-finished:queue");
+        assert!(label.chars().count() <= MAX_EVENT_LABEL_CHARS);
     }
 
     fn connected_app() -> DesktopApp {
