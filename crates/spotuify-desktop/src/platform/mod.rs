@@ -2,6 +2,7 @@ pub mod macos;
 
 use gpui::AppContext;
 use gpui::{Application, WindowOptions};
+use spotuify_core::Playback;
 use spotuify_launcher::{daemon_status, ensure_daemon_running, inspect_socket_state, SocketState};
 use spotuify_protocol::{DaemonEvent, DaemonStatus, Request, Response, ResponseData};
 
@@ -79,12 +80,8 @@ async fn bootstrap(view: gpui::Entity<DesktopApp>, mut cx: gpui::AsyncApp) {
 
     let _ = client.subscribe_events().await;
 
-    let doctor_report = match client.request(Request::GetDoctorReport).await {
-        Ok(Response::Ok {
-            data: ResponseData::DoctorReport { report },
-        }) => Some(report),
-        _ => None,
-    };
+    let doctor_report = fetch_doctor_report(&mut client).await;
+    let playback = fetch_client_seed(&mut client).await;
 
     let status = daemon_status()
         .await
@@ -92,9 +89,11 @@ async fn bootstrap(view: gpui::Entity<DesktopApp>, mut cx: gpui::AsyncApp) {
     let _ = view.update(&mut cx, |app, cx| {
         app.state = crate::views::DesktopState::Connected(crate::views::ConnectedState {
             daemon_status: status,
-            doctor_report,
+            doctor_report: doctor_report.map(Box::new),
             last_event: None,
         });
+        app.playback = playback;
+        app.toast = Some("Connected to daemon".to_string());
         cx.notify();
     });
 
@@ -102,19 +101,46 @@ async fn bootstrap(view: gpui::Entity<DesktopApp>, mut cx: gpui::AsyncApp) {
         let Ok(event) = client.next_event().await else {
             break;
         };
-
-        let event_label = match event {
-            DaemonEvent::AuthError { kind } => format!("auth-error:{kind:?}"),
-            DaemonEvent::PlaybackChanged { action, .. } => format!("playback:{action}"),
-            other => format!("{other:?}"),
-        };
+        let should_reseed = matches!(
+            &event,
+            DaemonEvent::EventStreamLagged { .. }
+                | DaemonEvent::PlaybackChanged { playback: None, .. }
+        );
 
         let _ = view.update(&mut cx, |app, cx| {
-            if let crate::views::DesktopState::Connected(state) = &mut app.state {
-                state.last_event = Some(event_label.clone());
-            }
+            app.apply_daemon_event(event);
             cx.notify();
         });
+
+        if should_reseed {
+            let playback = fetch_client_seed(&mut client).await;
+            let _ = view.update(&mut cx, |app, cx| {
+                if playback.is_some() {
+                    app.playback = playback;
+                }
+                cx.notify();
+            });
+        }
+    }
+}
+
+async fn fetch_doctor_report(
+    client: &mut spotuify_protocol::IpcClient,
+) -> Option<spotuify_protocol::DoctorReport> {
+    match client.request(Request::GetDoctorReport).await {
+        Ok(Response::Ok {
+            data: ResponseData::DoctorReport { report },
+        }) => Some(report),
+        _ => None,
+    }
+}
+
+async fn fetch_client_seed(client: &mut spotuify_protocol::IpcClient) -> Option<Playback> {
+    match client.request(Request::ClientSeed).await {
+        Ok(Response::Ok {
+            data: ResponseData::ClientSeed { playback, .. },
+        }) => Some(playback),
+        _ => None,
     }
 }
 
