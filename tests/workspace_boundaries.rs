@@ -53,6 +53,7 @@ fn internal_dep_names(manifest: &toml::Value) -> BTreeSet<String> {
 ///   9. spotuify-audio: core
 ///  10. spotuify-daemon: integration point (everything backend)
 ///  11. spotuify-cli, spotuify-tui, spotuify-mcp: protocol only
+///  12. spotuify-desktop: core playback models + protocol + launcher
 fn allowed_deps(crate_name: &str) -> Option<BTreeSet<&'static str>> {
     let allowed: &[&'static str] = match crate_name {
         "spotuify-core" => &[],
@@ -134,6 +135,7 @@ fn allowed_deps(crate_name: &str) -> Option<BTreeSet<&'static str>> {
             "spotuify-daemon",
         ],
         "spotuify-mcp" => &["spotuify-core", "spotuify-protocol"],
+        "spotuify-desktop" => &["spotuify-core", "spotuify-protocol", "spotuify-launcher"],
         _ => return None,
     };
     Some(allowed.iter().copied().collect())

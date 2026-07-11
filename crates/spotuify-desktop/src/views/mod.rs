@@ -1,8 +1,14 @@
 use gpui::prelude::*;
-use gpui::{div, px, rgb, Context, IntoElement, SharedString, Window};
+use gpui::{
+    div, px, rgb, Context, DragMoveEvent, IntoElement, MouseButton, Render, SharedString, Window,
+};
 use spotuify_core::{MediaItem, Playback};
 use spotuify_launcher::SocketState;
-use spotuify_protocol::{DaemonEvent, DaemonStatus, DoctorReport, UpgradeHint};
+use spotuify_protocol::{
+    DaemonEvent, DaemonStatus, DoctorReport, PlaybackCommand, Request, UpgradeHint,
+};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::{mpsc::UnboundedSender, watch};
 
 pub struct DesktopApp {
     pub(crate) state: DesktopState,
@@ -10,6 +16,10 @@ pub struct DesktopApp {
     pub(crate) playback: Option<Playback>,
     pub(crate) update_banner: Option<UpdateBanner>,
     pub(crate) toast: Option<String>,
+    pub(crate) command_tx: Option<UnboundedSender<Request>>,
+    pub(crate) slider_tx: Option<watch::Sender<Option<Request>>>,
+    slider_drag: Option<SliderKind>,
+    slider_preview: Option<SliderPreview>,
 }
 
 pub(crate) enum DesktopState {
@@ -140,6 +150,68 @@ impl DesktopApp {
             playback: None,
             update_banner: None,
             toast: None,
+            command_tx: None,
+            slider_tx: None,
+            slider_drag: None,
+            slider_preview: None,
+        }
+    }
+
+    pub(crate) fn set_command_senders(
+        &mut self,
+        command_tx: UnboundedSender<Request>,
+        slider_tx: watch::Sender<Option<Request>>,
+    ) {
+        self.command_tx = Some(command_tx);
+        self.slider_tx = Some(slider_tx);
+    }
+
+    fn send_playback_command(&mut self, command: PlaybackCommand) {
+        let Some(command_tx) = &self.command_tx else {
+            self.toast = Some("Transport is not connected to the daemon".to_string());
+            return;
+        };
+
+        if command_tx
+            .send(Request::PlaybackCommand { command })
+            .is_err()
+        {
+            self.toast = Some("Transport connection closed".to_string());
+        }
+    }
+
+    fn send_slider_command(&mut self, command: PlaybackCommand) {
+        let Some(slider_tx) = &self.slider_tx else {
+            self.toast = Some("Transport is not connected to the daemon".to_string());
+            return;
+        };
+
+        if slider_tx
+            .send(Some(Request::PlaybackCommand { command }))
+            .is_err()
+        {
+            self.toast = Some("Transport connection closed".to_string());
+        }
+    }
+
+    fn preview_slider(&mut self, kind: SliderKind, preview: SliderPreview) {
+        self.slider_drag = Some(kind);
+        self.slider_preview = Some(preview);
+    }
+
+    fn finish_slider_drag(&mut self, kind: SliderKind) {
+        match (kind, self.slider_preview) {
+            (SliderKind::Seek, Some(SliderPreview::Seek(position_ms))) => {
+                self.slider_preview = None;
+                self.slider_drag = None;
+                self.send_slider_command(PlaybackCommand::Seek { position_ms });
+            }
+            (SliderKind::Volume, Some(SliderPreview::Volume(volume_percent))) => {
+                self.slider_preview = None;
+                self.slider_drag = None;
+                self.send_slider_command(PlaybackCommand::Volume { volume_percent });
+            }
+            _ => {}
         }
     }
 
@@ -154,6 +226,9 @@ impl DesktopApp {
             DaemonEvent::PlaybackChanged { action, playback } => {
                 if let Some(playback) = playback {
                     self.playback = Some(playback);
+                }
+                if self.slider_drag.is_none() {
+                    self.slider_preview = None;
                 }
                 if should_toast_playback_action(&action) {
                     self.toast = Some(format!("Playback updated: {action}"));
@@ -194,7 +269,17 @@ impl DesktopApp {
 }
 
 impl Render for DesktopApp {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        if self
+            .playback
+            .as_ref()
+            .is_some_and(|playback| playback.is_playing)
+        {
+            // Progress is derived from the daemon's sampled timestamp and the
+            // local clock. The app never advances authoritative playback state;
+            // this frame request only keeps the rendered seek bar moving.
+            window.request_animation_frame();
+        }
         match &self.state {
             DesktopState::Booting => diagnostics_surface(
                 "connecting...",
@@ -247,7 +332,7 @@ impl DesktopApp {
 
         content = content
             .child(self.content_pane(state))
-            .child(now_playing_footer(self.playback.as_ref()));
+            .child(self.now_playing_footer(cx));
 
         let mut root = div()
             .size_full()
@@ -307,6 +392,7 @@ impl DesktopApp {
             .flex_col()
             .child(
                 div()
+                    .w_full()
                     .flex()
                     .items_center()
                     .justify_between()
@@ -322,6 +408,11 @@ impl DesktopApp {
                     )
                     .child(
                         div()
+                            .w(px(LAST_EVENT_WIDTH))
+                            .flex_shrink_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
                             .text_xs()
                             .text_color(rgb(0xa9b0bc))
                             .child(format!("last event: {}", state.last_event.as_deref().unwrap_or("none"))),
@@ -353,6 +444,139 @@ impl DesktopApp {
                                 auth,
                                 state.daemon_status.daemon_version.as_deref().unwrap_or("unknown")
                             )),
+                    ),
+            )
+    }
+
+    fn now_playing_footer(&self, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        let summary = playback_summary(self.playback.as_ref());
+        let playback = self.playback.as_ref();
+        let shuffle_state = playback.is_some_and(|playback| playback.shuffle);
+        let repeat_state = playback
+            .map(|playback| playback.repeat.as_str())
+            .unwrap_or("off");
+        let is_playing = playback.is_some_and(|playback| playback.is_playing);
+
+        div()
+            .h(px(164.))
+            .border_t_1()
+            .border_color(rgb(0x33252e))
+            .bg(rgb(0x19131d))
+            .px_6()
+            .py_4()
+            .flex()
+            .items_center()
+            .gap_6()
+            .child(
+                div()
+                    .w(px(270.))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .w(px(66.))
+                            .h(px(66.))
+                            .rounded_md()
+                            .bg(rgb(0x312235))
+                            .border_1()
+                            .border_color(rgb(0x4a344d)),
+                    )
+                    .child(
+                        div()
+                            .ml_4()
+                            .child(div().text_lg().child(summary.title))
+                            .child(
+                                div()
+                                    .mt_1()
+                                    .text_sm()
+                                    .text_color(rgb(0xb8abbf))
+                                    .child(summary.subtitle),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_3()
+                    .child(seek_bar(playback, self.slider_preview, cx))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(transport_button(
+                                "previous",
+                                "Previous",
+                                PlaybackCommand::Previous,
+                                cx,
+                            ))
+                            .child(transport_button(
+                                "play-pause",
+                                if is_playing { "Pause" } else { "Play" },
+                                if is_playing {
+                                    PlaybackCommand::Pause
+                                } else {
+                                    PlaybackCommand::Resume
+                                },
+                                cx,
+                            ))
+                            .child(transport_button("next", "Next", PlaybackCommand::Next, cx))
+                            .child(transport_button(
+                                "shuffle",
+                                if shuffle_state {
+                                    "Shuffle on"
+                                } else {
+                                    "Shuffle"
+                                },
+                                PlaybackCommand::Shuffle {
+                                    state: !shuffle_state,
+                                },
+                                cx,
+                            ))
+                            .child(transport_button(
+                                "repeat",
+                                format!("Repeat {repeat_state}"),
+                                PlaybackCommand::Repeat {
+                                    state: next_repeat_state(repeat_state).to_string(),
+                                },
+                                cx,
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .w(px(160.))
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(0xf0b78f))
+                            .child(summary.state),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x918698))
+                            .child(summary.progress),
+                    )
+                    .child(volume_bar(playback, self.slider_preview, cx))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x918698))
+                            .child(summary.device),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x918698))
+                            .child(summary.mode),
                     ),
             )
     }
@@ -426,77 +650,195 @@ fn toast_surface(message: &str) -> impl IntoElement {
         .child(message.to_string())
 }
 
-fn now_playing_footer(playback: Option<&Playback>) -> impl IntoElement {
-    let summary = playback_summary(playback);
+const SLIDER_WIDTH: f32 = 420.0;
+const LAST_EVENT_WIDTH: f32 = 360.0;
+const MAX_EVENT_LABEL_CHARS: usize = 48;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SliderKind {
+    Seek,
+    Volume,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SliderPreview {
+    Seek(u64),
+    Volume(u8),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SeekDrag;
+
+#[derive(Clone, Copy, Debug)]
+struct VolumeDrag;
+
+struct SliderGhost;
+
+impl Render for SliderGhost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<'_, Self>) -> impl IntoElement {
+        div().size_0()
+    }
+}
+
+fn transport_button(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    command: PlaybackCommand,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
+    div()
+        .id(SharedString::from(format!("transport-{id}")))
+        .cursor_pointer()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(0x4a344d))
+        .bg(rgb(0x2a1b2f))
+        .px_3()
+        .py_2()
+        .text_xs()
+        .text_color(rgb(0xf1e8ff))
+        .hover(|style| style.bg(rgb(0x493052)))
+        .on_click(cx.listener(move |app, _, _, _| {
+            app.send_playback_command(command.clone());
+        }))
+        .child(label.into())
+}
+
+fn seek_bar(
+    playback: Option<&Playback>,
+    preview: Option<SliderPreview>,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
+    let fraction = playback
+        .and_then(|playback| playback.item.as_ref().map(|item| (playback, item)))
+        .filter(|(_, item)| item.duration_ms > 0)
+        .map_or(0.0, |(playback, item)| {
+            let position_ms = match preview {
+                Some(SliderPreview::Seek(position_ms)) => position_ms,
+                _ => playback_progress_ms(playback),
+            };
+            (position_ms as f32 / item.duration_ms as f32).clamp(0.0, 1.0)
+        });
 
     div()
-        .h(px(116.))
-        .border_t_1()
-        .border_color(rgb(0x33252e))
-        .bg(rgb(0x19131d))
-        .px_6()
-        .py_4()
-        .flex()
-        .items_center()
-        .justify_between()
+        .id("seek-bar")
+        .w(px(SLIDER_WIDTH))
+        .h(px(14.))
+        .cursor_pointer()
+        .rounded_md()
+        .bg(rgb(0x34283b))
         .child(
             div()
-                .flex()
-                .items_center()
-                .child(
-                    div()
-                        .w(px(66.))
-                        .h(px(66.))
-                        .rounded_md()
-                        .bg(rgb(0x312235))
-                        .border_1()
-                        .border_color(rgb(0x4a344d)),
-                )
-                .child(
-                    div()
-                        .ml_4()
-                        .child(div().text_lg().child(summary.title))
-                        .child(
-                            div()
-                                .mt_1()
-                                .text_sm()
-                                .text_color(rgb(0xb8abbf))
-                                .child(summary.subtitle),
-                        ),
-                ),
+                .h_full()
+                .w(px(SLIDER_WIDTH * fraction))
+                .rounded_md()
+                .bg(rgb(0xf0b78f)),
         )
+        .on_drag(SeekDrag, |_, _, _, cx| cx.new(|_| SliderGhost))
+        .on_drag_move(cx.listener(|app, event: &DragMoveEvent<SeekDrag>, _, cx| {
+            if let Some(item) = app
+                .playback
+                .as_ref()
+                .and_then(|playback| playback.item.as_ref())
+            {
+                let position_ms = seek_position_ms(item.duration_ms, slider_fraction(event));
+                app.preview_slider(SliderKind::Seek, SliderPreview::Seek(position_ms));
+                cx.notify();
+            }
+        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|app, _, _, cx| {
+                app.finish_slider_drag(SliderKind::Seek);
+                cx.notify();
+            }),
+        )
+        .on_mouse_up_out(
+            MouseButton::Left,
+            cx.listener(|app, _, _, cx| {
+                app.finish_slider_drag(SliderKind::Seek);
+                cx.notify();
+            }),
+        )
+}
+
+fn volume_bar(
+    playback: Option<&Playback>,
+    preview: Option<SliderPreview>,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
+    let device = playback.and_then(|playback| playback.device.as_ref());
+    let fraction = device
+        .and_then(|device| device.volume_percent)
+        .map_or(0.0, |volume| f32::from(volume) / 100.0);
+    let fraction = match preview {
+        Some(SliderPreview::Volume(volume_percent)) => f32::from(volume_percent) / 100.0,
+        _ => fraction,
+    };
+    let supports_volume = device.is_some_and(|device| device.supports_volume);
+
+    let bar = div()
+        .id("volume-bar")
+        .w(px(140.))
+        .h(px(10.))
+        .cursor_pointer()
+        .rounded_md()
+        .bg(rgb(0x34283b))
         .child(
             div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(0xf0b78f))
-                        .child(summary.state),
-                )
-                .child(
-                    div()
-                        .mt_2()
-                        .text_xs()
-                        .text_color(rgb(0x918698))
-                        .child(summary.progress),
-                ),
-        )
-        .child(
-            div()
-                .text_sm()
-                .text_color(rgb(0xb8abbf))
-                .child(summary.device)
-                .child(
-                    div()
-                        .mt_1()
-                        .text_xs()
-                        .text_color(rgb(0x918698))
-                        .child(summary.mode),
-                ),
-        )
+                .h_full()
+                .w(px(140. * fraction))
+                .rounded_md()
+                .bg(rgb(0x9fc7c5)),
+        );
+
+    if supports_volume {
+        bar.on_drag(VolumeDrag, |_, _, _, cx| cx.new(|_| SliderGhost))
+            .on_drag_move(
+                cx.listener(|app, event: &DragMoveEvent<VolumeDrag>, _, cx| {
+                    let volume_percent = volume_percent(slider_fraction(event));
+                    app.preview_slider(SliderKind::Volume, SliderPreview::Volume(volume_percent));
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|app, _, _, cx| {
+                    app.finish_slider_drag(SliderKind::Volume);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|app, _, _, cx| {
+                    app.finish_slider_drag(SliderKind::Volume);
+                    cx.notify();
+                }),
+            )
+    } else {
+        bar.opacity(0.45)
+    }
+}
+
+fn slider_fraction<T>(event: &DragMoveEvent<T>) -> f32 {
+    ((event.event.position.x - event.bounds.origin.x) / event.bounds.size.width).clamp(0.0, 1.0)
+}
+
+fn next_repeat_state(repeat: &str) -> &'static str {
+    match repeat {
+        "off" => "context",
+        "context" => "track",
+        "track" => "off",
+        _ => "off",
+    }
+}
+
+fn seek_position_ms(duration_ms: u64, fraction: f32) -> u64 {
+    (duration_ms as f32 * fraction.clamp(0.0, 1.0)).round() as u64
+}
+
+fn volume_percent(fraction: f32) -> u8 {
+    (fraction.clamp(0.0, 1.0) * 100.0).round() as u8
 }
 
 struct PlaybackSummary {
@@ -535,12 +877,13 @@ fn playback_summary(playback: Option<&Playback>) -> PlaybackSummary {
         "Paused"
     }
     .to_string();
+    let progress_ms = playback_progress_ms(playback);
     let progress = if duration_ms == 0 {
-        format_duration(playback.progress_ms)
+        format_duration(progress_ms)
     } else {
         format!(
             "{} / {}",
-            format_duration(playback.progress_ms),
+            format_duration(progress_ms),
             format_duration(duration_ms)
         )
     };
@@ -565,6 +908,25 @@ fn playback_summary(playback: Option<&Playback>) -> PlaybackSummary {
     }
 }
 
+fn playback_progress_ms(playback: &Playback) -> u64 {
+    if !playback.is_playing {
+        return playback.progress_ms;
+    }
+
+    let Some(sampled_at_ms) = playback.sampled_at_ms else {
+        return playback.progress_ms;
+    };
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(sampled_at_ms, |duration| duration.as_millis() as i64);
+    let elapsed_ms = now_ms.saturating_sub(sampled_at_ms) as u64;
+    let projected = playback.progress_ms.saturating_add(elapsed_ms);
+    playback
+        .item
+        .as_ref()
+        .map_or(projected, |item| projected.min(item.duration_ms))
+}
+
 fn media_subtitle(item: &MediaItem) -> String {
     if !item.subtitle.is_empty() {
         item.subtitle.clone()
@@ -581,14 +943,71 @@ fn format_duration(ms: u64) -> String {
 }
 
 fn event_label(event: &DaemonEvent) -> String {
-    match event {
+    let label = match event {
+        DaemonEvent::ShutdownRequested => "shutdown-requested".to_string(),
         DaemonEvent::PlaybackChanged { action, .. } => format!("playback:{action}"),
+        DaemonEvent::QueueChanged { action, .. } => format!("queue:{action}"),
+        DaemonEvent::DevicesChanged { action, .. } => format!("devices:{action}"),
+        DaemonEvent::PlaylistsChanged { action, .. } => format!("playlists:{action}"),
+        DaemonEvent::LibraryChanged { action, .. } => format!("library:{action}"),
+        DaemonEvent::SearchUpdated { count, .. } => format!("search-updated:{count}"),
+        DaemonEvent::SearchPage { kind, offset, .. } => {
+            format!("search-page:{kind:?}:{offset}")
+        }
+        DaemonEvent::SearchComplete { .. } => "search-complete".to_string(),
+        DaemonEvent::SearchFailed { .. } => "search-failed".to_string(),
+        DaemonEvent::EventStreamLagged { skipped } => format!("event-stream-lagged:{skipped}"),
+        DaemonEvent::SyncStarted { target } => format!("sync-started:{}", target.label()),
+        DaemonEvent::SyncFinished { summary } => {
+            format!("sync-finished:{}", summary.target.label())
+        }
+        DaemonEvent::MutationFinished { action, .. } => format!("mutation:{action}"),
+        DaemonEvent::RateLimited { scope, .. } => format!("rate-limited:{scope}"),
+        DaemonEvent::AuthError { kind } => format!("auth-error:{kind:?}"),
+        DaemonEvent::MutationAccepted { action, .. } => format!("mutation-accepted:{action}"),
+        DaemonEvent::MutationFinalized { .. } => "mutation-finalized".to_string(),
+        DaemonEvent::SchemaCompat { endpoint, .. } => format!("schema-compat:{endpoint}"),
+        DaemonEvent::PlayerReady { name, .. } => format!("player-ready:{name}"),
+        DaemonEvent::PlayerDegraded { .. } => "player-degraded".to_string(),
+        DaemonEvent::PremiumRequired => "premium-required".to_string(),
+        DaemonEvent::SessionDisconnected { .. } => "session-disconnected".to_string(),
+        DaemonEvent::PlayerFailed { .. } => "player-failed".to_string(),
+        DaemonEvent::ListenQualified { .. } => "listen-qualified".to_string(),
+        DaemonEvent::AnalyticsImportProgress { phase, .. } => {
+            format!("analytics-import:{phase}")
+        }
+        DaemonEvent::OperationRecorded { .. } => "operation-recorded".to_string(),
+        DaemonEvent::OperationUndone { success, .. } => {
+            format!(
+                "operation-undone:{}",
+                if *success { "ok" } else { "failed" }
+            )
+        }
+        DaemonEvent::ConfigReloaded => "config-reloaded".to_string(),
+        DaemonEvent::SpectrumFrame { .. } => "spectrum-frame".to_string(),
+        DaemonEvent::VizSourceChanged { .. } => "viz-source-changed".to_string(),
+        DaemonEvent::ReminderDue { .. } => "reminder-due".to_string(),
+        DaemonEvent::RemindersChanged { action } => format!("reminders:{action}"),
         DaemonEvent::UpdateAvailable { latest_version, .. } => {
             format!("update-available:{latest_version}")
         }
-        DaemonEvent::AuthError { kind } => format!("auth-error:{kind:?}"),
-        other => format!("{other:?}"),
+        DaemonEvent::Unknown => "unknown".to_string(),
+    };
+
+    bounded_event_label(label)
+}
+
+fn bounded_event_label(label: String) -> String {
+    if label.chars().count() <= MAX_EVENT_LABEL_CHARS {
+        return label;
     }
+
+    let mut bounded = label
+        .chars()
+        .take(MAX_EVENT_LABEL_CHARS.saturating_sub(1))
+        .collect::<String>();
+    bounded.push('…');
+    bounded
 }
 
 fn should_toast_playback_action(action: &str) -> bool {
@@ -674,6 +1093,133 @@ mod tests {
     }
 
     #[test]
+    fn transport_state_round_trips_from_playback_event() {
+        let mut app = connected_app();
+        app.apply_daemon_event(DaemonEvent::PlaybackChanged {
+            action: "optimistic-shuffle".to_string(),
+            playback: Some(Playback {
+                shuffle: true,
+                repeat: "track".to_string(),
+                ..Playback::default()
+            }),
+        });
+
+        let playback = app.playback.expect("playback event should seed state");
+        assert!(playback.shuffle);
+        assert_eq!(playback.repeat, "track");
+    }
+
+    #[test]
+    fn transport_controls_enqueue_protocol_mutations() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, slider_rx) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+
+        app.send_playback_command(PlaybackCommand::Pause);
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::PlaybackCommand {
+                command: PlaybackCommand::Pause
+            })
+        ));
+
+        app.send_slider_command(PlaybackCommand::Seek {
+            position_ms: 12_345,
+        });
+        app.send_slider_command(PlaybackCommand::Seek {
+            position_ms: 98_765,
+        });
+        assert_eq!(
+            slider_rx.borrow().clone(),
+            Some(Request::PlaybackCommand {
+                command: PlaybackCommand::Seek {
+                    position_ms: 98_765,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn slider_preview_is_local_until_release_then_commits_latest_value() {
+        let mut app = DesktopApp::new();
+        let (slider_tx, slider_rx) = watch::channel::<Option<Request>>(None);
+        app.slider_tx = Some(slider_tx);
+
+        app.preview_slider(SliderKind::Seek, SliderPreview::Seek(98_765));
+        assert_eq!(
+            app.slider_preview,
+            Some(SliderPreview::Seek(98_765)),
+            "drag feedback should be available before the daemon replies"
+        );
+        assert_eq!(*slider_rx.borrow(), None);
+
+        app.finish_slider_drag(SliderKind::Seek);
+
+        assert_eq!(app.slider_preview, None);
+        assert_eq!(
+            *slider_rx.borrow(),
+            Some(Request::PlaybackCommand {
+                command: PlaybackCommand::Seek {
+                    position_ms: 98_765,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn releasing_over_another_slider_does_not_abort_the_active_preview() {
+        let mut app = DesktopApp::new();
+        let (slider_tx, slider_rx) = watch::channel::<Option<Request>>(None);
+        app.slider_tx = Some(slider_tx);
+
+        app.preview_slider(SliderKind::Seek, SliderPreview::Seek(12_345));
+        app.finish_slider_drag(SliderKind::Volume);
+
+        assert_eq!(app.slider_preview, Some(SliderPreview::Seek(12_345)));
+        assert_eq!(*slider_rx.borrow(), None);
+    }
+
+    #[test]
+    fn transport_value_mapping_clamps_and_rounds() {
+        assert_eq!(seek_position_ms(200_000, 0.25), 50_000);
+        assert_eq!(seek_position_ms(200_000, -1.0), 0);
+        assert_eq!(seek_position_ms(200_000, 2.0), 200_000);
+        assert_eq!(volume_percent(0.505), 51);
+        assert_eq!(volume_percent(-1.0), 0);
+        assert_eq!(volume_percent(2.0), 100);
+    }
+
+    #[test]
+    fn playing_progress_is_derived_from_daemon_sample_time() {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_millis() as i64;
+        let playback = Playback {
+            item: Some(MediaItem {
+                duration_ms: 10_000,
+                ..MediaItem::default()
+            }),
+            is_playing: true,
+            progress_ms: 1_000,
+            sampled_at_ms: Some(now_ms - 2_000),
+            ..Playback::default()
+        };
+
+        assert!(playback_progress_ms(&playback) >= 2_900);
+        assert!(playback_progress_ms(&playback) <= 10_000);
+    }
+
+    #[test]
+    fn repeat_button_cycles_through_daemon_modes() {
+        assert_eq!(next_repeat_state("off"), "context");
+        assert_eq!(next_repeat_state("context"), "track");
+        assert_eq!(next_repeat_state("track"), "off");
+        assert_eq!(next_repeat_state("unknown"), "off");
+    }
+
+    #[test]
     fn update_event_sets_banner() {
         let mut app = connected_app();
 
@@ -700,6 +1246,27 @@ mod tests {
             Some("brew upgrade spotuify")
         );
         assert_eq!(app.toast.as_deref(), Some("Update available: 0.1.79"));
+    }
+
+    #[test]
+    fn diagnostic_event_label_does_not_render_full_sync_payload() {
+        let label = event_label(&DaemonEvent::SyncFinished {
+            summary: spotuify_protocol::CacheSyncSummary {
+                target: spotuify_protocol::SyncTargetData::Queue,
+                playback_snapshots: 0,
+                queue_snapshots: 0,
+                queue_items: 20,
+                devices: 0,
+                playlists: 0,
+                playlist_items: 0,
+                recent_items: 0,
+                library_items: 0,
+                media_items: 0,
+            },
+        });
+
+        assert_eq!(label, "sync-finished:queue");
+        assert!(label.chars().count() <= MAX_EVENT_LABEL_CHARS);
     }
 
     fn connected_app() -> DesktopApp {

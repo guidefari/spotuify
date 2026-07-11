@@ -1,10 +1,12 @@
 pub mod macos;
 
-use gpui::AppContext;
-use gpui::{Application, WindowOptions};
+use gpui::{AppContext, Application, WindowOptions};
 use spotuify_core::Playback;
 use spotuify_launcher::{daemon_status, ensure_daemon_running, inspect_socket_state, SocketState};
-use spotuify_protocol::{DaemonEvent, DaemonStatus, Request, Response, ResponseData};
+use spotuify_protocol::{
+    DaemonEvent, DaemonStatus, OperationSource, Request, Response, ResponseData,
+};
+use tokio::sync::{mpsc, mpsc::UnboundedReceiver, watch};
 
 use crate::views::DesktopApp;
 
@@ -80,6 +82,20 @@ async fn bootstrap(view: gpui::Entity<DesktopApp>, mut cx: gpui::AsyncApp) {
 
     let _ = client.subscribe_events().await;
 
+    let command_client =
+        match spotuify_protocol::IpcClient::connect_with_source(OperationSource::Agent).await {
+            Ok(client) => Some(client),
+            Err(error) => {
+                let _ = view.update(&mut cx, |app, cx| {
+                    app.toast = Some(format!("Transport unavailable: {error}"));
+                    cx.notify();
+                });
+                None
+            }
+        };
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
+    let (slider_tx, slider_rx) = watch::channel(None);
+
     let doctor_report = fetch_doctor_report(&mut client).await;
     let playback = fetch_client_seed(&mut client).await;
 
@@ -92,34 +108,102 @@ async fn bootstrap(view: gpui::Entity<DesktopApp>, mut cx: gpui::AsyncApp) {
             doctor_report: doctor_report.map(Box::new),
             last_event: None,
         });
+        app.set_command_senders(command_tx, slider_tx);
         app.playback = playback;
         app.toast = Some("Connected to daemon".to_string());
         cx.notify();
     });
 
-    loop {
-        let Ok(event) = client.next_event().await else {
-            break;
-        };
-        let should_reseed = matches!(
-            &event,
-            DaemonEvent::EventStreamLagged { .. }
-                | DaemonEvent::PlaybackChanged { playback: None, .. }
-        );
+    run_connected_loop(view, cx, client, command_client, command_rx, slider_rx).await;
+}
 
-        let _ = view.update(&mut cx, |app, cx| {
-            app.apply_daemon_event(event);
+async fn run_connected_loop(
+    view: gpui::Entity<DesktopApp>,
+    mut cx: gpui::AsyncApp,
+    mut event_client: spotuify_protocol::IpcClient,
+    mut command_client: Option<spotuify_protocol::IpcClient>,
+    mut command_rx: UnboundedReceiver<Request>,
+    mut slider_rx: watch::Receiver<Option<Request>>,
+) {
+    loop {
+        tokio::select! {
+            command = command_rx.recv() => {
+                let Some(command) = command else { break };
+                dispatch_transport_request(&view, &mut cx, &mut command_client, command).await;
+            }
+            changed = slider_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let command = slider_rx.borrow().clone();
+                if let Some(command) = command {
+                    dispatch_transport_request(
+                        &view,
+                        &mut cx,
+                        &mut command_client,
+                        command,
+                    ).await;
+                }
+            }
+            event = event_client.next_event() => {
+                let Ok(event) = event else { break };
+                let should_reseed = matches!(
+                    &event,
+                    DaemonEvent::EventStreamLagged { .. }
+                        | DaemonEvent::PlaybackChanged { playback: None, .. }
+                );
+
+                let _ = view.update(&mut cx, |app, cx| {
+                    app.apply_daemon_event(event);
+                    cx.notify();
+                });
+
+                if should_reseed {
+                    let playback = fetch_client_seed(&mut event_client).await;
+                    let _ = view.update(&mut cx, |app, cx| {
+                        if playback.is_some() {
+                            app.playback = playback;
+                        }
+                        cx.notify();
+                    });
+                }
+            }
+        }
+    }
+}
+
+async fn dispatch_transport_request(
+    view: &gpui::Entity<DesktopApp>,
+    cx: &mut gpui::AsyncApp,
+    command_client: &mut Option<spotuify_protocol::IpcClient>,
+    command: Request,
+) {
+    let Some(client) = command_client.as_mut() else {
+        let _ = view.update(cx, |app, cx| {
+            app.toast = Some("Transport is not connected to the daemon".to_string());
             cx.notify();
         });
+        return;
+    };
 
-        if should_reseed {
-            let playback = fetch_client_seed(&mut client).await;
-            let _ = view.update(&mut cx, |app, cx| {
-                if playback.is_some() {
-                    app.playback = playback;
-                }
+    let result = client.request(command).await;
+    match result {
+        Ok(Response::Error { message, .. }) => {
+            let _ = view.update(cx, |app, cx| {
+                app.toast = Some(format!("Transport failed: {message}"));
                 cx.notify();
             });
+        }
+        Ok(Response::Ok { .. }) => {}
+        Err(error) => {
+            let _ = view.update(cx, |app, cx| {
+                app.toast = Some(format!("Transport failed: {error}"));
+                cx.notify();
+            });
+            *command_client =
+                spotuify_protocol::IpcClient::connect_with_source(OperationSource::Agent)
+                    .await
+                    .ok();
         }
     }
 }
