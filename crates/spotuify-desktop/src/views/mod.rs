@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{div, Window};
+use gpui::{div, rgb, Window};
 use spotuify_launcher::SocketState;
 use spotuify_protocol::{DaemonStatus, DoctorReport};
 
@@ -103,11 +103,30 @@ impl Render for DesktopApp {
 }
 
 fn diagnostics_surface(title: &str, body: &str, lines: Vec<String>) -> impl IntoElement {
-    let mut column = div().child(title.to_string()).child(body.to_string());
+    let mut status_rows = div().mt_6().flex().flex_col();
     for line in lines {
-        column = column.child(line);
+        status_rows =
+            status_rows.child(div().mb_2().text_sm().text_color(rgb(0xa9b0bc)).child(line));
     }
-    column
+
+    div()
+        .size_full()
+        .bg(rgb(0x1d1413))
+        .p_8()
+        .flex()
+        .flex_col()
+        .items_start()
+        .justify_start()
+        .text_color(rgb(0xf7efe8))
+        .child(div().text_3xl().child(title.to_string()))
+        .child(
+            div()
+                .mt_2()
+                .text_lg()
+                .text_color(rgb(0xd6c7ba))
+                .child(body.to_string()),
+        )
+        .child(status_rows)
 }
 
 fn health_word(is_healthy: bool) -> &'static str {
