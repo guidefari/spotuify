@@ -8,6 +8,19 @@ use spotuify_protocol::{DaemonEvent, DaemonStatus, Request, Response, ResponseDa
 use crate::views::DesktopApp;
 
 pub fn run() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("spotuify-desktop-io")
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("failed to start spotuify desktop async runtime: {error}");
+            return;
+        }
+    };
+    let _runtime_guard = runtime.enter();
+
     Application::new().run(move |app| {
         let _ = app.open_window(WindowOptions::default(), move |_, app_cx| {
             let view = app_cx.new(|_| DesktopApp::new());

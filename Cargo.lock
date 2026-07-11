@@ -7961,6 +7961,7 @@ dependencies = [
  "spotuify-core",
  "spotuify-launcher",
  "spotuify-protocol",
+ "tokio",
 ]
 
 [[package]]
