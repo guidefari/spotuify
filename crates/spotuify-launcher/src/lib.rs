@@ -10,7 +10,8 @@
 //! loop). `start_daemon_background` here spawns `spotuify daemon start
 //! --foreground` as a detached subprocess; that child runs the daemon.
 
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -107,7 +108,7 @@ pub async fn start_daemon_background() -> Result<Option<DaemonStatus>> {
         SocketState::Missing => {}
     }
 
-    let exe = std::env::current_exe().context("failed to resolve current executable")?;
+    let exe = daemon_executable()?;
     let mut command = Command::new(exe);
     command
         .args(["daemon", "start", "--foreground"])
@@ -171,6 +172,31 @@ pub async fn start_daemon_background() -> Result<Option<DaemonStatus>> {
             Err(err) => return Err(err),
         }
     }
+}
+
+fn daemon_executable() -> Result<PathBuf> {
+    let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
+    daemon_executable_from_env(std::env::var_os("SPOTUIFY_BIN"), current_exe)
+}
+
+fn daemon_executable_from_env(
+    override_bin: Option<OsString>,
+    current_exe: PathBuf,
+) -> Result<PathBuf> {
+    if let Some(path) = override_bin.filter(|path| !path.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+
+    if current_exe
+        .file_stem()
+        .is_some_and(|stem| stem == "spotuify-desktop")
+    {
+        anyhow::bail!(
+            "SPOTUIFY_BIN is required to auto-start the daemon from spotuify-desktop; start `spotuify daemon start` first or set SPOTUIFY_BIN"
+        );
+    }
+
+    Ok(current_exe)
 }
 
 #[cfg(unix)]
@@ -479,6 +505,25 @@ mod tests {
             now.saturating_sub(stamped) < 5,
             "sentinel stamp {stamped} should be ~now {now}"
         );
+    }
+
+    #[test]
+    fn daemon_executable_uses_spotuify_bin_override() {
+        let exe = daemon_executable_from_env(
+            Some(OsString::from("/tmp/spotuify")),
+            PathBuf::from("/tmp/spotuify-desktop"),
+        )
+        .expect("override should be accepted");
+
+        assert_eq!(exe, PathBuf::from("/tmp/spotuify"));
+    }
+
+    #[test]
+    fn daemon_executable_rejects_desktop_self_spawn() {
+        let err = daemon_executable_from_env(None, PathBuf::from("/tmp/spotuify-desktop"))
+            .expect_err("desktop must not self-spawn as daemon");
+
+        assert!(err.to_string().contains("SPOTUIFY_BIN"));
     }
 
     #[test]
