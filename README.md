@@ -42,6 +42,10 @@ Want the most polished desktop experience? Use the official app. Want Spotify as
 - MCP server over stdio or loopback HTTP for agents.
 - Audio visualization through embedded sink taps or loopback capture.
 
+### macOS Rust desktop search
+
+The Rust/GPUI desktop client’s Search pane searches Spotify as you type with a short debounce; Enter or Search submits immediately. Results support Play, Queue for queueable media, and Add to playlist with a playlist picker, all through the daemon IPC event stream.
+
 ## Requirements
 
 - A Spotify Premium account (required for librespot streaming).
