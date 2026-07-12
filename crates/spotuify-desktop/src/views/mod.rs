@@ -9,7 +9,7 @@ use gpui::{
 use spotuify_core::{MediaItem, MediaKind, Playback, Playlist};
 use spotuify_launcher::SocketState;
 use spotuify_protocol::{
-    DaemonEvent, DaemonStatus, DoctorReport, PlaybackCommand, Request, ResponseData,
+    DaemonEvent, DaemonStatus, DoctorReport, PlaybackCommand, ReceiptId, Request, ResponseData,
     SearchScopeData, SearchSourceData, UpgradeHint,
 };
 use std::ops::Range;
@@ -39,6 +39,7 @@ pub struct DesktopApp {
     volume_bar_bounds: Option<Bounds<Pixels>>,
     slider_drag: Option<SliderKind>,
     slider_preview: Option<SliderPreview>,
+    slider_pending_receipt: Option<ReceiptId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,6 +193,7 @@ impl DesktopApp {
             volume_bar_bounds: None,
             slider_drag: None,
             slider_preview: None,
+            slider_pending_receipt: None,
         }
     }
 
@@ -316,18 +318,19 @@ impl DesktopApp {
     fn preview_slider(&mut self, kind: SliderKind, preview: SliderPreview) {
         self.slider_drag = Some(kind);
         self.slider_preview = Some(preview);
+        self.slider_pending_receipt = None;
     }
 
     fn finish_slider_drag(&mut self, kind: SliderKind) {
         match (kind, self.slider_preview) {
             (SliderKind::Seek, Some(SliderPreview::Seek(position_ms))) => {
-                self.slider_preview = None;
                 self.slider_drag = None;
+                self.slider_pending_receipt = None;
                 self.send_slider_command(PlaybackCommand::Seek { position_ms });
             }
             (SliderKind::Volume, Some(SliderPreview::Volume(volume_percent))) => {
-                self.slider_preview = None;
                 self.slider_drag = None;
+                self.slider_pending_receipt = None;
                 self.send_slider_command(PlaybackCommand::Volume { volume_percent });
             }
             _ => {}
@@ -344,10 +347,15 @@ impl DesktopApp {
         match event {
             DaemonEvent::PlaybackChanged { action, playback } => {
                 if let Some(playback) = playback {
+                    let settles_slider = self.slider_drag.is_none()
+                        && self.slider_preview.is_some_and(|preview| {
+                            slider_preview_matches_playback(preview, &playback)
+                        });
                     self.playback = Some(playback);
-                }
-                if self.slider_drag.is_none() {
-                    self.slider_preview = None;
+                    if settles_slider {
+                        self.slider_preview = None;
+                        self.slider_pending_receipt = None;
+                    }
                 }
                 if should_toast_playback_action(&action) {
                     self.toast = Some(format!("Playback updated: {action}"));
@@ -379,9 +387,15 @@ impl DesktopApp {
                 self.search_error = Some(message);
             }
             DaemonEvent::MutationFinalized {
-                status, message, ..
+                receipt_id,
+                status,
+                message,
             } => match status {
                 spotuify_protocol::ReceiptStatus::Failed => {
+                    if self.slider_pending_receipt == Some(receipt_id) {
+                        self.slider_preview = None;
+                        self.slider_pending_receipt = None;
+                    }
                     self.toast = Some(format!("Mutation failed: {message}"));
                 }
                 spotuify_protocol::ReceiptStatus::Confirmed => {
@@ -389,6 +403,15 @@ impl DesktopApp {
                 }
                 spotuify_protocol::ReceiptStatus::Pending => {}
             },
+            DaemonEvent::MutationAccepted { receipt_id, action } => {
+                if self.slider_drag.is_none()
+                    && self
+                        .slider_preview
+                        .is_some_and(|preview| preview.action() == action)
+                {
+                    self.slider_pending_receipt = Some(receipt_id);
+                }
+            }
             DaemonEvent::UpdateAvailable {
                 latest_version,
                 release_url,
@@ -1689,6 +1712,15 @@ enum SliderPreview {
     Volume(u8),
 }
 
+impl SliderPreview {
+    fn action(self) -> &'static str {
+        match self {
+            Self::Seek(_) => "seek",
+            Self::Volume(_) => "volume",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct SeekDrag;
 
@@ -1901,6 +1933,19 @@ fn slider_fraction<T>(event: &DragMoveEvent<T>) -> f32 {
 
 fn slider_fraction_at(position: Point<Pixels>, bounds: Bounds<Pixels>) -> f32 {
     ((position.x - bounds.origin.x) / bounds.size.width).clamp(0.0, 1.0)
+}
+
+fn slider_preview_matches_playback(preview: SliderPreview, playback: &Playback) -> bool {
+    match preview {
+        SliderPreview::Seek(position_ms) => playback.progress_ms.abs_diff(position_ms) <= 1_500,
+        SliderPreview::Volume(volume_percent) => {
+            playback
+                .device
+                .as_ref()
+                .and_then(|device| device.volume_percent)
+                == Some(volume_percent)
+        }
+    }
 }
 
 fn next_repeat_state(repeat: &str) -> &'static str {
@@ -2426,7 +2471,11 @@ mod tests {
 
         app.finish_slider_drag(SliderKind::Seek);
 
-        assert_eq!(app.slider_preview, None);
+        assert_eq!(
+            app.slider_preview,
+            Some(SliderPreview::Seek(98_765)),
+            "release keeps the optimistic position visible until playback catches up"
+        );
         assert_eq!(
             *slider_rx.borrow(),
             Some(Request::PlaybackCommand {
@@ -2435,6 +2484,93 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn seek_release_does_not_flash_a_stale_playback_snapshot() {
+        let mut app = DesktopApp::new();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.slider_tx = Some(slider_tx);
+        app.playback = Some(Playback {
+            item: Some(MediaItem {
+                uri: "spotify:track:test".to_string(),
+                duration_ms: 180_000,
+                kind: MediaKind::Track,
+                ..MediaItem::default()
+            }),
+            is_playing: true,
+            progress_ms: 10_000,
+            ..Playback::default()
+        });
+
+        app.preview_slider(SliderKind::Seek, SliderPreview::Seek(60_000));
+        app.finish_slider_drag(SliderKind::Seek);
+
+        assert_eq!(
+            app.slider_preview,
+            Some(SliderPreview::Seek(60_000)),
+            "the dropped position must remain rendered until daemon reconciliation"
+        );
+
+        app.apply_daemon_event(DaemonEvent::PlaybackChanged {
+            action: "snapshot".to_string(),
+            playback: Some(Playback {
+                item: Some(MediaItem {
+                    uri: "spotify:track:test".to_string(),
+                    duration_ms: 180_000,
+                    kind: MediaKind::Track,
+                    ..MediaItem::default()
+                }),
+                is_playing: true,
+                progress_ms: 10_200,
+                ..Playback::default()
+            }),
+        });
+        assert_eq!(
+            app.slider_preview,
+            Some(SliderPreview::Seek(60_000)),
+            "a stale snapshot must not clear the pending seek preview"
+        );
+
+        app.apply_daemon_event(DaemonEvent::PlaybackChanged {
+            action: "optimistic-seek".to_string(),
+            playback: Some(Playback {
+                item: Some(MediaItem {
+                    uri: "spotify:track:test".to_string(),
+                    duration_ms: 180_000,
+                    kind: MediaKind::Track,
+                    ..MediaItem::default()
+                }),
+                is_playing: true,
+                progress_ms: 60_000,
+                ..Playback::default()
+            }),
+        });
+        assert_eq!(app.slider_preview, None);
+    }
+
+    #[test]
+    fn failed_slider_mutation_releases_pending_preview() {
+        let mut app = DesktopApp::new();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.slider_tx = Some(slider_tx);
+        app.preview_slider(SliderKind::Seek, SliderPreview::Seek(60_000));
+        app.finish_slider_drag(SliderKind::Seek);
+
+        let receipt_id = ReceiptId::new_v7();
+        app.apply_daemon_event(DaemonEvent::MutationAccepted {
+            receipt_id,
+            action: "seek".to_string(),
+        });
+        assert_eq!(app.slider_pending_receipt, Some(receipt_id));
+
+        app.apply_daemon_event(DaemonEvent::MutationFinalized {
+            receipt_id,
+            status: spotuify_protocol::ReceiptStatus::Failed,
+            message: "seek failed".to_string(),
+        });
+        assert_eq!(app.slider_preview, None);
+        assert_eq!(app.slider_pending_receipt, None);
     }
 
     #[test]
