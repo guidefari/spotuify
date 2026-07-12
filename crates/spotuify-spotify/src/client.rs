@@ -1877,8 +1877,12 @@ async fn handle_json_response<T: DeserializeOwned>(
         .text()
         .await
         .with_context(|| format!("failed to read Spotify {method} {path} response"))?;
-    let mut value = serde_json::from_str::<serde_json::Value>(&body)
-        .with_context(|| format!("failed to decode Spotify {method} {path} response"))?;
+    let mut value = serde_json::from_str::<serde_json::Value>(&body).map_err(|err| {
+        anyhow::Error::new(SpotifyError::Decode {
+            endpoint: endpoint_scope(method, path),
+            message: err.to_string(),
+        })
+    })?;
     let patched = normalize_spotify_response(path, &mut value);
     if !patched.is_empty() {
         tracing::debug!(
@@ -1899,7 +1903,10 @@ async fn handle_json_response<T: DeserializeOwned>(
                 body = %trim_body(&body),
                 "failed to decode Spotify response"
             );
-            Err(err).with_context(|| format!("failed to decode Spotify {method} {path} response"))
+            Err(anyhow::Error::new(SpotifyError::Decode {
+                endpoint: endpoint_scope(method, path),
+                message: err.to_string(),
+            }))
         }
     }
 }
