@@ -6,6 +6,9 @@ license.workspace = true
 publish = false
 description = "GPUI desktop client for the local spotuify daemon"
 
+[features]
+test-support = ["gpui/test-support"]
+
 [dependencies]
 gpui = { workspace = true }
 spotuify-core = { workspace = true }

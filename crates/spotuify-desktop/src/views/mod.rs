@@ -3,8 +3,8 @@ use gpui::{
     div, fill, point, px, relative, rgb, App, Bounds, Context, CursorStyle, DragMoveEvent, Element,
     ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
     GlobalElementId, IntoElement, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent,
-    MouseUpEvent, PaintQuad, Pixels, Point, Render, ShapedLine, SharedString, Style, TextRun,
-    UTF16Selection, WeakEntity, Window,
+    MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollHandle, ShapedLine, SharedString, Style,
+    TextRun, UTF16Selection, WeakEntity, Window,
 };
 use spotuify_core::{MediaItem, MediaKind, Playback, Playlist};
 use spotuify_launcher::SocketState;
@@ -34,6 +34,7 @@ pub struct DesktopApp {
     playlist_picker_uri: Option<String>,
     pub(crate) playlist_loading: bool,
     search_input: Option<Entity<SearchInput>>,
+    search_scroll: ScrollHandle,
     slider_drag: Option<SliderKind>,
     slider_preview: Option<SliderPreview>,
 }
@@ -184,6 +185,7 @@ impl DesktopApp {
             playlist_picker_uri: None,
             playlist_loading: false,
             search_input: None,
+            search_scroll: ScrollHandle::new(),
             slider_drag: None,
             slider_preview: None,
         }
@@ -635,7 +637,12 @@ impl DesktopApp {
             .id("search-results")
             .mt_5()
             .flex_1()
+            // A flex item needs a definite base height here. Without it,
+            // GPUI lets the result list grow to its content height, so there
+            // is no overflow region for the mouse wheel to scroll.
+            .h(px(0.))
             .overflow_y_scroll()
+            .track_scroll(&self.search_scroll)
             .flex()
             .flex_col()
             .gap_2();
@@ -2278,5 +2285,67 @@ mod tests {
             last_event: None,
         });
         app
+    }
+}
+
+#[cfg(feature = "test-support")]
+mod gpui_tests {
+    use super::*;
+    use gpui::{point, px, size, ScrollDelta, ScrollWheelEvent, TestAppContext};
+    use spotuify_protocol::IPC_PROTOCOL_VERSION;
+
+    #[gpui::test]
+    fn search_results_scroll_with_mouse_wheel(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, _| DesktopApp::new());
+        view.update(cx, |app, cx| {
+            app.state = DesktopState::Connected(ConnectedState {
+                daemon_status: DaemonStatus {
+                    running: true,
+                    socket_path: "test.sock".to_string(),
+                    socket_exists: true,
+                    socket_reachable: true,
+                    stale_socket: false,
+                    daemon_pid: None,
+                    uptime_secs: None,
+                    protocol_version: IPC_PROTOCOL_VERSION,
+                    daemon_version: Some("test".to_string()),
+                    daemon_build_id: None,
+                    audio_health: None,
+                },
+                doctor_report: None,
+                last_event: None,
+            });
+            app.selected_destination = Destination::Search;
+            app.search_query = "action bronson".to_string();
+            app.search_results = (0..40)
+                .map(|index| MediaItem {
+                    name: format!("Result {index}"),
+                    uri: format!("spotify:track:{index}"),
+                    kind: MediaKind::Track,
+                    ..MediaItem::default()
+                })
+                .collect();
+            cx.notify();
+        });
+        cx.simulate_resize(size(px(900.), px(650.)));
+        cx.run_until_parked();
+
+        let scroll = cx.read(|app| view.read(app).search_scroll.clone());
+        assert!(
+            scroll.max_offset().height > px(0.),
+            "search result list should have overflow after layout"
+        );
+        let bounds = scroll.bounds();
+        cx.simulate_event(ScrollWheelEvent {
+            position: bounds.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-500.))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+
+        assert!(
+            scroll.offset().y < px(0.),
+            "search result list should move in response to the mouse wheel"
+        );
     }
 }

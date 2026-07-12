@@ -2617,8 +2617,12 @@ struct RawPlaylist {
     uri: Option<String>,
     name: Option<String>,
     owner: Option<PlaylistOwner>,
-    #[serde(alias = "items")]
     tracks: Option<PlaylistTracks>,
+    /// `/me/playlists` uses `items`, while search results use `tracks`.
+    /// Some current Spotify responses include both fields, so these must
+    /// remain separate instead of using a serde alias that rejects both.
+    #[serde(default)]
+    items: Option<PlaylistTracks>,
     #[serde(default, deserialize_with = "null_to_default")]
     images: Vec<ImageRef>,
     /// Spotify's playlist-version token. Phase 6.5 sync refetch gate
@@ -2628,9 +2632,13 @@ struct RawPlaylist {
 }
 
 impl RawPlaylist {
+    fn tracks_page(&self) -> Option<&PlaylistTracks> {
+        self.tracks.as_ref().or(self.items.as_ref())
+    }
+
     fn into_playlist(self) -> Option<Playlist> {
+        let tracks_total = self.tracks_page().map_or(0, |tracks| tracks.total);
         let id = self.id?;
-        let tracks_total = self.tracks.as_ref().map_or(0, |tracks| tracks.total);
         let snapshot_id = self.snapshot_id.clone();
         Some(Playlist {
             id,
@@ -2643,8 +2651,8 @@ impl RawPlaylist {
     }
 
     fn into_media_item(self) -> Option<MediaItem> {
+        let tracks_total = self.tracks_page().map_or(0, |tracks| tracks.total);
         let id = self.id?;
-        let tracks_total = self.tracks.as_ref().map_or(0, |tracks| tracks.total);
         Some(MediaItem {
             uri: self.uri.unwrap_or_else(|| format!("spotify:playlist:{id}")),
             id: Some(id),
@@ -3362,6 +3370,41 @@ mod tests {
                 .uri,
             "spotify:track:t1"
         );
+    }
+
+    #[test]
+    fn search_playlist_payload_accepts_tracks_and_items_fields() {
+        let mut value = json!({
+            "playlists": {
+                "total": 1,
+                "items": [{
+                    "id": "p1",
+                    "uri": "spotify:playlist:p1",
+                    "name": "Playlist One",
+                    "tracks": {"total": 22},
+                    "items": {"total": 22}
+                }]
+            }
+        });
+
+        normalize_spotify_response(
+            "/search?q=action+bronson&type=playlist&limit=10",
+            &mut value,
+        );
+        let response: super::SearchResponse =
+            serde_json::from_value(value).expect("search playlist payload should deserialize");
+        let playlist = response
+            .playlists
+            .expect("playlist page")
+            .items
+            .into_iter()
+            .flatten()
+            .next()
+            .expect("playlist")
+            .into_playlist()
+            .expect("playlist output");
+
+        assert_eq!(playlist.tracks_total, 22);
     }
 
     #[test]
