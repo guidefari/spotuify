@@ -1,10 +1,10 @@
 use gpui::prelude::*;
 use gpui::{
-    div, fill, point, px, relative, rgb, App, Bounds, Context, CursorStyle, DragMoveEvent, Element,
-    ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
-    GlobalElementId, IntoElement, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent,
-    MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollHandle, ShapedLine, SharedString, Style,
-    TextRun, UTF16Selection, WeakEntity, Window,
+    div, fill, point, px, relative, rgb, App, Bounds, ClickEvent, Context, CursorStyle,
+    DragMoveEvent, Element, ElementId, ElementInputHandler, Entity, EntityInputHandler,
+    FocusHandle, Focusable, GlobalElementId, IntoElement, KeyDownEvent, LayoutId, MouseButton,
+    MouseDownEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollHandle, ShapedLine,
+    SharedString, Style, TextRun, UTF16Selection, WeakEntity, Window,
 };
 use spotuify_core::{MediaItem, MediaKind, Playback, Playlist};
 use spotuify_launcher::SocketState;
@@ -35,6 +35,8 @@ pub struct DesktopApp {
     pub(crate) playlist_loading: bool,
     search_input: Option<Entity<SearchInput>>,
     search_scroll: ScrollHandle,
+    seek_bar_bounds: Option<Bounds<Pixels>>,
+    volume_bar_bounds: Option<Bounds<Pixels>>,
     slider_drag: Option<SliderKind>,
     slider_preview: Option<SliderPreview>,
 }
@@ -186,6 +188,8 @@ impl DesktopApp {
             playlist_loading: false,
             search_input: None,
             search_scroll: ScrollHandle::new(),
+            seek_bar_bounds: None,
+            volume_bar_bounds: None,
             slider_drag: None,
             slider_preview: None,
         }
@@ -356,6 +360,7 @@ impl DesktopApp {
                 ..
             } if version == self.search_version && query == self.search_query.trim() => {
                 self.search_results.extend(items);
+                sort_search_results(&mut self.search_results);
             }
             DaemonEvent::SearchComplete { query, version }
                 if version == self.search_version && query == self.search_query.trim() =>
@@ -368,7 +373,9 @@ impl DesktopApp {
                 message,
                 ..
             } if version == self.search_version && query == self.search_query.trim() => {
-                self.search_loading = false;
+                // SearchStream fans out one request per media kind. A single
+                // failed kind must not hide successful track pages that are
+                // still in flight; SearchComplete closes the loading state.
                 self.search_error = Some(message);
             }
             DaemonEvent::MutationFinalized {
@@ -613,16 +620,16 @@ impl DesktopApp {
             .search_input
             .clone()
             .expect("search input should be initialized before rendering");
-        let status = if let Some(error) = self.search_error.as_deref() {
-            error.to_string()
-        } else if self.search_loading {
+        let status = if self.search_loading {
             "Searching…".to_string()
         } else if self.search_query.trim().is_empty() {
             "Type a query and press Enter".to_string()
         } else if self.search_results.is_empty() {
-            "No results".to_string()
+            self.search_error
+                .clone()
+                .unwrap_or_else(|| "No results".to_string())
         } else {
-            format!(
+            let result_count = format!(
                 "{} result{}",
                 self.search_results.len(),
                 if self.search_results.len() == 1 {
@@ -630,7 +637,12 @@ impl DesktopApp {
                 } else {
                     "s"
                 }
-            )
+            );
+            if self.search_error.is_some() {
+                format!("{result_count} · some result types unavailable")
+            } else {
+                result_count
+            }
         };
 
         let mut results = div()
@@ -676,11 +688,13 @@ impl DesktopApp {
                 div()
                     .mt_3()
                     .text_sm()
-                    .text_color(if self.search_error.is_some() {
-                        rgb(0xf0a0a0)
-                    } else {
-                        rgb(0x918698)
-                    })
+                    .text_color(
+                        if self.search_error.is_some() && self.search_results.is_empty() {
+                            rgb(0xf0a0a0)
+                        } else {
+                            rgb(0x918698)
+                        },
+                    )
                     .child(status),
             )
             .child(results);
@@ -1066,7 +1080,9 @@ struct SearchInput {
     content: SharedString,
     placeholder: SharedString,
     desktop_app: WeakEntity<DesktopApp>,
+    cursor: usize,
     selected_range: Range<usize>,
+    selection_anchor: Option<usize>,
     marked_range: Option<Range<usize>>,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
@@ -1079,7 +1095,9 @@ impl SearchInput {
             content: SharedString::default(),
             placeholder: "Search Spotify".into(),
             desktop_app,
+            cursor: 0,
             selected_range: 0..0,
+            selection_anchor: None,
             marked_range: None,
             last_layout: None,
             last_bounds: None,
@@ -1102,11 +1120,23 @@ impl SearchInput {
     }
 
     fn cursor_offset(&self) -> usize {
-        self.selected_range.end
+        self.cursor
     }
 
-    fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        self.selected_range = offset..offset;
+    fn set_cursor(&mut self, offset: usize, extend_selection: bool) {
+        (self.cursor, self.selected_range, self.selection_anchor) = selection_after_cursor_move(
+            self.cursor,
+            self.selection_anchor,
+            offset,
+            extend_selection,
+            self.content.len(),
+        );
+    }
+
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        self.selection_anchor = Some(0);
+        self.selected_range = 0..self.content.len();
+        self.cursor = self.content.len();
         cx.notify();
     }
 
@@ -1126,6 +1156,38 @@ impl SearchInput {
             .unwrap_or(self.content.len())
     }
 
+    fn previous_word_boundary(&self, offset: usize) -> usize {
+        let mut boundary = offset;
+        let mut saw_word = false;
+        for (index, ch) in self.content[..offset].char_indices().rev() {
+            if ch.is_whitespace() {
+                if saw_word {
+                    return boundary;
+                }
+            } else {
+                saw_word = true;
+            }
+            boundary = index;
+        }
+        0
+    }
+
+    fn next_word_boundary(&self, offset: usize) -> usize {
+        let mut boundary = offset;
+        let mut saw_word = false;
+        for (index, ch) in self.content[offset..].char_indices() {
+            if ch.is_whitespace() {
+                if saw_word {
+                    return offset + index;
+                }
+            } else {
+                saw_word = true;
+            }
+            boundary = offset + index + ch.len_utf8();
+        }
+        boundary
+    }
+
     fn replace_text(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
         self.content = format!(
             "{}{}{}",
@@ -1135,7 +1197,9 @@ impl SearchInput {
         )
         .into();
         let cursor = range.start + text.len();
+        self.cursor = cursor;
         self.selected_range = cursor..cursor;
+        self.selection_anchor = None;
         self.marked_range = None;
         self.notify_owner(cx);
         cx.notify();
@@ -1174,14 +1238,54 @@ impl SearchInput {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let modifiers = event.keystroke.modifiers;
+        let extend_selection = modifiers.shift;
+        let secondary = modifiers.secondary();
+        let word_navigation = modifiers.alt || (modifiers.control && !cfg!(target_os = "macos"));
+
+        if secondary && event.keystroke.key.eq_ignore_ascii_case("a") {
+            self.select_all(cx);
+            return;
+        }
+
         match event.keystroke.key.as_str() {
             "enter" => self.submit(cx),
             "backspace" => self.backspace(cx),
             "delete" => self.delete(cx),
-            "left" => self.move_to(self.previous_boundary(self.cursor_offset()), cx),
-            "right" => self.move_to(self.next_boundary(self.cursor_offset()), cx),
-            "home" => self.move_to(0, cx),
-            "end" => self.move_to(self.content.len(), cx),
+            "left" => {
+                let offset = if !extend_selection && !self.selected_range.is_empty() {
+                    self.selected_range.start
+                } else if secondary {
+                    0
+                } else if word_navigation {
+                    self.previous_word_boundary(self.cursor_offset())
+                } else {
+                    self.previous_boundary(self.cursor_offset())
+                };
+                self.set_cursor(offset, extend_selection);
+                cx.notify();
+            }
+            "right" => {
+                let offset = if !extend_selection && !self.selected_range.is_empty() {
+                    self.selected_range.end
+                } else if secondary {
+                    self.content.len()
+                } else if word_navigation {
+                    self.next_word_boundary(self.cursor_offset())
+                } else {
+                    self.next_boundary(self.cursor_offset())
+                };
+                self.set_cursor(offset, extend_selection);
+                cx.notify();
+            }
+            "home" => {
+                self.set_cursor(0, extend_selection);
+                cx.notify();
+            }
+            "end" => {
+                self.set_cursor(self.content.len(), extend_selection);
+                cx.notify();
+            }
             _ => {}
         }
     }
@@ -1193,7 +1297,11 @@ impl SearchInput {
         cx: &mut Context<Self>,
     ) {
         self.focus_handle.focus(window);
-        self.move_to(self.index_for_mouse_position(event.position), cx);
+        self.set_cursor(
+            self.index_for_mouse_position(event.position),
+            event.modifiers.shift,
+        );
+        cx.notify();
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {}
@@ -1222,6 +1330,22 @@ impl SearchInput {
     }
 }
 
+fn selection_after_cursor_move(
+    cursor: usize,
+    selection_anchor: Option<usize>,
+    offset: usize,
+    extend_selection: bool,
+    content_len: usize,
+) -> (usize, Range<usize>, Option<usize>) {
+    let offset = offset.min(content_len);
+    if extend_selection {
+        let anchor = selection_anchor.unwrap_or(cursor);
+        (offset, anchor.min(offset)..anchor.max(offset), Some(anchor))
+    } else {
+        (offset, offset..offset, None)
+    }
+}
+
 impl EntityInputHandler for SearchInput {
     fn text_for_range(
         &mut self,
@@ -1243,7 +1367,7 @@ impl EntityInputHandler for SearchInput {
     ) -> Option<UTF16Selection> {
         Some(UTF16Selection {
             range: self.range_to_utf16(&self.selected_range),
-            reversed: false,
+            reversed: !self.selected_range.is_empty() && self.cursor == self.selected_range.start,
         })
     }
 
@@ -1302,6 +1426,8 @@ impl EntityInputHandler for SearchInput {
             .as_ref()
             .map(|selected| self.range_from_utf16(selected))
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+        self.cursor = self.selected_range.end;
+        self.selection_anchor = None;
         self.notify_owner(cx);
         cx.notify();
     }
@@ -1483,6 +1609,7 @@ impl Render for SearchInput {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("search-input")
+            .debug_selector(|| "search-input".to_string())
             .h(px(42.))
             .flex()
             .key_context("SearchInput")
@@ -1616,8 +1743,10 @@ fn seek_bar(
             (position_ms as f32 / item.duration_ms as f32).clamp(0.0, 1.0)
         });
 
-    div()
+    let bounds_owner = cx.entity().downgrade();
+    let bar = div()
         .id("seek-bar")
+        .debug_selector(|| "seek-bar".to_string())
         .w(px(SLIDER_WIDTH))
         .h(px(14.))
         .cursor_pointer()
@@ -1655,7 +1784,36 @@ fn seek_bar(
                 app.finish_slider_drag(SliderKind::Seek);
                 cx.notify();
             }),
-        )
+        );
+
+    div()
+        .on_children_prepainted(move |bounds, _, app_cx| {
+            let bounds = bounds.first().copied();
+            let _ = bounds_owner.update(app_cx, |app, _| {
+                app.seek_bar_bounds = bounds;
+            });
+        })
+        .id("seek-hit-area")
+        .on_click(cx.listener(|app, event: &ClickEvent, _, cx| {
+            let Some(bounds) = app.seek_bar_bounds else {
+                return;
+            };
+            let Some(item) = app
+                .playback
+                .as_ref()
+                .and_then(|playback| playback.item.as_ref())
+            else {
+                return;
+            };
+            let position_ms = seek_position_ms(
+                item.duration_ms,
+                slider_fraction_at(event.position(), bounds),
+            );
+            app.preview_slider(SliderKind::Seek, SliderPreview::Seek(position_ms));
+            app.finish_slider_drag(SliderKind::Seek);
+            cx.notify();
+        }))
+        .child(bar)
 }
 
 fn volume_bar(
@@ -1673,8 +1831,10 @@ fn volume_bar(
     };
     let supports_volume = device.is_some_and(|device| device.supports_volume);
 
+    let bounds_owner = cx.entity().downgrade();
     let bar = div()
         .id("volume-bar")
+        .debug_selector(|| "volume-bar".to_string())
         .w(px(140.))
         .h(px(10.))
         .cursor_pointer()
@@ -1689,7 +1849,8 @@ fn volume_bar(
         );
 
     if supports_volume {
-        bar.on_drag(VolumeDrag, |_, _, _, cx| cx.new(|_| SliderGhost))
+        let bar = bar
+            .on_drag(VolumeDrag, |_, _, _, cx| cx.new(|_| SliderGhost))
             .on_drag_move(
                 cx.listener(|app, event: &DragMoveEvent<VolumeDrag>, _, cx| {
                     let volume_percent = volume_percent(slider_fraction(event));
@@ -1710,14 +1871,36 @@ fn volume_bar(
                     app.finish_slider_drag(SliderKind::Volume);
                     cx.notify();
                 }),
-            )
+            );
+        div()
+            .on_children_prepainted(move |bounds, _, app_cx| {
+                let bounds = bounds.first().copied();
+                let _ = bounds_owner.update(app_cx, |app, _| {
+                    app.volume_bar_bounds = bounds;
+                });
+            })
+            .id("volume-hit-area")
+            .on_click(cx.listener(|app, event: &ClickEvent, _, cx| {
+                let Some(bounds) = app.volume_bar_bounds else {
+                    return;
+                };
+                let volume_percent = volume_percent(slider_fraction_at(event.position(), bounds));
+                app.preview_slider(SliderKind::Volume, SliderPreview::Volume(volume_percent));
+                app.finish_slider_drag(SliderKind::Volume);
+                cx.notify();
+            }))
+            .child(bar)
     } else {
         bar.opacity(0.45)
     }
 }
 
 fn slider_fraction<T>(event: &DragMoveEvent<T>) -> f32 {
-    ((event.event.position.x - event.bounds.origin.x) / event.bounds.size.width).clamp(0.0, 1.0)
+    slider_fraction_at(event.event.position, event.bounds)
+}
+
+fn slider_fraction_at(position: Point<Pixels>, bounds: Bounds<Pixels>) -> f32 {
+    ((position.x - bounds.origin.x) / bounds.size.width).clamp(0.0, 1.0)
 }
 
 fn next_repeat_state(repeat: &str) -> &'static str {
@@ -1831,6 +2014,24 @@ fn media_subtitle(item: &MediaItem) -> String {
     } else {
         item.kind.to_string()
     }
+}
+
+fn search_kind_order(kind: &MediaKind) -> u8 {
+    match kind {
+        MediaKind::Track => 0,
+        MediaKind::Episode => 1,
+        MediaKind::Show => 2,
+        MediaKind::Album => 3,
+        MediaKind::Artist => 4,
+        MediaKind::Playlist => 5,
+    }
+}
+
+fn sort_search_results(items: &mut [MediaItem]) {
+    // SearchStream fans out one request per media kind. Completion order is
+    // intentionally concurrent, so restore a useful, deterministic order at
+    // the client boundary and keep tracks in the first visible group.
+    items.sort_by_key(|item| search_kind_order(&item.kind));
 }
 
 fn format_duration(ms: u64) -> String {
@@ -2037,6 +2238,28 @@ mod tests {
     }
 
     #[test]
+    fn search_selection_extends_with_shift_and_preserves_anchor() {
+        let (cursor, selected, anchor) = selection_after_cursor_move(11, None, 10, true, 11);
+        assert_eq!(cursor, 10);
+        assert_eq!(selected, 10..11);
+        assert_eq!(anchor, Some(11));
+
+        let (cursor, selected, anchor) = selection_after_cursor_move(10, anchor, 11, true, 11);
+        assert_eq!(cursor, 11);
+        assert!(selected.is_empty());
+        assert_eq!(anchor, Some(11));
+    }
+
+    #[test]
+    fn slider_click_fraction_clamps_to_bar_bounds() {
+        let bounds = Bounds::from_corners(point(px(100.), px(0.)), point(px(300.), px(10.)));
+
+        assert!((slider_fraction_at(point(px(200.), px(5.)), bounds) - 0.5).abs() < 0.001);
+        assert_eq!(slider_fraction_at(point(px(50.), px(5.)), bounds), 0.0);
+        assert_eq!(slider_fraction_at(point(px(350.), px(5.)), bounds), 1.0);
+    }
+
+    #[test]
     fn starting_search_enqueues_versioned_stream_request() {
         let mut app = DesktopApp::new();
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2093,6 +2316,57 @@ mod tests {
         app.apply_daemon_event(DaemonEvent::SearchComplete {
             query: "radiohead".to_string(),
             version: 2,
+        });
+        assert!(!app.search_loading);
+    }
+
+    #[test]
+    fn search_stream_keeps_partial_results_visible_until_complete() {
+        let mut app = connected_app();
+        app.search_query = "action bronson".to_string();
+        app.search_version = 1;
+        app.search_loading = true;
+
+        app.apply_daemon_event(DaemonEvent::SearchFailed {
+            query: app.search_query.clone(),
+            version: 1,
+            kind: Some(MediaKind::Playlist),
+            offset: Some(0),
+            message: "playlist page failed".to_string(),
+        });
+        assert!(app.search_loading);
+        assert_eq!(app.search_error.as_deref(), Some("playlist page failed"));
+
+        let show = MediaItem {
+            name: "A show".to_string(),
+            kind: MediaKind::Show,
+            ..MediaItem::default()
+        };
+        let track = MediaItem {
+            name: "A track".to_string(),
+            kind: MediaKind::Track,
+            ..MediaItem::default()
+        };
+        app.apply_daemon_event(DaemonEvent::SearchPage {
+            query: app.search_query.clone(),
+            kind: MediaKind::Show,
+            offset: 0,
+            version: 1,
+            items: vec![show],
+        });
+        app.apply_daemon_event(DaemonEvent::SearchPage {
+            query: app.search_query.clone(),
+            kind: MediaKind::Track,
+            offset: 0,
+            version: 1,
+            items: vec![track],
+        });
+
+        assert_eq!(app.search_results[0].kind, MediaKind::Track);
+        assert!(app.search_loading);
+        app.apply_daemon_event(DaemonEvent::SearchComplete {
+            query: app.search_query.clone(),
+            version: 1,
         });
         assert!(!app.search_loading);
     }
@@ -2288,10 +2562,10 @@ mod tests {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(all(test, feature = "test-support"))]
 mod gpui_tests {
     use super::*;
-    use gpui::{point, px, size, ScrollDelta, ScrollWheelEvent, TestAppContext};
+    use gpui::{point, px, size, Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext};
     use spotuify_protocol::IPC_PROTOCOL_VERSION;
 
     #[gpui::test]
@@ -2347,5 +2621,110 @@ mod gpui_tests {
             scroll.offset().y < px(0.),
             "search result list should move in response to the mouse wheel"
         );
+    }
+
+    #[gpui::test]
+    fn seek_bar_accepts_click_without_drag(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, _| DesktopApp::new());
+        let (command_tx, _) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, slider_rx) = watch::channel::<Option<Request>>(None);
+        view.update(cx, |app, _| {
+            app.state = DesktopState::Connected(ConnectedState {
+                daemon_status: DaemonStatus {
+                    running: true,
+                    socket_path: "test.sock".to_string(),
+                    socket_exists: true,
+                    socket_reachable: true,
+                    stale_socket: false,
+                    daemon_pid: None,
+                    uptime_secs: None,
+                    protocol_version: IPC_PROTOCOL_VERSION,
+                    daemon_version: Some("test".to_string()),
+                    daemon_build_id: None,
+                    audio_health: None,
+                },
+                doctor_report: None,
+                last_event: None,
+            });
+            app.playback = Some(Playback {
+                item: Some(MediaItem {
+                    name: "Test track".to_string(),
+                    uri: "spotify:track:test".to_string(),
+                    duration_ms: 100_000,
+                    kind: MediaKind::Track,
+                    ..MediaItem::default()
+                }),
+                ..Playback::default()
+            });
+            app.set_command_senders(command_tx, slider_tx);
+        });
+        cx.simulate_resize(size(px(1_200.), px(700.)));
+        cx.run_until_parked();
+
+        let bounds = cx
+            .debug_bounds("seek-bar")
+            .expect("seek bar should be laid out");
+        cx.simulate_click(bounds.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        assert_eq!(
+            slider_rx.borrow().clone(),
+            Some(Request::PlaybackCommand {
+                command: PlaybackCommand::Seek {
+                    position_ms: 50_000,
+                },
+            })
+        );
+    }
+
+    #[gpui::test]
+    fn search_input_supports_shift_selection(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, _| DesktopApp::new());
+        view.update(cx, |app, _| {
+            app.state = DesktopState::Connected(ConnectedState {
+                daemon_status: DaemonStatus {
+                    running: true,
+                    socket_path: "test.sock".to_string(),
+                    socket_exists: true,
+                    socket_reachable: true,
+                    stale_socket: false,
+                    daemon_pid: None,
+                    uptime_secs: None,
+                    protocol_version: IPC_PROTOCOL_VERSION,
+                    daemon_version: Some("test".to_string()),
+                    daemon_build_id: None,
+                    audio_health: None,
+                },
+                doctor_report: None,
+                last_event: None,
+            });
+            app.selected_destination = Destination::Search;
+        });
+        cx.simulate_resize(size(px(1_200.), px(700.)));
+        cx.run_until_parked();
+
+        let bounds = cx
+            .debug_bounds("search-input")
+            .expect("search input should be laid out");
+        cx.simulate_click(bounds.center(), Modifiers::default());
+        cx.simulate_input("abc");
+        cx.simulate_keystrokes("shift-left");
+
+        let (content, selected_range, cursor) = cx.read(|app| {
+            let input = view
+                .read(app)
+                .search_input
+                .clone()
+                .expect("search input should be initialized");
+            let input = input.read(app);
+            (
+                input.content.clone(),
+                input.selected_range.clone(),
+                input.cursor,
+            )
+        });
+        assert_eq!(content.as_ref(), "abc");
+        assert_eq!(selected_range, 2..3);
+        assert_eq!(cursor, 2);
     }
 }
