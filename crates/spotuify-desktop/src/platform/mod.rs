@@ -7,7 +7,7 @@ use spotuify_protocol::{
     DaemonEvent, DaemonStatus, OperationSource, Request, Response, ResponseData, SearchScopeData,
     SearchSourceData,
 };
-use std::time::Duration;
+use std::{borrow::Cow, time::Duration};
 use tokio::sync::{mpsc, mpsc::UnboundedReceiver, watch};
 
 use crate::{
@@ -31,6 +31,14 @@ pub fn run() {
     let _runtime_guard = runtime.enter();
 
     Application::new().with_assets(Assets).run(move |app| {
+        if let Err(error) = app
+            .text_system()
+            .add_fonts(vec![Cow::Borrowed(include_bytes!(
+                "../../assets/fonts/JetBrainsMono-Medium.ttf"
+            ))])
+        {
+            eprintln!("failed to load bundled desktop font: {error}");
+        }
         theme::init(app);
         let _ = app.open_window(WindowOptions::default(), move |_, app_cx| {
             let view = app_cx.new(|_| DesktopApp::new());

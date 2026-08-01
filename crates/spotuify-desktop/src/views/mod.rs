@@ -1494,6 +1494,8 @@ impl DesktopApp {
         let mut root = div()
             .size_full()
             .relative()
+            .font_family("JetBrains Mono")
+            .font_weight(gpui::FontWeight::MEDIUM)
             .bg(rgb(cx.desktop_theme().bg_root))
             .text_color(rgb(cx.desktop_theme().text_primary))
             .flex()
@@ -1525,14 +1527,40 @@ impl DesktopApp {
             .flex()
             .flex_col();
 
-        nav = nav
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(cx.desktop_theme().accent))
-                    .child("SPOTUIFY"),
-            )
-            .child(div().mt_1().mb_6().text_2xl().child("Desktop"));
+        nav = nav.child(
+            div()
+                .mb_6()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .size(px(38.))
+                        .rounded_md()
+                        .bg(rgb(cx.desktop_theme().accent_subtle))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(app_icon(
+                            AppIcon::NowPlaying,
+                            19.,
+                            cx.desktop_theme().accent,
+                        )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_lg().child("spotuify"))
+                        .child(
+                            div()
+                                .mt_1()
+                                .text_size(px(9.))
+                                .text_color(rgb(cx.desktop_theme().text_muted))
+                                .child("LOCAL MUSIC RUNTIME"),
+                        ),
+                ),
+        );
 
         for destination in Destination::ALL {
             nav = nav.child(nav_item(
