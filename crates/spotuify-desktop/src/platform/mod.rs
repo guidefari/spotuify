@@ -1,9 +1,6 @@
 pub mod macos;
 
-use gpui::{
-    actions, App, AppContext, Application, KeyBinding, Menu, MenuItem, SystemMenuType,
-    WindowOptions,
-};
+use gpui::{actions, App, AppContext, Application, WindowOptions};
 use spotuify_core::{Device, Playback, Queue};
 use spotuify_launcher::{daemon_status, ensure_daemon_running, inspect_socket_state, SocketState};
 use spotuify_protocol::{
@@ -36,19 +33,10 @@ pub fn run() {
     let _runtime_guard = runtime.enter();
 
     Application::new().with_assets(Assets).run(move |app| {
-        app.activate(true);
-        app.bind_keys([KeyBinding::new("cmd-,", OpenPreferences, None)]);
+        // GPUI requires every menu action to be registered before the native
+        // menu is installed. The window-level handler opens the view.
+        app.on_action(|_: &OpenPreferences, _| {});
         app.on_action(quit);
-        app.set_menus(vec![Menu {
-            name: "Spotuify".into(),
-            items: vec![
-                MenuItem::action("Settings…", OpenPreferences),
-                MenuItem::separator(),
-                MenuItem::os_submenu("Services", SystemMenuType::Services),
-                MenuItem::separator(),
-                MenuItem::action("Quit Spotuify", Quit),
-            ],
-        }]);
         if let Err(error) = app
             .text_system()
             .add_fonts(vec![Cow::Borrowed(include_bytes!(
