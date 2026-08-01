@@ -13,7 +13,7 @@ use gpui::{
 };
 use spotuify_core::{
     active_lyric_line_index, Device, MediaItem, MediaKind, Playback, Playlist, Queue, RepeatMode,
-    SyncedLyrics,
+    ResourceUri, SyncedLyrics,
 };
 use spotuify_launcher::SocketState;
 use spotuify_protocol::{
@@ -586,6 +586,7 @@ impl DesktopApp {
                 .uri
                 .clone(),
         });
+        self.request_selected_album_membership();
     }
 
     fn close_album(&mut self) {
@@ -878,6 +879,40 @@ impl DesktopApp {
         }
     }
 
+    fn selected_album_library_status(&self) -> Option<bool> {
+        self.selected_album
+            .as_ref()
+            .and_then(|album| album.in_library)
+    }
+
+    fn request_selected_album_membership(&mut self) {
+        let Some(album) = self.selected_album.as_ref() else {
+            return;
+        };
+        if album.in_library.is_some() || album.uri.is_empty() || self.command_tx.is_none() {
+            return;
+        }
+        let uri = album.uri.clone();
+        if self.library_membership_requested_uris.insert(uri.clone()) {
+            self.send_request(Request::LibraryContains { uris: vec![uri] });
+        }
+    }
+
+    fn toggle_selected_album_library(&mut self) {
+        let Some(album) = self.selected_album.as_ref() else {
+            return;
+        };
+        let uri = album.uri.clone();
+        match album.in_library {
+            Some(true) => self.send_request(Request::LibraryUnsave { uri }),
+            Some(false) => self.send_request(Request::LibrarySave {
+                uri: Some(uri),
+                current: false,
+            }),
+            None => {}
+        }
+    }
+
     fn current_artwork_url(&self, large: bool) -> Option<String> {
         self.playback
             .as_ref()
@@ -1138,10 +1173,29 @@ impl DesktopApp {
                 for membership in memberships {
                     self.library_membership_known_uris
                         .insert(membership.uri.clone());
-                    if membership.saved {
-                        self.saved_track_uris.insert(membership.uri);
-                    } else {
-                        self.saved_track_uris.remove(&membership.uri);
+                    if let Some(album) = self
+                        .selected_album
+                        .as_mut()
+                        .filter(|album| album.uri == membership.uri)
+                    {
+                        album.in_library = Some(membership.saved);
+                    }
+                    for album in self
+                        .albums
+                        .iter_mut()
+                        .chain(self.artist_albums.iter_mut())
+                        .filter(|album| album.uri == membership.uri)
+                    {
+                        album.in_library = Some(membership.saved);
+                    }
+                    if ResourceUri::parse(&membership.uri)
+                        .is_ok_and(|resource| resource.kind() == MediaKind::Track)
+                    {
+                        if membership.saved {
+                            self.saved_track_uris.insert(membership.uri);
+                        } else {
+                            self.saved_track_uris.remove(&membership.uri);
+                        }
                     }
                 }
             }
@@ -1286,6 +1340,29 @@ impl DesktopApp {
                         }
                     }
                     _ => {}
+                }
+                if let Some(saved) = match action.as_str() {
+                    "save" => Some(true),
+                    "unsave" => Some(false),
+                    _ => None,
+                } {
+                    for uri in &uris {
+                        if let Some(album) = self
+                            .selected_album
+                            .as_mut()
+                            .filter(|album| album.uri == *uri)
+                        {
+                            album.in_library = Some(saved);
+                        }
+                        for album in self
+                            .albums
+                            .iter_mut()
+                            .chain(self.artist_albums.iter_mut())
+                            .filter(|album| album.uri == *uri)
+                        {
+                            album.in_library = Some(saved);
+                        }
+                    }
                 }
                 if self.liked_requested {
                     self.refresh_liked_songs();
@@ -1893,6 +1970,7 @@ impl DesktopApp {
         } else {
             album.name.clone()
         };
+        let album_library_status = self.selected_album_library_status();
         let artwork = artwork_url(album, true)
             .and_then(|url| self.artwork_cache.get(&url))
             .or_else(|| artwork_url(album, false).and_then(|url| self.artwork_cache.get(&url)));
@@ -1960,15 +2038,20 @@ impl DesktopApp {
                                     .text_color(rgb(cx.desktop_theme().text_secondary))
                                     .child(media_context_links("album-detail", album, cx)),
                             )
-                            .when(!self.album_tracks.is_empty(), |metadata| {
-                                metadata.child(
-                                    div()
-                                        .mt_3()
-                                        .text_xs()
-                                        .text_color(rgb(cx.desktop_theme().text_muted))
-                                        .child(format!("{} tracks", self.album_tracks.len())),
-                                )
-                            }),
+                            .child(
+                                div()
+                                    .mt_4()
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(rgb(cx.desktop_theme().text_muted))
+                                            .child(format!("{} tracks", self.album_tracks.len())),
+                                    )
+                                    .child(album_library_button(album_library_status, cx)),
+                            ),
                     ),
             );
 
@@ -4436,6 +4519,49 @@ fn footer_like_button(
         ))
 }
 
+fn album_library_button(saved: Option<bool>, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+    let is_saved = saved == Some(true);
+    let enabled = saved.is_some();
+    let foreground = if is_saved {
+        cx.desktop_theme().accent
+    } else {
+        cx.desktop_theme().text_secondary
+    };
+    div()
+        .id("album-library-toggle")
+        .h(px(34.))
+        .px_3()
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(cx.desktop_theme().border_strong))
+        .flex()
+        .items_center()
+        .gap_2()
+        .cursor_pointer()
+        .when(!enabled, |element| element.opacity(0.45))
+        .hover(|style| style.bg(rgb(cx.desktop_theme().button_secondary_hover)))
+        .on_click(cx.listener(|app, _, _, cx| {
+            app.toggle_selected_album_library();
+            cx.notify();
+        }))
+        .child(app_icon(
+            if is_saved {
+                AppIcon::LikedSongsFilled
+            } else {
+                AppIcon::LikedSongs
+            },
+            15.,
+            foreground,
+        ))
+        .child(if saved.is_none() {
+            "CHECKING"
+        } else if is_saved {
+            "SAVED"
+        } else {
+            "SAVE ALBUM"
+        })
+}
+
 fn footer_queue_button(queue_visible: bool, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
     let foreground = if queue_visible {
         cx.desktop_theme().accent
@@ -6017,6 +6143,11 @@ mod tests {
             command_rx.try_recv(),
             Ok(Request::AlbumTracks { album }) if album == "spotify:album:album-1"
         ));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::LibraryContains { uris })
+                if uris == vec!["spotify:album:album-1".to_string()]
+        ));
         assert!(command_rx.try_recv().is_err());
         app.apply_album_tracks_response(
             "spotify:album:album-1",
@@ -6031,6 +6162,34 @@ mod tests {
         );
         assert_eq!(app.album_tracks.len(), 1);
         assert!(!app.album_tracks_loading);
+
+        app.apply_daemon_response(ResponseData::LibraryMembership {
+            memberships: vec![spotuify_protocol::LibraryMembership {
+                uri: "spotify:album:album-1".to_string(),
+                saved: false,
+            }],
+        });
+        assert_eq!(app.selected_album_library_status(), Some(false));
+        app.toggle_selected_album_library();
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::LibrarySave {
+                uri: Some(uri),
+                current: false,
+            }) if uri == "spotify:album:album-1"
+        ));
+
+        app.apply_daemon_event(DaemonEvent::LibraryChanged {
+            action: "save".to_string(),
+            uris: vec!["spotify:album:album-1".to_string()],
+            provider: None,
+        });
+        assert_eq!(app.selected_album_library_status(), Some(true));
+        app.toggle_selected_album_library();
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::LibraryUnsave { uri }) if uri == "spotify:album:album-1"
+        ));
     }
 
     #[test]
@@ -6044,6 +6203,7 @@ mod tests {
             uri: "spotify:album:album-1".to_string(),
             name: "Album".to_string(),
             kind: MediaKind::Album,
+            in_library: Some(false),
             ..MediaItem::default()
         };
         let artist = MediaItem {

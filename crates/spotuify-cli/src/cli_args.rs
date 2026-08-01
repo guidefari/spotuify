@@ -483,7 +483,7 @@ pub enum LibraryCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
-    /// Check whether provider track URIs are saved in the local library cache.
+    /// Check whether provider track or album URIs are saved in the local library cache.
     Contains {
         /// Provider track URIs to check (maximum 50).
         #[arg(required = true, num_args = 1..=50)]

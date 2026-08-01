@@ -86,20 +86,54 @@ pub(crate) async fn dispatch(
             if uris.len() > 50 {
                 return Err(ProviderError::InvalidInput {
                     field: "uris".to_string(),
-                    message: "library membership accepts at most 50 track URIs".to_string(),
+                    message: "library membership accepts at most 50 track or album URIs"
+                        .to_string(),
                 }
                 .into());
             }
-            for uri in &uris {
-                let resource = ResourceUri::parse(uri)?;
-                require_resource_kind(&resource, MediaKind::Track, "uri")?;
+            let resources = uris
+                .iter()
+                .map(|uri| ResourceUri::parse(uri))
+                .collect::<Result<Vec<_>, _>>()?;
+            for resource in &resources {
+                if !matches!(resource.kind(), MediaKind::Track | MediaKind::Album) {
+                    return Err(ProviderError::InvalidInput {
+                        field: "uri".to_string(),
+                        message: format!(
+                            "library membership supports track and album URIs, got {}",
+                            resource.kind()
+                        ),
+                    }
+                    .into());
+                }
             }
-            let saved = state.store().saved_track_membership(&uris).await?;
+
+            let track_uris = resources
+                .iter()
+                .filter(|resource| resource.kind() == MediaKind::Track)
+                .map(ResourceUri::as_uri)
+                .collect::<Vec<_>>();
+            let track_saved = state.store().saved_track_membership(&track_uris).await?;
+            let track_membership = track_uris
+                .into_iter()
+                .zip(track_saved)
+                .collect::<std::collections::HashMap<_, _>>();
+            let saved_albums = state.store().saved_album_uris(None).await?;
+
             Ok(ResponseData::LibraryMembership {
                 memberships: uris
                     .into_iter()
-                    .zip(saved)
-                    .map(|(uri, saved)| LibraryMembership { uri, saved })
+                    .zip(resources)
+                    .map(|(uri, resource)| {
+                        let saved = match resource.kind() {
+                            MediaKind::Track => {
+                                track_membership.get(&uri).copied().unwrap_or(false)
+                            }
+                            MediaKind::Album => saved_albums.contains(&uri),
+                            _ => false,
+                        };
+                        LibraryMembership { uri, saved }
+                    })
                     .collect(),
             })
         }
