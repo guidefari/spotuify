@@ -2832,19 +2832,24 @@ fn catalog_link(
     target: MediaItem,
     cx: &mut Context<'_, DesktopApp>,
 ) -> impl IntoElement {
+    let selector = id.clone();
     div()
         .id(SharedString::from(id))
+        .debug_selector(move || selector.clone())
         .cursor_pointer()
         .text_color(rgb(cx.desktop_theme().accent))
         .hover(|style| style.text_color(rgb(cx.desktop_theme().accent_hover)))
-        .on_click(cx.listener(move |app, _, _, cx| {
-            match target.kind {
-                MediaKind::Album => app.navigate_to_album(target.clone()),
-                MediaKind::Artist => app.navigate_to_artist(target.clone()),
-                _ => {}
-            }
-            cx.notify();
-        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(move |app, _, _, cx| {
+                match target.kind {
+                    MediaKind::Album => app.navigate_to_album(target.clone()),
+                    MediaKind::Artist => app.navigate_to_artist(target.clone()),
+                    _ => {}
+                }
+                cx.notify();
+            }),
+        )
         .child(label)
 }
 
@@ -6350,6 +6355,70 @@ mod gpui_tests {
             scroll.offset().y < px(0.),
             "liked songs should move in response to the mouse wheel"
         );
+    }
+
+    #[gpui::test]
+    fn footer_artist_link_opens_artist_detail(cx: &mut TestAppContext) {
+        initialize_theme(cx);
+        let (view, cx) = cx.add_window_view(|_, _| DesktopApp::new());
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        view.update(cx, |app, _| {
+            app.state = DesktopState::Connected(ConnectedState {
+                daemon_status: DaemonStatus {
+                    running: true,
+                    socket_path: "test.sock".to_string(),
+                    socket_exists: true,
+                    socket_reachable: true,
+                    stale_socket: false,
+                    daemon_pid: None,
+                    uptime_secs: None,
+                    protocol_version: IPC_PROTOCOL_VERSION,
+                    daemon_version: Some("test".to_string()),
+                    daemon_build_id: None,
+                    audio_health: None,
+                },
+                doctor_report: None,
+                last_event: None,
+            });
+            app.set_command_senders(command_tx, slider_tx);
+            app.playback = Some(Playback {
+                item: Some(MediaItem {
+                    name: "Track".to_string(),
+                    uri: "spotify:track:track".to_string(),
+                    kind: MediaKind::Track,
+                    artists: vec![spotuify_core::ArtistRef {
+                        name: "Linked Artist".to_string(),
+                        uri: "spotify:artist:linked".to_string(),
+                    }],
+                    ..MediaItem::default()
+                }),
+                ..Playback::default()
+            });
+        });
+        cx.simulate_resize(size(px(1100.), px(900.)));
+        cx.run_until_parked();
+
+        let bounds = cx
+            .debug_bounds("footer-current-track-artist-0")
+            .expect("footer artist link should be rendered");
+        cx.simulate_click(bounds.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        cx.read(|app| {
+            let app = view.read(app);
+            assert_eq!(app.selected_destination, Destination::Artists);
+            assert_eq!(
+                app.selected_artist
+                    .as_ref()
+                    .map(|artist| artist.uri.as_str()),
+                Some("spotify:artist:linked")
+            );
+        });
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::ArtistAlbums { artist }) if artist == "spotify:artist:linked"
+        ));
     }
 
     #[gpui::test]
