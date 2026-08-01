@@ -6,7 +6,9 @@ use gpui::{
     MouseDownEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollHandle, ShapedLine,
     SharedString, Style, TextRun, UTF16Selection, WeakEntity, Window,
 };
-use spotuify_core::{Device, MediaItem, MediaKind, Playback, Playlist, Queue};
+use spotuify_core::{
+    active_lyric_line_index, Device, MediaItem, MediaKind, Playback, Playlist, Queue, SyncedLyrics,
+};
 use spotuify_launcher::SocketState;
 use spotuify_protocol::{
     DaemonEvent, DaemonStatus, DoctorReport, PlaybackCommand, ReceiptId, Request, ResponseData,
@@ -26,6 +28,12 @@ pub struct DesktopApp {
     pub(crate) devices: Vec<Device>,
     pub(crate) devices_loading: bool,
     pub(crate) devices_loaded: bool,
+    pub(crate) lyrics: Option<SyncedLyrics>,
+    pub(crate) lyrics_track_uri: Option<String>,
+    pub(crate) lyrics_loading: bool,
+    pub(crate) lyrics_error: Option<String>,
+    pub(crate) lyrics_offset_ms: i64,
+    lyrics_requested_uri: Option<String>,
     pub(crate) update_banner: Option<UpdateBanner>,
     pub(crate) toast: Option<String>,
     pub(crate) command_tx: Option<UnboundedSender<Request>>,
@@ -108,10 +116,11 @@ pub(crate) enum Destination {
     History,
     Notifications,
     Devices,
+    Lyrics,
 }
 
 impl Destination {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::NowPlaying,
         Self::Queue,
         Self::Search,
@@ -123,6 +132,7 @@ impl Destination {
         Self::History,
         Self::Notifications,
         Self::Devices,
+        Self::Lyrics,
     ];
 
     fn id(self) -> &'static str {
@@ -138,6 +148,7 @@ impl Destination {
             Self::History => "history",
             Self::Notifications => "notifications",
             Self::Devices => "devices",
+            Self::Lyrics => "lyrics",
         }
     }
 
@@ -154,6 +165,7 @@ impl Destination {
             Self::History => "History",
             Self::Notifications => "Notifications",
             Self::Devices => "Devices",
+            Self::Lyrics => "Lyrics",
         }
     }
 
@@ -170,6 +182,7 @@ impl Destination {
             Self::History => "Listening sessions and recent playback will appear here.",
             Self::Notifications => "Reminder and notification inbox state will appear here.",
             Self::Devices => "Device selection will bind to daemon devices state.",
+            Self::Lyrics => "Synced lyrics for the current track.",
         }
     }
 }
@@ -186,6 +199,12 @@ impl DesktopApp {
             devices: Vec::new(),
             devices_loading: false,
             devices_loaded: false,
+            lyrics: None,
+            lyrics_track_uri: None,
+            lyrics_loading: false,
+            lyrics_error: None,
+            lyrics_offset_ms: 0,
+            lyrics_requested_uri: None,
             update_banner: None,
             toast: None,
             command_tx: None,
@@ -244,6 +263,9 @@ impl DesktopApp {
         if destination == Destination::Devices {
             self.request_devices();
         }
+        if destination == Destination::Lyrics {
+            self.request_lyrics_for_current_track();
+        }
     }
 
     pub(crate) fn request_devices(&mut self) {
@@ -271,6 +293,47 @@ impl DesktopApp {
 
         if command_tx.send(request).is_err() {
             self.toast = Some("Transport connection closed".to_string());
+        }
+    }
+
+    fn request_lyrics_for_current_track(&mut self) {
+        let Some(uri) = self.current_track_uri() else {
+            self.lyrics = None;
+            self.lyrics_track_uri = None;
+            self.lyrics_loading = false;
+            self.lyrics_error = None;
+            self.lyrics_requested_uri = None;
+            return;
+        };
+        if self.lyrics_requested_uri.as_deref() == Some(uri.as_str()) {
+            return;
+        }
+        if self.command_tx.is_none() {
+            return;
+        }
+        self.lyrics_requested_uri = Some(uri.clone());
+        self.lyrics_track_uri = Some(uri.clone());
+        self.lyrics = None;
+        self.lyrics_error = None;
+        self.lyrics_offset_ms = 0;
+        self.lyrics_loading = true;
+        self.send_request(Request::LyricsGet {
+            track_uri: Some(uri),
+            force_refresh: false,
+        });
+    }
+
+    fn current_track_uri(&self) -> Option<String> {
+        self.playback
+            .as_ref()
+            .and_then(|playback| playback.item.as_ref())
+            .map(|item| item.uri.clone())
+    }
+
+    pub(crate) fn fail_lyrics(&mut self, track_uri: &str, message: String) {
+        if self.lyrics_track_uri.as_deref() == Some(track_uri) {
+            self.lyrics_loading = false;
+            self.lyrics_error = Some(message);
         }
     }
 
@@ -355,6 +418,14 @@ impl DesktopApp {
     }
 
     pub(crate) fn apply_daemon_response(&mut self, response: ResponseData) {
+        self.apply_daemon_response_for_track(response, None);
+    }
+
+    pub(crate) fn apply_daemon_response_for_track(
+        &mut self,
+        response: ResponseData,
+        request_track_uri: Option<&str>,
+    ) {
         match response {
             ResponseData::Playlists { playlists } => {
                 self.search_playlists = playlists;
@@ -369,6 +440,29 @@ impl DesktopApp {
                 self.devices = devices;
                 self.devices_loading = false;
                 self.devices_loaded = true;
+            }
+            ResponseData::Lyrics { lyrics, offset_ms } => {
+                let Some(request_track_uri) = request_track_uri else {
+                    return;
+                };
+                if self.lyrics_track_uri.as_deref() != Some(request_track_uri)
+                    || self.current_track_uri().as_deref() != Some(request_track_uri)
+                    || lyrics
+                        .as_ref()
+                        .is_some_and(|lyrics| lyrics.track_uri != request_track_uri)
+                {
+                    return;
+                }
+                self.lyrics = lyrics;
+                self.lyrics_offset_ms = offset_ms;
+                self.lyrics_loading = false;
+                self.lyrics_error = None;
+            }
+            ResponseData::LyricsOffset {
+                track_uri,
+                offset_ms,
+            } if self.lyrics_track_uri.as_deref() == Some(track_uri.as_str()) => {
+                self.lyrics_offset_ms = offset_ms;
             }
             _ => {}
         }
@@ -418,10 +512,16 @@ impl DesktopApp {
                             slider_preview_matches_playback(preview, &playback)
                         });
                     self.playback = Some(playback);
+                    if self.current_track_uri().as_deref() != self.lyrics_track_uri.as_deref() {
+                        self.lyrics_requested_uri = None;
+                        self.request_lyrics_for_current_track();
+                    }
                     if settles_slider {
                         self.slider_preview = None;
                         self.slider_pending_receipt = None;
                     }
+                } else {
+                    self.request_lyrics_for_current_track();
                 }
                 if should_toast_playback_action(&action) {
                     self.toast = Some(format!("Playback updated: {action}"));
@@ -606,6 +706,8 @@ impl DesktopApp {
             content.child(self.queue_pane(state))
         } else if self.selected_destination == Destination::Devices {
             content.child(self.devices_pane(cx))
+        } else if self.selected_destination == Destination::Lyrics {
+            content.child(self.lyrics_pane())
         } else {
             content.child(self.content_pane(state))
         }
@@ -839,6 +941,87 @@ impl DesktopApp {
             rows = rows.child(row);
         }
         pane.child(rows)
+    }
+
+    fn lyrics_pane(&self) -> impl IntoElement {
+        let pane = div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .child(div().text_3xl().child("Lyrics"))
+            .child(
+                div()
+                    .mt_2()
+                    .text_lg()
+                    .text_color(rgb(0xd6c7ba))
+                    .child("Lyrics for the current track"),
+            );
+
+        if self.lyrics_loading {
+            return pane.child(queue_message("Loading lyrics..."));
+        }
+        if let Some(error) = &self.lyrics_error {
+            return pane.child(queue_message(&format!("Lyrics unavailable: {error}")));
+        }
+        let Some(lyrics) = &self.lyrics else {
+            return pane.child(queue_message(if self.current_track_uri().is_some() {
+                "Lyrics aren't available for this track"
+            } else {
+                "Play a track to see its lyrics"
+            }));
+        };
+        if lyrics.lines.is_empty() {
+            return pane.child(queue_message("Lyrics aren't available for this track"));
+        }
+
+        let active = lyrics
+            .synced
+            .then(|| {
+                active_lyric_line_index(
+                    &lyrics.lines,
+                    self.playback
+                        .as_ref()
+                        .map(playback_progress_ms)
+                        .unwrap_or_default(),
+                    self.lyrics_offset_ms,
+                )
+            })
+            .flatten();
+        let mut lines = div().mt_6().flex().flex_col().gap_3();
+        for (index, line) in lyrics.lines.iter().enumerate() {
+            let is_active = active == Some(index);
+            lines = lines.child(
+                div()
+                    .text_color(if is_active {
+                        rgb(0xfff5ee)
+                    } else {
+                        rgb(0x8f828d)
+                    })
+                    .text_size(px(if is_active { 26. } else { 20. }))
+                    .font_weight(if is_active {
+                        gpui::FontWeight::BOLD
+                    } else {
+                        gpui::FontWeight::NORMAL
+                    })
+                    .child(if line.text.is_empty() {
+                        "♪".to_string()
+                    } else {
+                        line.text.clone()
+                    }),
+            );
+        }
+        pane.child(if lyrics.synced {
+            lines
+        } else {
+            lines.child(
+                div()
+                    .mt_4()
+                    .text_sm()
+                    .text_color(rgb(0xb9aca4))
+                    .child("These lyrics are not synchronized."),
+            )
+        })
     }
 
     fn search_pane(&self, cx: &mut Context<'_, Self>) -> impl IntoElement {
@@ -2434,7 +2617,7 @@ fn health_word(is_healthy: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spotuify_core::{MediaKind, Playback};
+    use spotuify_core::{LyricLine, LyricsProvider, MediaKind, Playback};
     use spotuify_protocol::{UpgradeMethod, IPC_PROTOCOL_VERSION};
 
     #[test]
@@ -2460,6 +2643,86 @@ mod tests {
         assert!(app.queue_requested);
         assert!(matches!(command_rx.try_recv(), Ok(Request::QueueGet)));
         assert!(command_rx.try_recv().is_err());
+    }
+
+    fn test_playback(uri: &str, progress_ms: u64) -> Playback {
+        Playback {
+            item: Some(MediaItem {
+                uri: uri.to_string(),
+                kind: MediaKind::Track,
+                ..MediaItem::default()
+            }),
+            progress_ms,
+            ..Playback::default()
+        }
+    }
+
+    #[test]
+    fn lyrics_request_is_gated_and_maps_response() {
+        let mut app = connected_app();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        app.playback = Some(test_playback("spotify:track:one", 2_500));
+
+        app.select_destination(Destination::Lyrics);
+        app.select_destination(Destination::Lyrics);
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::LyricsGet { track_uri: Some(uri), force_refresh: false })
+                if uri == "spotify:track:one"
+        ));
+        assert!(command_rx.try_recv().is_err());
+
+        app.apply_daemon_response_for_track(
+            ResponseData::Lyrics {
+                lyrics: Some(SyncedLyrics {
+                    provider: LyricsProvider::Lrclib,
+                    track_uri: "spotify:track:one".to_string(),
+                    lines: vec![LyricLine {
+                        start_ms: 2_000,
+                        text: "line".to_string(),
+                        is_rtl: false,
+                    }],
+                    fetched_at_ms: 0,
+                    synced: true,
+                    language: None,
+                    source_url: None,
+                }),
+                offset_ms: 500,
+            },
+            Some("spotify:track:one"),
+        );
+        assert_eq!(app.lyrics_offset_ms, 500);
+        assert_eq!(app.lyrics.as_ref().unwrap().lines[0].text, "line");
+        assert_eq!(
+            active_lyric_line_index(&app.lyrics.as_ref().unwrap().lines, 2_500, 500),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn lyrics_response_for_old_track_is_ignored() {
+        let mut app = connected_app();
+        let (command_tx, _) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        app.playback = Some(test_playback("spotify:track:one", 0));
+        app.select_destination(Destination::Lyrics);
+        app.apply_daemon_event(DaemonEvent::PlaybackChanged {
+            action: "next".to_string(),
+            playback: Some(test_playback("spotify:track:two", 0)),
+        });
+
+        app.apply_daemon_response_for_track(
+            ResponseData::Lyrics {
+                lyrics: None,
+                offset_ms: 0,
+            },
+            Some("spotify:track:one"),
+        );
+        assert_eq!(app.lyrics_track_uri.as_deref(), Some("spotify:track:two"));
+        assert!(app.lyrics_loading);
     }
 
     #[test]
