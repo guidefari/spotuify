@@ -253,6 +253,8 @@ async fn dispatch_transport_request(
     let is_queue_get = matches!(&command, Request::QueueGet);
     let is_devices_list = matches!(&command, Request::DevicesList);
     let is_saved_tracks = matches!(&command, Request::SavedTracks { .. });
+    let is_library_list = matches!(&command, Request::LibraryList { .. });
+    let is_followed_artists = matches!(&command, Request::FollowedArtists { .. });
     let is_recently_played = matches!(&command, Request::RecentlyPlayed);
     let result = client.request(command).await;
     match result {
@@ -264,6 +266,10 @@ async fn dispatch_transport_request(
                     app.apply_playlist_tracks_response(playlist, data);
                 } else if is_recently_played {
                     app.apply_history_response(data);
+                } else if is_library_list {
+                    app.apply_albums_response(data);
+                } else if is_followed_artists {
+                    app.apply_artists_response(data);
                 } else {
                     app.apply_daemon_response(data);
                 }
@@ -290,6 +296,12 @@ async fn dispatch_transport_request(
                 }
                 if is_saved_tracks {
                     app.fail_liked_songs(message.clone());
+                }
+                if is_library_list {
+                    app.fail_albums(message.clone());
+                }
+                if is_followed_artists {
+                    app.fail_artists(message.clone());
                 }
                 if is_recently_played {
                     app.fail_history(message.clone());
@@ -321,6 +333,12 @@ async fn dispatch_transport_request(
                 }
                 if is_saved_tracks {
                     app.fail_liked_songs(error.to_string());
+                }
+                if is_library_list {
+                    app.fail_albums(error.to_string());
+                }
+                if is_followed_artists {
+                    app.fail_artists(error.to_string());
                 }
                 if is_recently_played {
                     app.fail_history(error.to_string());

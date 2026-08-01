@@ -50,6 +50,14 @@ pub struct DesktopApp {
     pub(crate) liked_loading: bool,
     pub(crate) liked_error: Option<String>,
     liked_requested: bool,
+    pub(crate) albums: Vec<MediaItem>,
+    pub(crate) albums_loading: bool,
+    pub(crate) albums_error: Option<String>,
+    albums_requested: bool,
+    pub(crate) artists: Vec<MediaItem>,
+    pub(crate) artists_loading: bool,
+    pub(crate) artists_error: Option<String>,
+    artists_requested: bool,
     pub(crate) history: Vec<MediaItem>,
     pub(crate) history_loading: bool,
     pub(crate) history_error: Option<String>,
@@ -239,6 +247,14 @@ impl DesktopApp {
             liked_loading: false,
             liked_error: None,
             liked_requested: false,
+            albums: Vec::new(),
+            albums_loading: false,
+            albums_error: None,
+            albums_requested: false,
+            artists: Vec::new(),
+            artists_loading: false,
+            artists_error: None,
+            artists_requested: false,
             history: Vec::new(),
             history_loading: false,
             history_error: None,
@@ -298,6 +314,12 @@ impl DesktopApp {
         }
         if destination == Destination::LikedSongs {
             self.request_liked_songs();
+        }
+        if destination == Destination::Albums {
+            self.request_albums();
+        }
+        if destination == Destination::Artists {
+            self.request_artists();
         }
         if destination == Destination::History {
             self.request_history();
@@ -405,6 +427,58 @@ impl DesktopApp {
             limit: 50,
             offset: 0,
         });
+    }
+
+    fn request_albums(&mut self) {
+        if self.albums_requested || self.albums_loading || self.command_tx.is_none() {
+            return;
+        }
+        self.albums_requested = true;
+        self.albums_loading = true;
+        self.albums_error = None;
+        self.send_request(Request::LibraryList { limit: 100 });
+    }
+
+    fn refresh_albums(&mut self) {
+        if self.command_tx.is_none() || self.albums_loading {
+            return;
+        }
+        self.albums_requested = true;
+        self.albums_loading = true;
+        self.albums_error = None;
+        self.send_request(Request::LibraryList { limit: 100 });
+    }
+
+    pub(crate) fn fail_albums(&mut self, message: String) {
+        self.albums_loading = false;
+        self.albums_requested = false;
+        self.albums_error = Some(message);
+    }
+
+    fn request_artists(&mut self) {
+        if self.artists_requested || self.artists_loading || self.command_tx.is_none() {
+            return;
+        }
+        self.artists_requested = true;
+        self.artists_loading = true;
+        self.artists_error = None;
+        self.send_request(Request::FollowedArtists { limit: 100 });
+    }
+
+    fn refresh_artists(&mut self) {
+        if self.command_tx.is_none() || self.artists_loading {
+            return;
+        }
+        self.artists_requested = true;
+        self.artists_loading = true;
+        self.artists_error = None;
+        self.send_request(Request::FollowedArtists { limit: 100 });
+    }
+
+    pub(crate) fn fail_artists(&mut self, message: String) {
+        self.artists_loading = false;
+        self.artists_requested = false;
+        self.artists_error = Some(message);
     }
 
     fn request_history(&mut self) {
@@ -579,6 +653,27 @@ impl DesktopApp {
         self.apply_daemon_response_for_track(response, None);
     }
 
+    pub(crate) fn apply_albums_response(&mut self, response: ResponseData) {
+        if let ResponseData::MediaItems { items } = response {
+            self.albums = items
+                .into_iter()
+                .filter(|item| item.kind == MediaKind::Album)
+                .collect();
+            self.albums_loading = false;
+            self.albums_error = None;
+            self.albums_requested = true;
+        }
+    }
+
+    pub(crate) fn apply_artists_response(&mut self, response: ResponseData) {
+        if let ResponseData::MediaItems { items } = response {
+            self.artists = items;
+            self.artists_loading = false;
+            self.artists_error = None;
+            self.artists_requested = true;
+        }
+    }
+
     pub(crate) fn apply_history_response(&mut self, response: ResponseData) {
         if let ResponseData::MediaItems { items } = response {
             self.history = items;
@@ -746,8 +841,16 @@ impl DesktopApp {
                     self.toast = Some(format!("Devices updated: {action}"));
                 }
             }
-            DaemonEvent::LibraryChanged { .. } if self.liked_requested => {
-                self.refresh_liked_songs();
+            DaemonEvent::LibraryChanged { .. } => {
+                if self.liked_requested {
+                    self.refresh_liked_songs();
+                }
+                if self.albums_requested {
+                    self.refresh_albums();
+                }
+                if self.artists_requested {
+                    self.refresh_artists();
+                }
             }
             DaemonEvent::PlaylistsChanged { .. } if self.playlists_requested => {
                 self.refresh_playlists();
@@ -928,6 +1031,10 @@ impl DesktopApp {
             content.child(self.lyrics_pane())
         } else if self.selected_destination == Destination::LikedSongs {
             content.child(self.liked_songs_pane(cx))
+        } else if self.selected_destination == Destination::Albums {
+            content.child(self.albums_pane(cx))
+        } else if self.selected_destination == Destination::Artists {
+            content.child(self.artists_pane())
         } else if self.selected_destination == Destination::History {
             content.child(self.history_pane(cx))
         } else if self.selected_destination == Destination::Playlists {
@@ -1081,6 +1188,70 @@ impl DesktopApp {
         let mut rows = div().mt_6().flex().flex_col().gap_2();
         for (index, item) in self.liked_songs.iter().enumerate() {
             rows = rows.child(liked_song_row(index, item, cx));
+        }
+        pane.child(rows)
+    }
+
+    fn albums_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+        let pane = div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .child(div().text_3xl().child("Albums"))
+            .child(
+                div()
+                    .mt_2()
+                    .text_lg()
+                    .text_color(rgb(0xd6c7ba))
+                    .child("Saved albums"),
+            );
+
+        if self.albums_loading && self.albums.is_empty() {
+            return pane.child(queue_message("Loading albums..."));
+        }
+        if let Some(error) = &self.albums_error {
+            return pane.child(queue_message(&format!("Couldn't load albums: {error}")));
+        }
+        if self.albums.is_empty() {
+            return pane.child(queue_message("No saved albums"));
+        }
+
+        let mut rows = div().mt_6().flex().flex_col().gap_2();
+        for (index, item) in self.albums.iter().enumerate() {
+            rows = rows.child(album_row(index, item, cx));
+        }
+        pane.child(rows)
+    }
+
+    fn artists_pane(&self) -> impl IntoElement {
+        let pane = div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .child(div().text_3xl().child("Artists"))
+            .child(
+                div()
+                    .mt_2()
+                    .text_lg()
+                    .text_color(rgb(0xd6c7ba))
+                    .child("Followed artists"),
+            );
+
+        if self.artists_loading && self.artists.is_empty() {
+            return pane.child(queue_message("Loading artists..."));
+        }
+        if let Some(error) = &self.artists_error {
+            return pane.child(queue_message(&format!("Couldn't load artists: {error}")));
+        }
+        if self.artists.is_empty() {
+            return pane.child(queue_message("No followed artists"));
+        }
+
+        let mut rows = div().mt_6().flex().flex_col().gap_2();
+        for (index, item) in self.artists.iter().enumerate() {
+            rows = rows.child(artist_row(index, item));
         }
         pane.child(rows)
     }
@@ -1808,6 +1979,108 @@ fn search_result_row(
     }
 
     row
+}
+
+fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+    let title = if item.name.is_empty() {
+        "Untitled album".to_string()
+    } else {
+        item.name.clone()
+    };
+    let uri = item.uri.clone();
+    let can_act = !uri.is_empty();
+    let mut row = div()
+        .id(SharedString::from(format!("album-{index}")))
+        .w_full()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(0x3b2722))
+        .bg(rgb(0x1b1518))
+        .px_4()
+        .py_3()
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .flex_1()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(0xf7efe8))
+                        .truncate()
+                        .child(title.clone()),
+                )
+                .child(
+                    div()
+                        .mt_1()
+                        .text_xs()
+                        .text_color(rgb(0x9e929d))
+                        .truncate()
+                        .child(media_subtitle(item)),
+                ),
+        );
+
+    if can_act {
+        let play_uri = uri.clone();
+        let queue_uri = uri;
+        let play_title = title.clone();
+        let queue_title = title;
+        row = row
+            .child(search_row_action(
+                "Play",
+                cx.listener(move |app, _, _, cx| {
+                    app.send_playback_command(PlaybackCommand::PlayUri {
+                        uri: play_uri.clone(),
+                        context_uri: None,
+                    });
+                    app.toast = Some(format!("Playing {play_title}"));
+                    cx.notify();
+                }),
+            ))
+            .child(search_row_action(
+                "Queue",
+                cx.listener(move |app, _, _, cx| {
+                    app.send_request(Request::QueueAdd {
+                        uri: queue_uri.clone(),
+                    });
+                    app.toast = Some(format!("Queued {queue_title}"));
+                    cx.notify();
+                }),
+            ));
+    }
+    row
+}
+
+fn artist_row(index: usize, item: &MediaItem) -> impl IntoElement {
+    let title = if item.name.is_empty() {
+        "Unnamed artist"
+    } else {
+        item.name.as_str()
+    };
+    div()
+        .id(SharedString::from(format!("artist-{index}")))
+        .w_full()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(0x3b2722))
+        .bg(rgb(0x1b1518))
+        .px_4()
+        .py_3()
+        .child(
+            div()
+                .text_sm()
+                .text_color(rgb(0xf7efe8))
+                .child(title.to_string()),
+        )
+        .child(
+            div()
+                .mt_1()
+                .text_xs()
+                .text_color(rgb(0x9e929d))
+                .child("Artist details are not available in this pane yet"),
+        )
 }
 
 fn liked_song_row(
@@ -3285,6 +3558,112 @@ mod tests {
             })
         ));
         assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn entering_albums_and_artists_requests_each_list_once() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+
+        app.select_destination(Destination::Albums);
+        app.select_destination(Destination::Albums);
+        app.select_destination(Destination::Artists);
+        app.select_destination(Destination::Artists);
+
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::LibraryList { limit: 100 })
+        ));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::FollowedArtists { limit: 100 })
+        ));
+        assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn albums_and_artists_responses_update_their_state() {
+        let mut app = DesktopApp::new();
+        app.albums_loading = true;
+        app.artists_loading = true;
+        let album = MediaItem {
+            name: "Album".to_string(),
+            uri: "spotify:album:one".to_string(),
+            kind: MediaKind::Album,
+            ..MediaItem::default()
+        };
+        let track = MediaItem {
+            name: "Not an album".to_string(),
+            kind: MediaKind::Track,
+            ..MediaItem::default()
+        };
+        let artist = MediaItem {
+            name: "Artist".to_string(),
+            uri: "spotify:artist:one".to_string(),
+            kind: MediaKind::Artist,
+            ..MediaItem::default()
+        };
+
+        app.apply_albums_response(ResponseData::MediaItems {
+            items: vec![album.clone(), track],
+        });
+        app.apply_artists_response(ResponseData::MediaItems {
+            items: vec![artist.clone()],
+        });
+
+        assert_eq!(app.albums, vec![album]);
+        assert_eq!(app.artists, vec![artist]);
+        assert!(!app.albums_loading);
+        assert!(!app.artists_loading);
+        assert!(app.albums_requested);
+        assert!(app.artists_requested);
+    }
+
+    #[test]
+    fn album_and_artist_errors_clear_loading_and_allow_retry() {
+        let mut app = DesktopApp::new();
+        app.albums_requested = true;
+        app.albums_loading = true;
+        app.artists_requested = true;
+        app.artists_loading = true;
+
+        app.fail_albums("albums unavailable".to_string());
+        app.fail_artists("artists unavailable".to_string());
+
+        assert!(!app.albums_loading);
+        assert!(!app.albums_requested);
+        assert_eq!(app.albums_error.as_deref(), Some("albums unavailable"));
+        assert!(!app.artists_loading);
+        assert!(!app.artists_requested);
+        assert_eq!(app.artists_error.as_deref(), Some("artists unavailable"));
+    }
+
+    #[test]
+    fn library_change_refetches_loaded_albums_and_artists() {
+        let mut app = connected_app();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        app.albums_requested = true;
+        app.artists_requested = true;
+
+        app.apply_daemon_event(DaemonEvent::LibraryChanged {
+            action: "saved".to_string(),
+            uris: vec!["spotify:album:one".to_string()],
+        });
+
+        assert!(app.albums_loading);
+        assert!(app.artists_loading);
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::LibraryList { limit: 100 })
+        ));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::FollowedArtists { limit: 100 })
+        ));
     }
 
     #[test]
