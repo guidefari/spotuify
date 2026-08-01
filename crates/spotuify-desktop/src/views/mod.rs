@@ -22,6 +22,8 @@ use spotuify_protocol::{
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
+#[cfg(debug_assertions)]
+use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc::UnboundedSender, watch};
 
@@ -100,6 +102,42 @@ pub struct DesktopApp {
     slider_drag: Option<SliderKind>,
     slider_preview: Option<SliderPreview>,
     slider_pending_receipt: Option<ReceiptId>,
+    #[cfg(debug_assertions)]
+    debug_fps: DebugFps,
+}
+
+#[cfg(debug_assertions)]
+struct DebugFps {
+    sample_started_at: Instant,
+    sampled_frames: u32,
+    frames_per_second: f32,
+    frame_time_ms: f32,
+}
+
+#[cfg(debug_assertions)]
+impl DebugFps {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            sample_started_at: now,
+            sampled_frames: 0,
+            frames_per_second: 0.,
+            frame_time_ms: 0.,
+        }
+    }
+
+    fn record_frame(&mut self, now: Instant) {
+        self.sampled_frames = self.sampled_frames.saturating_add(1);
+        let elapsed = now.saturating_duration_since(self.sample_started_at);
+        if elapsed.as_millis() < 500 {
+            return;
+        }
+
+        self.frames_per_second = self.sampled_frames as f32 / elapsed.as_secs_f32();
+        self.frame_time_ms = 1_000. / self.frames_per_second.max(0.01);
+        self.sample_started_at = now;
+        self.sampled_frames = 0;
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -321,6 +359,8 @@ impl DesktopApp {
             slider_drag: None,
             slider_preview: None,
             slider_pending_receipt: None,
+            #[cfg(debug_assertions)]
+            debug_fps: DebugFps::new(),
         }
     }
 
@@ -1182,6 +1222,12 @@ impl Render for DesktopApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         self.ensure_search_input(cx);
 
+        #[cfg(debug_assertions)]
+        {
+            self.debug_fps.record_frame(Instant::now());
+            window.request_animation_frame();
+        }
+
         if self
             .playback
             .as_ref()
@@ -1289,6 +1335,11 @@ impl DesktopApp {
 
         if let Some(toast) = &self.toast {
             root = root.child(toast_surface(toast));
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            root = root.child(debug_fps_surface(&self.debug_fps));
         }
 
         root
@@ -2350,6 +2401,39 @@ impl DesktopApp {
                     ),
             )
     }
+}
+
+#[cfg(debug_assertions)]
+fn debug_fps_surface(fps: &DebugFps) -> impl IntoElement {
+    let color = if fps.frames_per_second >= 55. {
+        0x75c991
+    } else if fps.frames_per_second >= 30. {
+        0xe8b86d
+    } else {
+        0xe07878
+    };
+    let label = if fps.frames_per_second > 0. {
+        format!(
+            "DEBUG  {:.0} FPS  ·  {:.1} ms",
+            fps.frames_per_second, fps.frame_time_ms
+        )
+    } else {
+        "DEBUG  measuring FPS…".to_string()
+    };
+
+    div()
+        .absolute()
+        .top_4()
+        .right_4()
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(theme::BORDER_STRONG))
+        .bg(rgb(theme::BG_ELEVATED))
+        .px_3()
+        .py_2()
+        .text_xs()
+        .text_color(rgb(color))
+        .child(label)
 }
 
 fn queue_message(message: &str) -> impl IntoElement {
@@ -4261,6 +4345,25 @@ mod tests {
     use super::*;
     use spotuify_core::{LyricLine, LyricsProvider, MediaKind, Playback};
     use spotuify_protocol::{UpgradeMethod, IPC_PROTOCOL_VERSION};
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_fps_reports_frames_over_a_half_second_sample() {
+        let started_at = Instant::now();
+        let mut fps = DebugFps {
+            sample_started_at: started_at,
+            sampled_frames: 0,
+            frames_per_second: 0.,
+            frame_time_ms: 0.,
+        };
+
+        for frame in 1..=32 {
+            fps.record_frame(started_at + std::time::Duration::from_millis(frame * 16));
+        }
+
+        assert!((fps.frames_per_second - 62.5).abs() < 0.1);
+        assert!((fps.frame_time_ms - 16.).abs() < 0.1);
+    }
 
     #[test]
     fn sidebar_selection_updates_destination() {
