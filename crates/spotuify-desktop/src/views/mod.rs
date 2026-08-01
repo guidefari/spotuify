@@ -6,7 +6,7 @@ use gpui::{
     MouseDownEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollHandle, ShapedLine,
     SharedString, Style, TextRun, UTF16Selection, WeakEntity, Window,
 };
-use spotuify_core::{MediaItem, MediaKind, Playback, Playlist};
+use spotuify_core::{MediaItem, MediaKind, Playback, Playlist, RepeatMode};
 use spotuify_launcher::SocketState;
 use spotuify_protocol::{
     DaemonEvent, DaemonStatus, DoctorReport, PlaybackCommand, ReceiptId, Request, ResponseData,
@@ -277,8 +277,9 @@ impl DesktopApp {
         self.send_request(Request::SearchStream {
             query,
             scope: SearchScopeData::All,
-            source: SearchSourceData::Spotify,
+            source: SearchSourceData::legacy_default_remote(),
             version: self.search_version,
+            provider: None,
         });
     }
 
@@ -286,7 +287,7 @@ impl DesktopApp {
         self.playlist_picker_uri = Some(uri);
         self.playlist_loading = true;
         self.search_playlists.clear();
-        self.send_request(Request::PlaylistsList);
+        self.send_request(Request::PlaylistsList { provider: None });
     }
 
     fn add_search_result_to_playlist(&mut self, playlist: String) {
@@ -297,6 +298,7 @@ impl DesktopApp {
         self.send_request(Request::PlaylistAddItems {
             playlist,
             uris: vec![uri],
+            provider: None,
         });
         self.toast = Some("Adding track to playlist".to_string());
     }
@@ -370,7 +372,7 @@ impl DesktopApp {
                 self.search_results.extend(items);
                 sort_search_results(&mut self.search_results);
             }
-            DaemonEvent::SearchComplete { query, version }
+            DaemonEvent::SearchComplete { query, version, .. }
                 if version == self.search_version && query == self.search_query.trim() =>
             {
                 self.search_loading = false;
@@ -430,7 +432,7 @@ impl DesktopApp {
             DaemonEvent::EventStreamLagged { skipped } => {
                 self.toast = Some(format!("Event stream lagged by {skipped} events"));
             }
-            DaemonEvent::AuthError { kind } => {
+            DaemonEvent::AuthError { kind, .. } => {
                 self.toast = Some(format!("Authentication needs attention: {kind:?}"));
             }
             DaemonEvent::PlayerDegraded { reason }
@@ -734,7 +736,7 @@ impl DesktopApp {
         let playback = self.playback.as_ref();
         let shuffle_state = playback.is_some_and(|playback| playback.shuffle);
         let repeat_state = playback
-            .map(|playback| playback.repeat.as_str())
+            .map(|playback| playback.repeat.label())
             .unwrap_or("off");
         let is_playing = playback.is_some_and(|playback| playback.is_playing);
 
@@ -821,7 +823,8 @@ impl DesktopApp {
                                 "repeat",
                                 format!("Repeat {repeat_state}"),
                                 PlaybackCommand::Repeat {
-                                    state: next_repeat_state(repeat_state).to_string(),
+                                    state: RepeatMode::parse(next_repeat_state(repeat_state))
+                                        .unwrap_or_default(),
                                 },
                                 cx,
                             )),
@@ -2099,18 +2102,20 @@ fn event_label(event: &DaemonEvent) -> String {
         DaemonEvent::SearchComplete { .. } => "search-complete".to_string(),
         DaemonEvent::SearchFailed { .. } => "search-failed".to_string(),
         DaemonEvent::EventStreamLagged { skipped } => format!("event-stream-lagged:{skipped}"),
-        DaemonEvent::SyncStarted { target } => format!("sync-started:{}", target.label()),
+        DaemonEvent::SyncStarted { target, .. } => format!("sync-started:{}", target.label()),
         DaemonEvent::SyncFinished { summary } => {
             format!("sync-finished:{}", summary.target.label())
         }
         DaemonEvent::MutationFinished { action, .. } => format!("mutation:{action}"),
         DaemonEvent::RateLimited { scope, .. } => format!("rate-limited:{scope}"),
-        DaemonEvent::AuthError { kind } => format!("auth-error:{kind:?}"),
+        DaemonEvent::AuthError { kind, .. } => format!("auth-error:{kind:?}"),
         DaemonEvent::MutationAccepted { action, .. } => format!("mutation-accepted:{action}"),
         DaemonEvent::MutationFinalized { .. } => "mutation-finalized".to_string(),
         DaemonEvent::SchemaCompat { endpoint, .. } => format!("schema-compat:{endpoint}"),
         DaemonEvent::PlayerReady { name, .. } => format!("player-ready:{name}"),
         DaemonEvent::PlayerDegraded { .. } => "player-degraded".to_string(),
+        DaemonEvent::ProviderPolicy { .. } => "provider-policy".to_string(),
+        DaemonEvent::ProviderPolicyCleared { .. } => "provider-policy-cleared".to_string(),
         DaemonEvent::PremiumRequired => "premium-required".to_string(),
         DaemonEvent::SessionDisconnected { .. } => "session-disconnected".to_string(),
         DaemonEvent::PlayerFailed { .. } => "player-failed".to_string(),
@@ -2133,6 +2138,7 @@ fn event_label(event: &DaemonEvent) -> String {
         DaemonEvent::UpdateAvailable { latest_version, .. } => {
             format!("update-available:{latest_version}")
         }
+        DaemonEvent::AuthMigrationRecommended { .. } => "auth-migration-recommended".to_string(),
         DaemonEvent::Unknown => "unknown".to_string(),
     };
 
@@ -2219,7 +2225,7 @@ mod tests {
             }),
             is_playing: true,
             progress_ms: 61_000,
-            repeat: "context".to_string(),
+            repeat: RepeatMode::Context,
             ..Playback::default()
         };
 
@@ -2241,14 +2247,14 @@ mod tests {
             action: "optimistic-shuffle".to_string(),
             playback: Some(Playback {
                 shuffle: true,
-                repeat: "track".to_string(),
+                repeat: RepeatMode::Track,
                 ..Playback::default()
             }),
         });
 
         let playback = app.playback.expect("playback event should seed state");
         assert!(playback.shuffle);
-        assert_eq!(playback.repeat, "track");
+        assert_eq!(playback.repeat, RepeatMode::Track);
     }
 
     #[test]
@@ -2321,9 +2327,10 @@ mod tests {
             Ok(Request::SearchStream {
                 query,
                 scope: SearchScopeData::All,
-                source: SearchSourceData::Spotify,
+                source: SearchSourceData::Remote(source_provider),
                 version: 1,
-            }) if query == "radiohead"
+                provider: None,
+            }) if query == "radiohead" && source_provider.as_str() == "spotify"
         ));
     }
 
@@ -2345,6 +2352,7 @@ mod tests {
             offset: 0,
             version: 1,
             items: vec![item.clone()],
+            provider: None,
         });
         assert!(app.search_results.is_empty());
 
@@ -2355,12 +2363,14 @@ mod tests {
             offset: 0,
             version: 2,
             items: vec![item],
+            provider: None,
         });
         assert_eq!(app.search_results.len(), 1);
 
         app.apply_daemon_event(DaemonEvent::SearchComplete {
             query: "radiohead".to_string(),
             version: 2,
+            provider: None,
         });
         assert!(!app.search_loading);
     }
@@ -2378,6 +2388,7 @@ mod tests {
             kind: Some(MediaKind::Playlist),
             offset: Some(0),
             message: "playlist page failed".to_string(),
+            provider: None,
         });
         assert!(app.search_loading);
         assert_eq!(app.search_error.as_deref(), Some("playlist page failed"));
@@ -2398,6 +2409,7 @@ mod tests {
             offset: 0,
             version: 1,
             items: vec![show],
+            provider: None,
         });
         app.apply_daemon_event(DaemonEvent::SearchPage {
             query: app.search_query.clone(),
@@ -2405,6 +2417,7 @@ mod tests {
             offset: 0,
             version: 1,
             items: vec![track],
+            provider: None,
         });
 
         assert_eq!(app.search_results[0].kind, MediaKind::Track);
@@ -2412,6 +2425,7 @@ mod tests {
         app.apply_daemon_event(DaemonEvent::SearchComplete {
             query: app.search_query.clone(),
             version: 1,
+            provider: None,
         });
         assert!(!app.search_loading);
     }
@@ -2429,7 +2443,7 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 1,
                 image_url: None,
-                snapshot_id: None,
+                version_token: None,
             }],
         });
 
@@ -2450,7 +2464,7 @@ mod tests {
         assert_eq!(app.playlist_picker_uri, None);
         assert!(matches!(
             command_rx.try_recv(),
-            Ok(Request::PlaylistAddItems { playlist, uris })
+            Ok(Request::PlaylistAddItems { playlist, uris, .. })
                 if playlist == "playlist-1" && uris == vec!["spotify:track:1"]
         ));
     }
@@ -2668,6 +2682,10 @@ mod tests {
                 recent_items: 0,
                 library_items: 0,
                 media_items: 0,
+                provider: None,
+                status: Default::default(),
+                error: None,
+                provider_outcomes: Vec::new(),
             },
         });
 
