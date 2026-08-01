@@ -1,4 +1,7 @@
-use crate::theme;
+use crate::{
+    icons::{icon as app_icon, tooltip as icon_tooltip, AppIcon},
+    theme,
+};
 use gpui::prelude::*;
 use gpui::{
     div, fill, img, point, px, relative, rgb, App, Bounds, ClickEvent, Context, CursorStyle,
@@ -205,6 +208,22 @@ impl Destination {
             Self::Notifications => "Notifications",
             Self::Devices => "Devices",
             Self::Lyrics => "Lyrics",
+        }
+    }
+
+    fn icon(self) -> AppIcon {
+        match self {
+            Self::NowPlaying => AppIcon::NowPlaying,
+            Self::Search => AppIcon::Search,
+            Self::LikedSongs => AppIcon::LikedSongs,
+            Self::Albums => AppIcon::Albums,
+            Self::Artists => AppIcon::Artists,
+            Self::Podcasts => AppIcon::Podcasts,
+            Self::Playlists => AppIcon::Playlists,
+            Self::History => AppIcon::History,
+            Self::Notifications => AppIcon::Notifications,
+            Self::Devices => AppIcon::Devices,
+            Self::Lyrics => AppIcon::Lyrics,
         }
     }
 
@@ -1815,7 +1834,12 @@ impl DesktopApp {
                 .px_4()
                 .py_2()
                 .text_sm()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(app_icon(AppIcon::Queue, 18., theme::TEXT_PRIMARY))
                 .child(toggle_label)
+                .hover(|style| style.bg(rgb(theme::BUTTON_SECONDARY_HOVER)))
                 .on_click(cx.listener(|app, _, _, cx| {
                     app.toggle_queue_rail();
                     cx.notify();
@@ -2228,20 +2252,38 @@ impl DesktopApp {
                             .child(transport_button(
                                 "previous",
                                 "Previous",
+                                AppIcon::Previous,
                                 PlaybackCommand::Previous,
+                                false,
+                                false,
                                 cx,
                             ))
                             .child(transport_button(
                                 "play-pause",
                                 if is_playing { "Pause" } else { "Play" },
                                 if is_playing {
+                                    AppIcon::Pause
+                                } else {
+                                    AppIcon::Play
+                                },
+                                if is_playing {
                                     PlaybackCommand::Pause
                                 } else {
                                     PlaybackCommand::Resume
                                 },
+                                false,
+                                true,
                                 cx,
                             ))
-                            .child(transport_button("next", "Next", PlaybackCommand::Next, cx))
+                            .child(transport_button(
+                                "next",
+                                "Next",
+                                AppIcon::Next,
+                                PlaybackCommand::Next,
+                                false,
+                                false,
+                                cx,
+                            ))
                             .child(transport_button(
                                 "shuffle",
                                 if shuffle_state {
@@ -2249,17 +2291,27 @@ impl DesktopApp {
                                 } else {
                                     "Shuffle"
                                 },
+                                AppIcon::Shuffle,
                                 PlaybackCommand::Shuffle {
                                     state: !shuffle_state,
                                 },
+                                shuffle_state,
+                                false,
                                 cx,
                             ))
                             .child(transport_button(
                                 "repeat",
                                 format!("Repeat {}", repeat_state.label()),
+                                if repeat_state == RepeatMode::Track {
+                                    AppIcon::RepeatOne
+                                } else {
+                                    AppIcon::Repeat
+                                },
                                 PlaybackCommand::Repeat {
                                     state: next_repeat_state(repeat_state),
                                 },
+                                repeat_state != RepeatMode::Off,
+                                false,
                                 cx,
                             )),
                     ),
@@ -2432,6 +2484,10 @@ fn nav_item(
         .cursor_pointer()
         .bg(rgb(background))
         .text_color(rgb(foreground))
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(app_icon(destination.icon(), 20., foreground))
         .child(destination.label())
         .hover(|style| style.bg(rgb(theme::NAV_HOVER)))
         .on_click(cx.listener(move |app, _, _, cx| {
@@ -3705,25 +3761,56 @@ impl Render for SliderGhost {
 fn transport_button(
     id: &'static str,
     label: impl Into<SharedString>,
+    icon: AppIcon,
     command: PlaybackCommand,
+    active: bool,
+    primary: bool,
     cx: &mut Context<'_, DesktopApp>,
 ) -> impl IntoElement {
+    let label = label.into();
+    let size = if primary { 46. } else { 38. };
+    let background = if primary {
+        theme::ACCENT
+    } else if active {
+        theme::NAV_ACTIVE
+    } else {
+        theme::BG_ELEVATED
+    };
+    let foreground = if primary {
+        theme::BG_ROOT
+    } else if active {
+        theme::ACCENT
+    } else {
+        theme::TEXT_PRIMARY
+    };
+    let hover_background = if primary {
+        theme::ACCENT_HOVER
+    } else {
+        theme::BUTTON_SECONDARY_HOVER
+    };
+
     div()
         .id(SharedString::from(format!("transport-{id}")))
         .cursor_pointer()
-        .rounded_md()
+        .size(px(size))
+        .rounded_full()
         .border_1()
-        .border_color(rgb(theme::BORDER_STRONG))
-        .bg(rgb(theme::BG_ELEVATED))
-        .px_3()
-        .py_2()
-        .text_xs()
-        .text_color(rgb(theme::TEXT_PRIMARY))
-        .hover(|style| style.bg(rgb(theme::BUTTON_SECONDARY_HOVER)))
+        .border_color(rgb(if primary {
+            theme::ACCENT
+        } else {
+            theme::BORDER_STRONG
+        }))
+        .bg(rgb(background))
+        .text_color(rgb(foreground))
+        .flex()
+        .items_center()
+        .justify_center()
+        .hover(move |style| style.bg(rgb(hover_background)))
+        .tooltip(icon_tooltip(label))
         .on_click(cx.listener(move |app, _, _, _| {
             app.send_playback_command(command.clone());
         }))
-        .child(label.into())
+        .child(app_icon(icon, if primary { 22. } else { 18. }, foreground))
 }
 
 fn seek_bar(

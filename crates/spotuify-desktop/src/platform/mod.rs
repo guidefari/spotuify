@@ -10,7 +10,10 @@ use spotuify_protocol::{
 use std::time::Duration;
 use tokio::sync::{mpsc, mpsc::UnboundedReceiver, watch};
 
-use crate::views::{DesktopApp, SearchRequest};
+use crate::{
+    icons::Assets,
+    views::{DesktopApp, SearchRequest},
+};
 
 pub fn run() {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -26,7 +29,7 @@ pub fn run() {
     };
     let _runtime_guard = runtime.enter();
 
-    Application::new().run(move |app| {
+    Application::new().with_assets(Assets).run(move |app| {
         let _ = app.open_window(WindowOptions::default(), move |_, app_cx| {
             let view = app_cx.new(|_| DesktopApp::new());
             let view_for_task = view.clone();
