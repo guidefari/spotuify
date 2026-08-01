@@ -4,8 +4,7 @@ use spotuify_protocol::IPC_PROTOCOL_VERSION;
 pub fn placeholder_message() -> String {
     let mut message = format!(
         "connecting... {} backend, IPC v{}",
-        "embedded",
-        IPC_PROTOCOL_VERSION
+        "embedded", IPC_PROTOCOL_VERSION
     );
 
     if no_daemon_start() {
