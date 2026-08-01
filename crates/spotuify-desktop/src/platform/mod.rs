@@ -118,6 +118,7 @@ async fn bootstrap(view: gpui::Entity<DesktopApp>, mut cx: gpui::AsyncApp) {
             app.playback = Some(playback);
             app.set_queue_seed(queue);
             app.set_devices_seed(devices);
+            app.request_artwork_for_current_track();
         }
         app.toast = Some("Connected to daemon".to_string());
         cx.notify();
@@ -211,6 +212,7 @@ async fn run_connected_loop(
                             app.playback = Some(playback);
                             app.set_queue_seed(queue);
                             app.set_devices_seed(devices);
+                            app.request_artwork_for_current_track();
                         }
                         cx.notify();
                     });
@@ -259,6 +261,11 @@ async fn dispatch_transport_request(
         _ => None,
     };
     let is_queue_get = matches!(&command, Request::QueueGet);
+    let artwork_request = match &command {
+        Request::Image { url } | Request::CoverArt { url } => Some(url.clone()),
+        _ => None,
+    };
+    let is_artwork_request = artwork_request.is_some();
     let is_devices_list = matches!(&command, Request::DevicesList);
     let is_saved_tracks = matches!(&command, Request::SavedTracks { .. });
     let is_library_list = matches!(&command, Request::LibraryList { .. });
@@ -270,6 +277,8 @@ async fn dispatch_transport_request(
             let _ = view.update(cx, |app, cx| {
                 if let Some(track_uri) = lyrics_request.as_deref() {
                     app.apply_daemon_response_for_track(data, Some(track_uri));
+                } else if let Some(url) = artwork_request.as_deref() {
+                    app.apply_artwork_response(url.to_string(), data);
                 } else if let Some(playlist) = playlist_tracks_request.as_deref() {
                     app.apply_playlist_tracks_response(playlist, data);
                 } else if let Some(album) = album_tracks_request.as_deref() {
@@ -308,6 +317,9 @@ async fn dispatch_transport_request(
                 if is_queue_get {
                     app.queue_loading = false;
                     app.queue_requested = false;
+                }
+                if let Some(url) = artwork_request.as_deref() {
+                    app.fail_artwork(url);
                 }
                 if is_devices_list {
                     app.devices_loading = false;
@@ -352,6 +364,9 @@ async fn dispatch_transport_request(
                     app.queue_loading = false;
                     app.queue_requested = false;
                 }
+                if let Some(url) = artwork_request.as_deref() {
+                    app.fail_artwork(url);
+                }
                 if is_devices_list {
                     app.devices_loading = false;
                 }
@@ -369,6 +384,11 @@ async fn dispatch_transport_request(
                 }
                 if let Some(track_uri) = &lyrics_request {
                     app.fail_lyrics(track_uri, error.to_string());
+                }
+                if is_artwork_request {
+                    if let Some(url) = artwork_request.as_deref() {
+                        app.fail_artwork(url);
+                    }
                 }
                 app.toast = Some(format!("Transport failed: {error}"));
                 cx.notify();

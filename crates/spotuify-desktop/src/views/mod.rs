@@ -1,10 +1,10 @@
 use gpui::prelude::*;
 use gpui::{
-    div, fill, point, px, relative, rgb, App, Bounds, ClickEvent, Context, CursorStyle,
+    div, fill, img, point, px, relative, rgb, App, Bounds, ClickEvent, Context, CursorStyle,
     DragMoveEvent, Element, ElementId, ElementInputHandler, Entity, EntityInputHandler,
-    FocusHandle, Focusable, GlobalElementId, IntoElement, KeyDownEvent, LayoutId, MouseButton,
-    MouseDownEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollHandle, ShapedLine,
-    SharedString, Style, TextRun, UTF16Selection, WeakEntity, Window,
+    FocusHandle, Focusable, GlobalElementId, Image, ImageFormat, IntoElement, KeyDownEvent,
+    LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render,
+    ScrollHandle, ShapedLine, SharedString, Style, TextRun, UTF16Selection, WeakEntity, Window,
 };
 use spotuify_core::{
     active_lyric_line_index, Device, MediaItem, MediaKind, Playback, Playlist, Queue, SyncedLyrics,
@@ -14,7 +14,9 @@ use spotuify_protocol::{
     DaemonEvent, DaemonStatus, DoctorReport, PlaybackCommand, ReceiptId, Request, ResponseData,
     SearchScopeData, SearchSourceData, UpgradeHint,
 };
+use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc::UnboundedSender, watch};
 
@@ -25,6 +27,7 @@ pub struct DesktopApp {
     pub(crate) queue: Option<Queue>,
     pub(crate) queue_loading: bool,
     pub(crate) queue_requested: bool,
+    pub(crate) queue_visible: bool,
     pub(crate) devices: Vec<Device>,
     pub(crate) devices_loading: bool,
     pub(crate) devices_loaded: bool,
@@ -83,6 +86,9 @@ pub struct DesktopApp {
     pub(crate) playlist_loading: bool,
     search_input: Option<Entity<SearchInput>>,
     search_scroll: ScrollHandle,
+    queue_scroll: ScrollHandle,
+    artwork_cache: HashMap<String, Arc<Image>>,
+    artwork_requested_url: Option<String>,
     seek_bar_bounds: Option<Bounds<Pixels>>,
     volume_bar_bounds: Option<Bounds<Pixels>>,
     slider_drag: Option<SliderKind>,
@@ -230,6 +236,7 @@ impl DesktopApp {
             queue: None,
             queue_loading: false,
             queue_requested: false,
+            queue_visible: false,
             devices: Vec::new(),
             devices_loading: false,
             devices_loaded: false,
@@ -288,6 +295,9 @@ impl DesktopApp {
             playlist_loading: false,
             search_input: None,
             search_scroll: ScrollHandle::new(),
+            queue_scroll: ScrollHandle::new(),
+            artwork_cache: HashMap::new(),
+            artwork_requested_url: None,
             seek_bar_bounds: None,
             volume_bar_bounds: None,
             slider_drag: None,
@@ -322,11 +332,19 @@ impl DesktopApp {
     }
 
     fn select_destination(&mut self, destination: Destination) {
-        self.selected_destination = destination;
+        self.selected_destination = if destination == Destination::Queue {
+            self.queue_visible = true;
+            Destination::NowPlaying
+        } else {
+            destination
+        };
         if destination == Destination::Queue && !self.queue_requested {
             self.queue_loading = true;
             self.queue_requested = true;
             self.send_request(Request::QueueGet);
+        }
+        if self.selected_destination == Destination::NowPlaying {
+            self.request_artwork_for_current_track();
         }
         if destination == Destination::LikedSongs {
             self.request_liked_songs();
@@ -664,6 +682,46 @@ impl DesktopApp {
             .map(|item| item.uri.clone())
     }
 
+    fn current_artwork_url(&self, large: bool) -> Option<String> {
+        self.playback
+            .as_ref()
+            .and_then(|playback| playback.item.as_ref())
+            .and_then(|item| artwork_url(item, large))
+    }
+
+    pub(crate) fn request_artwork_for_current_track(&mut self) {
+        let Some(url) = self.current_artwork_url(true) else {
+            self.artwork_requested_url = None;
+            return;
+        };
+        if self.artwork_cache.contains_key(&url)
+            || self.artwork_requested_url.as_deref() == Some(url.as_str())
+            || self.command_tx.is_none()
+        {
+            return;
+        }
+        self.artwork_requested_url = Some(url.clone());
+        self.send_request(Request::Image { url });
+    }
+
+    pub(crate) fn apply_artwork_response(&mut self, url: String, response: ResponseData) {
+        if let ResponseData::Image { bytes } = response {
+            if let Some(format) = image_format(&bytes) {
+                self.artwork_cache
+                    .insert(url.clone(), Arc::new(Image::from_bytes(format, bytes)));
+            }
+        }
+        if self.artwork_requested_url.as_deref() == Some(url.as_str()) {
+            self.artwork_requested_url = None;
+        }
+    }
+
+    pub(crate) fn fail_artwork(&mut self, url: &str) {
+        if self.artwork_requested_url.as_deref() == Some(url) {
+            self.artwork_requested_url = None;
+        }
+    }
+
     pub(crate) fn fail_lyrics(&mut self, track_uri: &str, message: String) {
         if self.lyrics_track_uri.as_deref() == Some(track_uri) {
             self.lyrics_loading = false;
@@ -941,6 +999,7 @@ impl DesktopApp {
                             slider_preview_matches_playback(preview, &playback)
                         });
                     self.playback = Some(playback);
+                    self.request_artwork_for_current_track();
                     if self.current_track_uri().as_deref() != self.lyrics_track_uri.as_deref() {
                         self.lyrics_requested_uri = None;
                         self.request_lyrics_for_current_track();
@@ -1155,8 +1214,8 @@ impl DesktopApp {
 
         content = if self.selected_destination == Destination::Search {
             content.child(self.search_pane(cx))
-        } else if self.selected_destination == Destination::Queue {
-            content.child(self.queue_pane(state))
+        } else if self.selected_destination == Destination::NowPlaying {
+            content.child(self.now_playing_pane(cx))
         } else if self.selected_destination == Destination::Devices {
             content.child(self.devices_pane(cx))
         } else if self.selected_destination == Destination::Lyrics {
@@ -1642,49 +1701,211 @@ impl DesktopApp {
         pane.child(rows)
     }
 
-    fn queue_pane(&self, _state: &ConnectedState) -> impl IntoElement {
-        let mut pane = div()
+    fn now_playing_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+        let playback = self.playback.as_ref();
+        let item = playback.and_then(|playback| playback.item.as_ref());
+        let summary = playback_summary(playback);
+        let mut main = div()
             .flex_1()
-            .p_8()
+            .h_full()
+            .p_10()
             .flex()
             .flex_col()
-            .child(div().text_3xl().child("Queue"))
-            .child(
-                div()
-                    .mt_2()
-                    .text_lg()
-                    .text_color(rgb(0xd6c7ba))
-                    .child("What plays next"),
-            );
+            .items_center()
+            .justify_center()
+            .bg(rgb(0x1a121b));
 
-        if self.queue_loading && self.queue.is_none() {
-            return pane.child(queue_message("Loading queue..."));
+        if let Some(item) = item {
+            if let Some(image) = self
+                .current_artwork_url(true)
+                .and_then(|url| self.artwork_cache.get(&url))
+            {
+                main = main.child(
+                    img(image.clone())
+                        .w(px(420.))
+                        .h(px(420.))
+                        .object_fit(gpui::ObjectFit::Cover),
+                );
+            } else {
+                main = main.child(
+                    div()
+                        .w(px(420.))
+                        .h(px(420.))
+                        .bg(rgb(0x34233b))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(rgb(0x9c849f))
+                        .child("Artwork loading"),
+                );
+            }
+            main = main
+                .child(div().mt_6().text_3xl().child(item.name.clone()))
+                .child(div().mt_2().text_lg().text_color(rgb(0xc4b1c4)).child(
+                    if item.subtitle.is_empty() {
+                        item.context.clone()
+                    } else {
+                        item.subtitle.clone()
+                    },
+                ))
+                .child(
+                    div()
+                        .mt_2()
+                        .text_sm()
+                        .text_color(rgb(0x8f7e91))
+                        .child(summary.progress),
+                );
+            main = main.child(
+                div()
+                    .mt_6()
+                    .w(px(620.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_3()
+                    .child(seek_bar(playback, self.slider_preview, cx))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(transport_button(
+                                "now-playing-previous",
+                                "Previous",
+                                PlaybackCommand::Previous,
+                                cx,
+                            ))
+                            .child(transport_button(
+                                "now-playing-play-pause",
+                                if playback.is_some_and(|playback| playback.is_playing) {
+                                    "Pause"
+                                } else {
+                                    "Play"
+                                },
+                                if playback.is_some_and(|playback| playback.is_playing) {
+                                    PlaybackCommand::Pause
+                                } else {
+                                    PlaybackCommand::Resume
+                                },
+                                cx,
+                            ))
+                            .child(transport_button(
+                                "now-playing-next",
+                                "Next",
+                                PlaybackCommand::Next,
+                                cx,
+                            )),
+                    ),
+            );
+        } else {
+            main = main.child(queue_message("Nothing is playing"));
         }
 
-        let Some(queue) = &self.queue else {
-            return pane.child(queue_message("Queue is not loaded yet"));
-        };
-
-        let current = queue
-            .currently_playing
-            .as_ref()
-            .map(queue_item_label)
-            .unwrap_or_else(|| "Nothing is currently playing".to_string());
-        pane = pane.child(queue_section("CURRENT", current, false));
-
-        if queue.items.is_empty() {
-            pane.child(queue_message("No upcoming items"))
+        let toggle_label = if self.queue_visible {
+            "Hide queue"
         } else {
-            let mut upcoming = div().mt_4().flex().flex_col().gap_2();
-            for (index, item) in queue.items.iter().enumerate() {
-                upcoming = upcoming.child(queue_section(
-                    &format!("{}", index + 1),
-                    queue_item_label(item),
+            "Show queue"
+        };
+        main = main.child(
+            div()
+                .id("now-playing-queue-toggle")
+                .mt_6()
+                .cursor_pointer()
+                .rounded_md()
+                .bg(rgb(0x3b263d))
+                .px_4()
+                .py_2()
+                .text_sm()
+                .child(toggle_label)
+                .on_click(cx.listener(|app, _, _, cx| {
+                    app.queue_visible = !app.queue_visible;
+                    if app.queue_visible && !app.queue_requested {
+                        app.queue_loading = true;
+                        app.queue_requested = true;
+                        app.send_request(Request::QueueGet);
+                    }
+                    cx.notify();
+                })),
+        );
+
+        let mut pane = div()
+            .flex_1()
+            .h_full()
+            .flex()
+            .flex_row()
+            .bg(rgb(0x1a121b))
+            .child(main);
+        if self.queue_visible {
+            pane = pane.child(self.queue_rail());
+        }
+        pane
+    }
+
+    fn queue_rail(&self) -> impl IntoElement {
+        let mut rows = div().flex().flex_col().gap_2();
+        if let Some(queue) = &self.queue {
+            if let Some(item) = &queue.currently_playing {
+                rows = rows.child(queue_rail_row(
+                    "Now playing",
+                    item,
                     true,
+                    &self.artwork_cache,
                 ));
             }
-            pane.child(upcoming)
+            rows = rows.child(
+                div()
+                    .mt_4()
+                    .text_xs()
+                    .text_color(rgb(0xa98ca8))
+                    .child("NEXT UP"),
+            );
+            for item in &queue.items {
+                rows = rows.child(queue_rail_row("", item, false, &self.artwork_cache));
+            }
+            if queue.items.is_empty() {
+                rows = rows.child(queue_message("No upcoming items"));
+            }
+        } else {
+            rows = rows.child(queue_message(if self.queue_loading {
+                "Loading queue..."
+            } else {
+                "Queue is not loaded yet"
+            }));
         }
+
+        div()
+            .w(px(310.))
+            .h_full()
+            .flex_shrink_0()
+            .border_l_1()
+            .border_color(rgb(0x3c2c40))
+            .bg(rgb(0x211725))
+            .p_5()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(div().text_xl().child("Queue"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x9d879e))
+                            .child("Now Playing"),
+                    ),
+            )
+            .child(
+                div()
+                    .id("now-playing-queue")
+                    .mt_4()
+                    .h(px(0.))
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.queue_scroll)
+                    .child(rows),
+            )
     }
 
     fn devices_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
@@ -1939,6 +2160,19 @@ impl DesktopApp {
             .unwrap_or("off");
         let is_playing = playback.is_some_and(|playback| playback.is_playing);
 
+        let footer_artwork = self
+            .playback
+            .as_ref()
+            .and_then(|playback| playback.item.as_ref())
+            .and_then(|item| artwork_url(item, true))
+            .and_then(|url| self.artwork_cache.get(&url));
+        let footer_art = footer_artwork.map(|image| {
+            img(image.clone())
+                .w_full()
+                .h_full()
+                .object_fit(gpui::ObjectFit::Cover)
+        });
+
         div()
             .h(px(164.))
             .border_t_1()
@@ -1963,6 +2197,7 @@ impl DesktopApp {
                             .border_1()
                             .border_color(rgb(0x4a344d)),
                     )
+                    .when_some(footer_art, |element, art| element.child(art))
                     .child(
                         div()
                             .ml_4()
@@ -2076,28 +2311,90 @@ fn queue_message(message: &str) -> impl IntoElement {
         .child(message.to_string())
 }
 
-fn queue_section(label: &str, item: String, upcoming: bool) -> impl IntoElement {
-    div()
-        .mt_6()
-        .rounded_lg()
-        .border_1()
-        .border_color(rgb(if upcoming { 0x3b2722 } else { 0x6f3a22 }))
-        .bg(rgb(if upcoming { 0x1b1518 } else { 0x24171a }))
-        .p_5()
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(0xd9ac92))
-                .child(label.to_string()),
-        )
-        .child(div().mt_2().text_lg().child(item))
+fn queue_rail_row(
+    label: &str,
+    item: &MediaItem,
+    current: bool,
+    artwork_cache: &HashMap<String, Arc<Image>>,
+) -> impl IntoElement {
+    let image = artwork_url(item, false);
+    let mut row = div()
+        .rounded_md()
+        .bg(rgb(if current { 0x38233a } else { 0x2a1d2d }))
+        .px_3()
+        .py_3()
+        .flex()
+        .items_center()
+        .gap_3();
+    if let Some(image) = image
+        .and_then(|url| artwork_cache.get(&url))
+        .or_else(|| artwork_url(item, true).and_then(|url| artwork_cache.get(&url)))
+    {
+        row = row.child(
+            div().w(px(42.)).h(px(42.)).bg(rgb(0x49334d)).child(
+                img(image.clone())
+                    .w_full()
+                    .h_full()
+                    .object_fit(gpui::ObjectFit::Cover),
+            ),
+        );
+    } else {
+        row = row.child(div().w(px(42.)).h(px(42.)).bg(rgb(0x49334d)));
+    }
+    row.child(
+        div()
+            .flex_1()
+            .overflow_hidden()
+            .child(if label.is_empty() {
+                div().text_sm().truncate().child(item.name.clone())
+            } else {
+                div()
+                    .text_xs()
+                    .text_color(rgb(0xa98ca8))
+                    .child(label.to_string())
+            })
+            .child(
+                div()
+                    .mt_1()
+                    .text_xs()
+                    .text_color(rgb(0xbdaec0))
+                    .truncate()
+                    .child(if item.subtitle.is_empty() {
+                        item.context.clone()
+                    } else {
+                        item.subtitle.clone()
+                    }),
+            ),
+    )
 }
 
-fn queue_item_label(item: &MediaItem) -> String {
-    if item.subtitle.is_empty() {
-        item.name.clone()
+fn artwork_url(item: &MediaItem, large: bool) -> Option<String> {
+    if large {
+        item.image_url_large
+            .clone()
+            .or_else(|| item.image_url.clone())
+            .or_else(|| item.image_url_small.clone())
     } else {
-        format!("{} · {}", item.name, item.subtitle)
+        item.image_url_small
+            .clone()
+            .or_else(|| item.image_url.clone())
+            .or_else(|| item.image_url_large.clone())
+    }
+}
+
+fn image_format(bytes: &[u8]) -> Option<ImageFormat> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some(ImageFormat::Png)
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some(ImageFormat::Jpeg)
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some(ImageFormat::Webp)
+    } else if bytes.starts_with(b"GIF8") {
+        Some(ImageFormat::Gif)
+    } else if bytes.starts_with(b"BM") {
+        Some(ImageFormat::Bmp)
+    } else {
+        None
     }
 }
 
@@ -3873,6 +4170,81 @@ mod tests {
         assert!(app.queue_requested);
         assert!(matches!(command_rx.try_recv(), Ok(Request::QueueGet)));
         assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn queue_destination_opens_now_playing_with_visible_rail() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+
+        app.select_destination(Destination::Queue);
+
+        assert_eq!(app.selected_destination, Destination::NowPlaying);
+        assert!(app.queue_visible);
+        assert!(matches!(command_rx.try_recv(), Ok(Request::QueueGet)));
+    }
+
+    #[test]
+    fn artwork_request_is_gated_by_url_and_cached_bytes() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        app.playback = Some(Playback {
+            item: Some(MediaItem {
+                uri: "spotify:track:art".to_string(),
+                image_url: Some("https://example.test/medium.jpg".to_string()),
+                image_url_large: Some("https://example.test/hero.jpg".to_string()),
+                kind: MediaKind::Track,
+                ..MediaItem::default()
+            }),
+            ..Playback::default()
+        });
+
+        app.request_artwork_for_current_track();
+        app.request_artwork_for_current_track();
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::Image { url }) if url == "https://example.test/hero.jpg"
+        ));
+        assert!(command_rx.try_recv().is_err());
+
+        app.apply_artwork_response(
+            "https://example.test/hero.jpg".to_string(),
+            ResponseData::Image {
+                bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
+            },
+        );
+        assert!(app
+            .artwork_cache
+            .contains_key("https://example.test/hero.jpg"));
+        app.request_artwork_for_current_track();
+        assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn artwork_url_prefers_size_and_falls_back_to_default() {
+        let item = MediaItem {
+            image_url: Some("default".to_string()),
+            image_url_small: Some("small".to_string()),
+            image_url_large: Some("large".to_string()),
+            ..MediaItem::default()
+        };
+        assert_eq!(artwork_url(&item, true).as_deref(), Some("large"));
+        assert_eq!(artwork_url(&item, false).as_deref(), Some("small"));
+        assert_eq!(
+            artwork_url(
+                &MediaItem {
+                    image_url: Some("default".to_string()),
+                    ..MediaItem::default()
+                },
+                true,
+            )
+            .as_deref(),
+            Some("default")
+        );
     }
 
     #[test]
