@@ -6,7 +6,7 @@ use gpui::{
     MouseDownEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollHandle, ShapedLine,
     SharedString, Style, TextRun, UTF16Selection, WeakEntity, Window,
 };
-use spotuify_core::{MediaItem, MediaKind, Playback, Playlist, RepeatMode};
+use spotuify_core::{Device, MediaItem, MediaKind, Playback, Playlist, RepeatMode};
 use spotuify_launcher::SocketState;
 use spotuify_protocol::{
     DaemonEvent, DaemonStatus, DoctorReport, PlaybackCommand, ReceiptId, Request, ResponseData,
@@ -20,6 +20,9 @@ pub struct DesktopApp {
     pub(crate) state: DesktopState,
     pub(crate) selected_destination: Destination,
     pub(crate) playback: Option<Playback>,
+    pub(crate) devices: Vec<Device>,
+    pub(crate) devices_loading: bool,
+    pub(crate) devices_loaded: bool,
     pub(crate) update_banner: Option<UpdateBanner>,
     pub(crate) toast: Option<String>,
     pub(crate) command_tx: Option<UnboundedSender<Request>>,
@@ -174,6 +177,9 @@ impl DesktopApp {
             state: DesktopState::Booting,
             selected_destination: Destination::NowPlaying,
             playback: None,
+            devices: Vec::new(),
+            devices_loading: false,
+            devices_loaded: false,
             update_banner: None,
             toast: None,
             command_tx: None,
@@ -219,6 +225,23 @@ impl DesktopApp {
         if command_tx.send(request).is_err() {
             self.toast = Some("Transport connection closed".to_string());
         }
+    }
+
+    pub(crate) fn request_devices(&mut self) {
+        if self.devices_loaded || self.devices_loading {
+            return;
+        }
+        if self.command_tx.is_none() {
+            self.toast = Some("Transport is not connected to the daemon".to_string());
+            return;
+        }
+        self.devices_loading = true;
+        self.send_request(Request::DevicesList);
+    }
+
+    fn transfer_to_device(&mut self, device: String) {
+        self.send_request(Request::DeviceTransfer { device });
+        self.toast = Some("Transferring playback".to_string());
     }
 
     fn send_playback_command(&mut self, command: PlaybackCommand) {
@@ -304,9 +327,17 @@ impl DesktopApp {
     }
 
     pub(crate) fn apply_daemon_response(&mut self, response: ResponseData) {
-        if let ResponseData::Playlists { playlists } = response {
-            self.search_playlists = playlists;
-            self.playlist_loading = false;
+        match response {
+            ResponseData::Playlists { playlists } => {
+                self.search_playlists = playlists;
+                self.playlist_loading = false;
+            }
+            ResponseData::Devices { devices } => {
+                self.devices = devices;
+                self.devices_loading = false;
+                self.devices_loaded = true;
+            }
+            _ => {}
         }
     }
 
@@ -361,6 +392,18 @@ impl DesktopApp {
                 }
                 if should_toast_playback_action(&action) {
                     self.toast = Some(format!("Playback updated: {action}"));
+                }
+            }
+            DaemonEvent::DevicesChanged {
+                action, devices, ..
+            } => {
+                if let Some(devices) = devices {
+                    self.devices = devices;
+                    self.devices_loaded = true;
+                    self.devices_loading = false;
+                }
+                if !matches!(action.as_str(), "snapshot" | "synced" | "sync" | "poll") {
+                    self.toast = Some(format!("Devices updated: {action}"));
                 }
             }
             DaemonEvent::SearchPage {
@@ -522,7 +565,7 @@ impl DesktopApp {
         content = if self.selected_destination == Destination::Search {
             content.child(self.search_pane(cx))
         } else {
-            content.child(self.content_pane(state))
+            content.child(self.content_pane(state, cx))
         }
         .child(self.now_playing_footer(cx));
 
@@ -570,12 +613,51 @@ impl DesktopApp {
         nav
     }
 
-    fn content_pane(&self, state: &ConnectedState) -> impl IntoElement {
+    fn content_pane(
+        &self,
+        state: &ConnectedState,
+        cx: &mut Context<'_, DesktopApp>,
+    ) -> impl IntoElement {
         let auth = state
             .doctor_report
             .as_ref()
             .map(|report| report.keychain_token.message.as_str())
             .unwrap_or("unknown");
+
+        let body = if self.selected_destination == Destination::Devices {
+            self.devices_pane(cx).into_any_element()
+        } else {
+            div()
+                .mt_8()
+                .border_1()
+                .border_color(rgb(0x3b2722))
+                .bg(rgb(0x1b1518))
+                .rounded_lg()
+                .p_6()
+                .child(div().text_lg().child(format!(
+                    "{} pane",
+                    self.selected_destination.label()
+                )))
+                .child(
+                    div()
+                        .mt_3()
+                        .text_color(rgb(0xb9aca4))
+                        .child("This is a routed shell stub. The sidebar already switches panes; data-heavy panes arrive in their own tickets."),
+                )
+                .child(
+                    div()
+                        .mt_5()
+                        .text_sm()
+                        .text_color(rgb(0x8f969f))
+                        .child(format!(
+                            "daemon: {} | auth: {} | version: {}",
+                            health_word(state.daemon_status.running),
+                            auth,
+                            state.daemon_status.daemon_version.as_deref().unwrap_or("unknown")
+                        )),
+                )
+                .into_any_element()
+        };
 
         div()
             .flex_1()
@@ -607,37 +689,100 @@ impl DesktopApp {
                             .text_ellipsis()
                             .text_xs()
                             .text_color(rgb(0xa9b0bc))
-                            .child(format!("last event: {}", state.last_event.as_deref().unwrap_or("none"))),
-                    ),
-            )
-            .child(
-                div()
-                    .mt_8()
-                    .border_1()
-                    .border_color(rgb(0x3b2722))
-                    .bg(rgb(0x1b1518))
-                    .rounded_lg()
-                    .p_6()
-                    .child(div().text_lg().child(format!("{} pane", self.selected_destination.label())))
-                    .child(
-                        div()
-                            .mt_3()
-                            .text_color(rgb(0xb9aca4))
-                            .child("This is a routed shell stub. The sidebar already switches panes; data-heavy panes arrive in their own tickets."),
-                    )
-                    .child(
-                        div()
-                            .mt_5()
-                            .text_sm()
-                            .text_color(rgb(0x8f969f))
                             .child(format!(
-                                "daemon: {} | auth: {} | version: {}",
-                                health_word(state.daemon_status.running),
-                                auth,
-                                state.daemon_status.daemon_version.as_deref().unwrap_or("unknown")
+                                "last event: {}",
+                                state.last_event.as_deref().unwrap_or("none")
                             )),
                     ),
             )
+            .child(body)
+    }
+
+    fn devices_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+        let pane = div()
+            .mt_8()
+            .border_1()
+            .border_color(rgb(0x3b2722))
+            .bg(rgb(0x1b1518))
+            .rounded_lg()
+            .p_6();
+
+        if self.devices_loading {
+            return pane.child(div().text_lg().child("Loading devices...")).child(
+                div()
+                    .mt_2()
+                    .text_sm()
+                    .text_color(rgb(0xb9aca4))
+                    .child("Waiting for the daemon's current Spotify Connect snapshot."),
+            );
+        }
+        if self.devices.is_empty() {
+            return pane
+                .child(div().text_lg().child("No devices available"))
+                .child(
+                    div()
+                        .mt_2()
+                        .text_sm()
+                        .text_color(rgb(0xb9aca4))
+                        .child("Spotify Connect devices will appear here when they are visible."),
+                );
+        }
+
+        let mut rows = div().mt_4().flex().flex_col().gap_2();
+        for device in &self.devices {
+            let device_id = device.id.clone();
+            let status = if device.is_restricted {
+                "Restricted"
+            } else if device.is_active {
+                "Active"
+            } else {
+                "Available"
+            };
+            let status_color = if device.is_restricted {
+                0xd58b83
+            } else if device.is_active {
+                0xa6d6a0
+            } else {
+                0xb9aca4
+            };
+            let mut row = div()
+                .id(SharedString::from(format!("device-{}", device.name)))
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(0x3b2722))
+                .px_4()
+                .py_3()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .flex_1()
+                        .child(div().text_sm().child(device.name.clone()))
+                        .child(
+                            div()
+                                .mt_1()
+                                .text_xs()
+                                .text_color(rgb(0x9e929d))
+                                .child(device.kind.clone()),
+                        ),
+                )
+                .child(div().text_xs().text_color(rgb(status_color)).child(status));
+            if let Some(device_id) = device_id {
+                if !device.is_active && !device.is_restricted {
+                    row = row.child(search_row_action(
+                        "Transfer",
+                        cx.listener(move |app, _, _, cx| {
+                            app.transfer_to_device(device_id.clone());
+                            cx.notify();
+                        }),
+                    ));
+                }
+            }
+            rows = rows.child(row);
+        }
+        pane.child(div().text_lg().child("Spotify Connect devices"))
+            .child(rows)
     }
 
     fn search_pane(&self, cx: &mut Context<'_, Self>) -> impl IntoElement {
@@ -887,6 +1032,9 @@ fn nav_item(
         .hover(|style| style.bg(rgb(0x2f211f)))
         .on_click(cx.listener(move |app, _, _, cx| {
             app.selected_destination = destination;
+            if destination == Destination::Devices {
+                app.request_devices();
+            }
             cx.notify();
         }))
 }
@@ -2452,6 +2600,56 @@ mod tests {
     }
 
     #[test]
+    fn devices_response_updates_authoritative_snapshot() {
+        let mut app = DesktopApp::new();
+        app.devices_loading = true;
+        app.apply_daemon_response(ResponseData::Devices {
+            devices: vec![test_device("living-room", true, false)],
+        });
+
+        assert!(app.devices_loaded);
+        assert!(!app.devices_loading);
+        assert_eq!(app.devices[0].name, "living-room");
+        assert!(app.devices[0].is_active);
+    }
+
+    #[test]
+    fn devices_event_replaces_snapshot_and_does_not_request_again() {
+        let mut app = connected_app();
+        app.apply_daemon_event(DaemonEvent::DevicesChanged {
+            action: "synced".to_string(),
+            devices: Some(vec![test_device("phone", false, false)]),
+        });
+        assert_eq!(app.devices[0].name, "phone");
+        assert!(app.devices_loaded);
+
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        app.request_devices();
+        assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn devices_request_and_transfer_use_protocol_requests() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+
+        app.request_devices();
+        app.request_devices();
+        assert!(matches!(command_rx.try_recv(), Ok(Request::DevicesList)));
+        assert!(command_rx.try_recv().is_err());
+
+        app.transfer_to_device("phone-1".to_string());
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::DeviceTransfer { device }) if device == "phone-1"
+        ));
+    }
+
+    #[test]
     fn selecting_playlist_enqueues_add_request_and_closes_picker() {
         let mut app = DesktopApp::new();
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2713,6 +2911,18 @@ mod tests {
             last_event: None,
         });
         app
+    }
+
+    fn test_device(name: &str, is_active: bool, is_restricted: bool) -> Device {
+        Device {
+            id: Some(format!("id-{name}")),
+            name: name.to_string(),
+            kind: "computer".to_string(),
+            is_active,
+            is_restricted,
+            volume_percent: Some(50),
+            supports_volume: true,
+        }
     }
 }
 
