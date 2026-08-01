@@ -148,8 +148,9 @@ fn spawn_search_debouncer(
                 .send(Request::SearchStream {
                     query: request.query,
                     scope: SearchScopeData::All,
-                    source: SearchSourceData::Spotify,
+                    source: SearchSourceData::legacy_default_remote(),
                     version: request.version,
+                    provider: None,
                 })
                 .is_err()
             {
@@ -232,7 +233,7 @@ async fn dispatch_transport_request(
         Request::SearchStream { query, version, .. } => Some((query.clone(), *version)),
         _ => None,
     };
-    let is_playlist_list = matches!(&command, Request::PlaylistsList);
+    let is_playlist_list = matches!(&command, Request::PlaylistsList { .. });
     let result = client.request(command).await;
     match result {
         Ok(Response::Ok { data }) => {
