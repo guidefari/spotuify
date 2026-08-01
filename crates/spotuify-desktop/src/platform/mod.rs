@@ -1,7 +1,7 @@
 pub mod macos;
 
 use gpui::{AppContext, Application, WindowOptions};
-use spotuify_core::Playback;
+use spotuify_core::{Device, Playback};
 use spotuify_launcher::{daemon_status, ensure_daemon_running, inspect_socket_state, SocketState};
 use spotuify_protocol::{
     DaemonEvent, DaemonStatus, OperationSource, Request, Response, ResponseData, SearchScopeData,
@@ -101,7 +101,7 @@ async fn bootstrap(view: gpui::Entity<DesktopApp>, mut cx: gpui::AsyncApp) {
     spawn_search_debouncer(search_rx, command_tx.clone());
 
     let doctor_report = fetch_doctor_report(&mut client).await;
-    let playback = fetch_client_seed(&mut client).await;
+    let seed = fetch_client_seed(&mut client).await;
 
     let status = daemon_status()
         .await
@@ -114,7 +114,11 @@ async fn bootstrap(view: gpui::Entity<DesktopApp>, mut cx: gpui::AsyncApp) {
         });
         app.set_command_senders(command_tx, slider_tx);
         app.set_search_sender(search_tx);
-        app.playback = playback;
+        if let Some(seed) = seed {
+            app.playback = Some(seed.playback);
+            app.devices = seed.devices;
+            app.devices_loaded = true;
+        }
         app.toast = Some("Connected to daemon".to_string());
         cx.notify();
     });
@@ -202,10 +206,13 @@ async fn run_connected_loop(
                 });
 
                 if should_reseed {
-                    let playback = fetch_client_seed(&mut event_client).await;
+                    let seed = fetch_client_seed(&mut event_client).await;
                     let _ = view.update(&mut cx, |app, cx| {
-                        if playback.is_some() {
-                            app.playback = playback;
+                        if let Some(seed) = seed {
+                            app.playback = Some(seed.playback);
+                            app.devices = seed.devices;
+                            app.devices_loaded = true;
+                            app.devices_loading = false;
                         }
                         cx.notify();
                     });
@@ -234,6 +241,7 @@ async fn dispatch_transport_request(
         _ => None,
     };
     let is_playlist_list = matches!(&command, Request::PlaylistsList { .. });
+    let is_devices_list = matches!(&command, Request::DevicesList);
     let result = client.request(command).await;
     match result {
         Ok(Response::Ok { data }) => {
@@ -250,6 +258,9 @@ async fn dispatch_transport_request(
                 if is_playlist_list {
                     app.playlist_loading = false;
                 }
+                if is_devices_list {
+                    app.devices_loading = false;
+                }
                 app.toast = Some(format!("Transport failed: {message}"));
                 cx.notify();
             });
@@ -261,6 +272,9 @@ async fn dispatch_transport_request(
                 }
                 if is_playlist_list {
                     app.playlist_loading = false;
+                }
+                if is_devices_list {
+                    app.devices_loading = false;
                 }
                 app.toast = Some(format!("Transport failed: {error}"));
                 cx.notify();
@@ -284,11 +298,18 @@ async fn fetch_doctor_report(
     }
 }
 
-async fn fetch_client_seed(client: &mut spotuify_protocol::IpcClient) -> Option<Playback> {
+struct ClientSeedState {
+    playback: Playback,
+    devices: Vec<Device>,
+}
+
+async fn fetch_client_seed(client: &mut spotuify_protocol::IpcClient) -> Option<ClientSeedState> {
     match client.request(Request::ClientSeed).await {
         Ok(Response::Ok {
-            data: ResponseData::ClientSeed { playback, .. },
-        }) => Some(playback),
+            data: ResponseData::ClientSeed {
+                playback, devices, ..
+            },
+        }) => Some(ClientSeedState { playback, devices }),
         _ => None,
     }
 }
