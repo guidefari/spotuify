@@ -16,7 +16,7 @@ use spotuify_protocol::{
     DaemonEvent, DaemonStatus, DoctorReport, PlaybackCommand, ReceiptId, Request, ResponseData,
     SearchScopeData, SearchSourceData, UpgradeHint,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -90,7 +90,7 @@ pub struct DesktopApp {
     search_scroll: ScrollHandle,
     queue_scroll: ScrollHandle,
     artwork_cache: HashMap<String, Arc<Image>>,
-    artwork_requested_url: Option<String>,
+    artwork_requested_urls: HashSet<String>,
     seek_bar_bounds: Option<Bounds<Pixels>>,
     volume_bar_bounds: Option<Bounds<Pixels>>,
     slider_drag: Option<SliderKind>,
@@ -294,7 +294,7 @@ impl DesktopApp {
             search_scroll: ScrollHandle::new(),
             queue_scroll: ScrollHandle::new(),
             artwork_cache: HashMap::new(),
-            artwork_requested_url: None,
+            artwork_requested_urls: HashSet::new(),
             seek_bar_bounds: None,
             volume_bar_bounds: None,
             slider_drag: None,
@@ -320,6 +320,7 @@ impl DesktopApp {
         self.queue = Some(queue);
         self.queue_loading = false;
         self.queue_requested = true;
+        self.request_artwork_for_queue();
     }
 
     pub(crate) fn set_devices_seed(&mut self, devices: Vec<Device>) {
@@ -701,17 +702,31 @@ impl DesktopApp {
     }
 
     pub(crate) fn request_artwork_for_current_track(&mut self) {
-        let Some(url) = self.current_artwork_url(true) else {
-            self.artwork_requested_url = None;
-            return;
-        };
+        if let Some(url) = self.current_artwork_url(true) {
+            self.request_artwork(url);
+        }
+    }
+
+    fn request_artwork_for_queue(&mut self) {
+        let urls: Vec<_> = self
+            .queue
+            .iter()
+            .flat_map(|queue| queue.currently_playing.iter().chain(&queue.items))
+            .filter_map(|item| artwork_url(item, false))
+            .collect();
+        for url in urls {
+            self.request_artwork(url);
+        }
+    }
+
+    fn request_artwork(&mut self, url: String) {
         if self.artwork_cache.contains_key(&url)
-            || self.artwork_requested_url.as_deref() == Some(url.as_str())
+            || self.artwork_requested_urls.contains(&url)
             || self.command_tx.is_none()
         {
             return;
         }
-        self.artwork_requested_url = Some(url.clone());
+        self.artwork_requested_urls.insert(url.clone());
         self.send_request(Request::Image { url });
     }
 
@@ -722,15 +737,11 @@ impl DesktopApp {
                     .insert(url.clone(), Arc::new(Image::from_bytes(format, bytes)));
             }
         }
-        if self.artwork_requested_url.as_deref() == Some(url.as_str()) {
-            self.artwork_requested_url = None;
-        }
+        self.artwork_requested_urls.remove(&url);
     }
 
     pub(crate) fn fail_artwork(&mut self, url: &str) {
-        if self.artwork_requested_url.as_deref() == Some(url) {
-            self.artwork_requested_url = None;
-        }
+        self.artwork_requested_urls.remove(url);
     }
 
     pub(crate) fn fail_lyrics(&mut self, track_uri: &str, message: String) {
@@ -870,11 +881,7 @@ impl DesktopApp {
                 self.playlists_loading = false;
                 self.playlists_requested = true;
             }
-            ResponseData::Queue { queue } => {
-                self.queue = Some(queue);
-                self.queue_loading = false;
-                self.queue_requested = true;
-            }
+            ResponseData::Queue { queue } => self.set_queue_seed(queue),
             ResponseData::Devices { devices } => {
                 self.devices = devices;
                 self.devices_loading = false;
@@ -1030,11 +1037,7 @@ impl DesktopApp {
             }
             DaemonEvent::QueueChanged {
                 queue: Some(queue), ..
-            } => {
-                self.queue = Some(queue);
-                self.queue_loading = false;
-                self.queue_requested = true;
-            }
+            } => self.set_queue_seed(queue),
             DaemonEvent::DevicesChanged {
                 action, devices, ..
             } => {
@@ -4220,23 +4223,18 @@ mod tests {
             ..Queue::default()
         });
 
-        assert!(command_rx.try_recv().is_err());
-
-        app.playback = Some(Playback {
-            item: Some(queue_item(
-                "spotify:track:current",
-                "https://example.test/current.jpg",
-            )),
-            ..Playback::default()
-        });
-        app.request_artwork_for_current_track();
-        app.request_artwork_for_current_track();
-
         let mut urls = Vec::new();
         while let Ok(Request::Image { url }) = command_rx.try_recv() {
             urls.push(url);
         }
-        assert_eq!(urls, vec!["https://example.test/current.jpg".to_string()]);
+        urls.sort();
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.test/current.jpg".to_string(),
+                "https://example.test/first.jpg".to_string(),
+            ]
+        );
     }
 
     #[test]
