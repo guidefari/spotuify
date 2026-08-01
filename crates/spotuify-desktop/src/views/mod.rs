@@ -768,10 +768,6 @@ impl DesktopApp {
             .then(|| self.saved_track_uris.contains(&uri))
     }
 
-    fn current_track_is_liked(&self) -> bool {
-        self.current_track_like_status() == Some(true)
-    }
-
     pub(crate) fn request_current_track_membership(&mut self) {
         if self.command_tx.is_none() {
             return;
@@ -5185,7 +5181,7 @@ mod tests {
                 saved: true,
             }],
         });
-        assert!(app.current_track_is_liked());
+        assert_eq!(app.current_track_like_status(), Some(true));
     }
 
     #[test]
@@ -5217,14 +5213,14 @@ mod tests {
                 current: false,
             }) if uri == "spotify:track:liked"
         ));
-        assert!(!app.current_track_is_liked());
+        assert_eq!(app.current_track_like_status(), Some(false));
 
         app.apply_daemon_event(DaemonEvent::LibraryChanged {
             action: "save".to_string(),
             uris: vec!["spotify:track:liked".to_string()],
             provider: None,
         });
-        assert!(app.current_track_is_liked());
+        assert_eq!(app.current_track_like_status(), Some(true));
 
         app.toggle_current_track_like();
         assert!(matches!(
