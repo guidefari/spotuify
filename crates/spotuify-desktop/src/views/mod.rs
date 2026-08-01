@@ -3099,26 +3099,6 @@ fn liked_song_row(
                     ))
                 }),
         )
-        .child(
-            div()
-                .flex_1()
-                .overflow_hidden()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(cx.desktop_theme().text_primary))
-                        .truncate()
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .mt_1()
-                        .text_xs()
-                        .text_color(rgb(cx.desktop_theme().text_muted))
-                        .truncate()
-                        .child(subtitle),
-                ),
-        )
         .child(liked_song_action(
             cx,
             format!("liked-song-{index}-play"),
@@ -3146,6 +3126,26 @@ fn liked_song_row(
                 cx.notify();
             }),
         ))
+        .child(
+            div()
+                .flex_1()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(cx.desktop_theme().text_primary))
+                        .truncate()
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .mt_1()
+                        .text_xs()
+                        .text_color(rgb(cx.desktop_theme().text_muted))
+                        .truncate()
+                        .child(subtitle),
+                ),
+        )
 }
 
 fn liked_song_action(
