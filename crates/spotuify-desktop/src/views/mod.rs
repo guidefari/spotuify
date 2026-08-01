@@ -568,6 +568,13 @@ impl DesktopApp {
             return;
         }
         self.selected_album = Some(album);
+        if let Some(url) = self
+            .selected_album
+            .as_ref()
+            .and_then(|album| artwork_url(album, true))
+        {
+            self.request_artwork(url);
+        }
         self.album_tracks.clear();
         self.album_tracks_error = None;
         self.album_tracks_loading = true;
@@ -907,6 +914,17 @@ impl DesktopApp {
         }
     }
 
+    fn request_artwork_for_albums(&mut self) {
+        let urls: Vec<_> = self
+            .albums
+            .iter()
+            .filter_map(|item| artwork_url(item, false))
+            .collect();
+        for url in urls {
+            self.request_artwork(url);
+        }
+    }
+
     fn request_artwork(&mut self, url: String) {
         if self.artwork_cache.contains_key(&url)
             || self.artwork_requested_urls.contains(&url)
@@ -1031,6 +1049,7 @@ impl DesktopApp {
                 .into_iter()
                 .filter(|item| item.kind == MediaKind::Album)
                 .collect();
+            self.request_artwork_for_albums();
             self.albums_loading = false;
             self.albums_error = None;
             self.albums_requested = true;
@@ -1725,9 +1744,17 @@ impl DesktopApp {
                 .into_any_element();
         }
 
-        let mut rows = div().mt_6().flex().flex_col().gap_2();
+        let mut rows = div()
+            .id("saved-albums")
+            .mt_5()
+            .h(px(0.))
+            .flex_1()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_1();
         for (index, item) in self.albums.iter().enumerate() {
-            rows = rows.child(album_row(index, item, cx));
+            rows = rows.child(album_row(index, item, &self.artwork_cache, cx));
         }
         pane.child(rows).into_any_element()
     }
@@ -1861,36 +1888,88 @@ impl DesktopApp {
         album: &MediaItem,
         cx: &mut Context<'_, DesktopApp>,
     ) -> impl IntoElement {
+        let title = if album.name.is_empty() {
+            "Untitled album".to_string()
+        } else {
+            album.name.clone()
+        };
+        let artwork = artwork_url(album, true)
+            .and_then(|url| self.artwork_cache.get(&url))
+            .or_else(|| artwork_url(album, false).and_then(|url| self.artwork_cache.get(&url)));
+        let album_artwork = div()
+            .size(px(184.))
+            .flex_shrink_0()
+            .rounded_xl()
+            .overflow_hidden()
+            .bg(rgb(cx.desktop_theme().bg_elevated))
+            .flex()
+            .items_center()
+            .justify_center()
+            .when_some(artwork.cloned(), |element, artwork| {
+                element.child(
+                    img(artwork)
+                        .w_full()
+                        .h_full()
+                        .object_fit(gpui::ObjectFit::Cover),
+                )
+            })
+            .when(artwork.is_none(), |element| {
+                element.child(app_icon(
+                    AppIcon::Albums,
+                    32.,
+                    cx.desktop_theme().text_muted,
+                ))
+            });
         let pane = div()
             .flex_1()
+            .h(px(0.))
             .p_8()
             .flex()
             .flex_col()
+            .child(div().flex().items_center().child(search_row_action(
+                cx,
+                "Back",
+                cx.listener(|app, _, _, cx| {
+                    app.navigate_back_from_detail();
+                    cx.notify();
+                }),
+            )))
             .child(
                 div()
+                    .mt_5()
                     .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(search_row_action(
-                        cx,
-                        "Back",
-                        cx.listener(|app, _, _, cx| {
-                            app.navigate_back_from_detail();
-                            cx.notify();
-                        }),
-                    ))
-                    .child(div().text_3xl().child(if album.name.is_empty() {
-                        "Untitled album".to_string()
-                    } else {
-                        album.name.clone()
-                    })),
-            )
-            .child(
-                div()
-                    .mt_2()
-                    .text_lg()
-                    .text_color(rgb(cx.desktop_theme().text_secondary))
-                    .child(media_context_links("album-detail", album, cx)),
+                    .items_end()
+                    .gap_6()
+                    .child(album_artwork)
+                    .child(
+                        div()
+                            .pb_2()
+                            .flex_1()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(rgb(cx.desktop_theme().accent))
+                                    .child("ALBUM"),
+                            )
+                            .child(div().mt_2().text_3xl().truncate().child(title))
+                            .child(
+                                div()
+                                    .mt_3()
+                                    .text_sm()
+                                    .text_color(rgb(cx.desktop_theme().text_secondary))
+                                    .child(media_context_links("album-detail", album, cx)),
+                            )
+                            .when(!self.album_tracks.is_empty(), |metadata| {
+                                metadata.child(
+                                    div()
+                                        .mt_3()
+                                        .text_xs()
+                                        .text_color(rgb(cx.desktop_theme().text_muted))
+                                        .child(format!("{} tracks", self.album_tracks.len())),
+                                )
+                            }),
+                    ),
             );
 
         if self.album_tracks_loading && self.album_tracks.is_empty() {
@@ -1906,7 +1985,15 @@ impl DesktopApp {
             return pane.child(queue_message(cx, "No tracks in this album"));
         }
 
-        let mut rows = div().mt_6().flex().flex_col().gap_2();
+        let mut rows = div()
+            .id("album-tracks")
+            .mt_6()
+            .h(px(0.))
+            .flex_1()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_1();
         for (index, item) in self.album_tracks.iter().enumerate() {
             rows = rows.child(playlist_track_row(index, item, cx));
         }
@@ -2918,6 +3005,9 @@ fn media_context_links(
                     name: album_name.clone(),
                     uri: album_uri.clone(),
                     kind: MediaKind::Album,
+                    image_url: item.image_url.clone(),
+                    image_url_small: item.image_url_small.clone(),
+                    image_url_large: item.image_url_large.clone(),
                     artists: item.artists.clone(),
                     ..MediaItem::default()
                 },
@@ -3036,7 +3126,12 @@ fn search_result_row(
     row
 }
 
-fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+fn album_row(
+    index: usize,
+    item: &MediaItem,
+    artwork_cache: &HashMap<String, Arc<Image>>,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
     let title = if item.name.is_empty() {
         "Untitled album".to_string()
     } else {
@@ -3044,18 +3139,50 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
     };
     let uri = item.uri.clone();
     let can_act = !uri.is_empty();
+    let artwork = artwork_url(item, false)
+        .and_then(|url| artwork_cache.get(&url))
+        .or_else(|| artwork_url(item, true).and_then(|url| artwork_cache.get(&url)));
+    let play_uri = uri.clone();
+    let queue_uri = uri;
+    let play_title = title.clone();
+    let queue_title = title.clone();
+
     let mut row = div()
         .id(SharedString::from(format!("album-{index}")))
         .w_full()
+        .h(px(68.))
         .rounded_md()
-        .border_1()
-        .border_color(rgb(cx.desktop_theme().border))
-        .bg(rgb(cx.desktop_theme().bg_surface))
-        .px_4()
-        .py_3()
+        .px_2()
         .flex()
         .items_center()
         .gap_3()
+        .hover(|style| style.bg(rgb(cx.desktop_theme().bg_elevated)))
+        .child(
+            div()
+                .size(px(52.))
+                .flex_shrink_0()
+                .rounded_md()
+                .overflow_hidden()
+                .bg(rgb(cx.desktop_theme().bg_elevated))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when_some(artwork.cloned(), |element, artwork| {
+                    element.child(
+                        img(artwork)
+                            .w_full()
+                            .h_full()
+                            .object_fit(gpui::ObjectFit::Cover),
+                    )
+                })
+                .when(artwork.is_none(), |element| {
+                    element.child(app_icon(
+                        AppIcon::Albums,
+                        18.,
+                        cx.desktop_theme().text_muted,
+                    ))
+                }),
+        )
         .child(
             div()
                 .flex_1()
@@ -3077,23 +3204,12 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
         );
 
     if can_act {
-        let open_album = item.clone();
-        let play_uri = uri.clone();
-        let queue_uri = uri;
-        let play_title = title.clone();
-        let queue_title = title;
         row = row
-            .child(search_row_action(
+            .child(liked_song_action(
                 cx,
-                "Open",
-                cx.listener(move |app, _, _, cx| {
-                    app.navigate_to_album(open_album.clone());
-                    cx.notify();
-                }),
-            ))
-            .child(search_row_action(
-                cx,
-                "Play",
+                format!("album-{index}-play"),
+                "Play album",
+                AppIcon::Play,
                 cx.listener(move |app, _, _, cx| {
                     app.send_playback_command(PlaybackCommand::PlayUri {
                         uri: play_uri.clone(),
@@ -3103,9 +3219,11 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
                     cx.notify();
                 }),
             ))
-            .child(search_row_action(
+            .child(liked_song_action(
                 cx,
-                "Queue",
+                format!("album-{index}-queue"),
+                "Add album to queue",
+                AppIcon::Queue,
                 cx.listener(move |app, _, _, cx| {
                     app.send_request(Request::QueueAdd {
                         uri: queue_uri.clone(),
@@ -3470,29 +3588,31 @@ fn playlist_track_row(
     let play_uri = uri.clone();
     let play_title = title.clone();
     let queue_title = title.clone();
+    let duration = (item.duration_ms > 0).then(|| format_duration(item.duration_ms));
 
     div()
         .id(SharedString::from(format!("playlist-track-{index}")))
         .w_full()
+        .h(px(56.))
         .rounded_md()
-        .border_1()
-        .border_color(rgb(cx.desktop_theme().border))
-        .bg(rgb(cx.desktop_theme().bg_surface))
-        .px_4()
-        .py_3()
+        .px_2()
         .flex()
         .items_center()
-        .gap_3()
-        .child(div().flex_1().child(div().text_sm().child(title)).child(
-            div().mt_1().text_xs().child(media_context_links(
-                &format!("playlist-track-{index}"),
-                item,
-                cx,
-            )),
-        ))
-        .child(search_row_action(
+        .gap_2()
+        .hover(|style| style.bg(rgb(cx.desktop_theme().bg_elevated)))
+        .child(
+            div()
+                .w(px(28.))
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(rgb(cx.desktop_theme().text_muted))
+                .child(format!("{:02}", index + 1)),
+        )
+        .child(liked_song_action(
             cx,
+            format!("playlist-track-{index}-play"),
             "Play",
+            AppIcon::Play,
             cx.listener(move |app, _, _, cx| {
                 app.send_playback_command(PlaybackCommand::PlayUri {
                     uri: play_uri.clone(),
@@ -3502,15 +3622,37 @@ fn playlist_track_row(
                 cx.notify();
             }),
         ))
-        .child(search_row_action(
+        .child(liked_song_action(
             cx,
-            "Queue",
+            format!("playlist-track-{index}-queue"),
+            "Add to queue",
+            AppIcon::Queue,
             cx.listener(move |app, _, _, cx| {
                 app.send_request(Request::QueueAdd { uri: uri.clone() });
                 app.toast = Some(format!("Queued {queue_title}"));
                 cx.notify();
             }),
         ))
+        .child(
+            div()
+                .flex_1()
+                .overflow_hidden()
+                .child(div().text_sm().truncate().child(title))
+                .child(div().mt_1().text_xs().child(media_context_links(
+                    &format!("playlist-track-{index}"),
+                    item,
+                    cx,
+                ))),
+        )
+        .when_some(duration, |row, duration| {
+            row.child(
+                div()
+                    .px_2()
+                    .text_xs()
+                    .text_color(rgb(cx.desktop_theme().text_muted))
+                    .child(duration),
+            )
+        })
 }
 
 fn search_row_action(
@@ -4905,6 +5047,30 @@ mod tests {
                 "https://example.test/first.jpg".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn albums_response_requests_each_distinct_thumbnail_once() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        let album = |uri: &str| MediaItem {
+            uri: uri.to_string(),
+            image_url_small: Some("https://example.test/album.jpg".to_string()),
+            kind: MediaKind::Album,
+            ..MediaItem::default()
+        };
+
+        app.apply_albums_response(ResponseData::MediaItems {
+            items: vec![album("spotify:album:first"), album("spotify:album:second")],
+        });
+
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::Image { url }) if url == "https://example.test/album.jpg"
+        ));
+        assert!(command_rx.try_recv().is_err());
     }
 
     #[test]
