@@ -14,6 +14,7 @@
 //! object. If the implementation reverts to sending an empty body the
 //! mock returns the default 404 and the call fails — that's how the
 //! test catches a regression.
+#![allow(clippy::panic)]
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,6 +27,7 @@ use spotuify_spotify::config::{
     AnalyticsConfig, CacheConfig, Config, DiscordConfig, NotificationsConfig, PlayerConfig,
     VizConfig,
 };
+use spotuify_spotify::error::SpotifyError;
 use spotuify_spotify::SpotifyResult;
 use tokio::sync::Mutex;
 use wiremock::matchers::{body_json, header, method, path, query_param};
@@ -112,6 +114,43 @@ fn track_item(uri: &str) -> MediaItem {
         explicit: Some(false),
         is_playable: Some(true),
         ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn malformed_search_payload_is_a_sanitized_decode_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/search"))
+        .and(query_param("q", "action bronson"))
+        .and(query_param("type", "playlist"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "playlists": {
+                "total": 1,
+                "items": [{
+                    "id": "p1",
+                    "name": "Playlist One",
+                    "tracks": {"total": "not-a-number"}
+                }]
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let error = client
+        .search_page("action bronson", MediaKind::Playlist, 0)
+        .await
+        .expect_err("malformed provider payload should fail decoding");
+
+    match error {
+        SpotifyError::Decode { endpoint, message } => {
+            assert_eq!(endpoint, "GET /search");
+            assert!(message.contains("invalid type"));
+            assert!(!message.contains("action bronson"));
+        }
+        other => panic!("expected typed decode error, got {other:?}"),
     }
 }
 
