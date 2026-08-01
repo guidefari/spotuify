@@ -10,11 +10,13 @@ description = "GPUI desktop client for the local spotuify daemon"
 test-support = ["gpui/test-support"]
 
 [dependencies]
+anyhow = { workspace = true }
 gpui = { workspace = true }
 spotuify-core = { workspace = true }
 spotuify-launcher = { workspace = true }
 spotuify-protocol = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 
 [lints]
 workspace = true

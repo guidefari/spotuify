@@ -7,8 +7,8 @@ use gpui::{
 use spotuify_core::{Device, Playback, Queue};
 use spotuify_launcher::{daemon_status, ensure_daemon_running, inspect_socket_state, SocketState};
 use spotuify_protocol::{
-    DaemonEvent, DaemonStatus, OperationSource, Request, Response, ResponseData, SearchScopeData,
-    SearchSourceData,
+    DaemonEvent, DaemonStatus, MutationId, OperationSource, Request, Response, ResponseData,
+    SearchScopeData, SearchSourceData,
 };
 use std::{borrow::Cow, time::Duration};
 use tokio::sync::{mpsc, mpsc::UnboundedReceiver, watch};
@@ -229,7 +229,23 @@ async fn run_connected_loop(
                 }
             }
             event = event_client.next_event() => {
-                let Ok(event) = event else { break };
+                let event = match event {
+                    Ok(event) => event,
+                    Err(error) => {
+                        tracing::warn!(error = %error, "desktop event connection dropped; reconnecting");
+                        match reconnect_event_client().await {
+                            Ok(client) => {
+                                event_client = client;
+                                reseed_desktop_client(&view, &mut cx, &mut event_client).await;
+                            }
+                            Err(reconnect_error) => {
+                                tracing::warn!(error = %reconnect_error, "desktop event reconnect failed; retrying");
+                                tokio::time::sleep(Duration::from_millis(250)).await;
+                            }
+                        }
+                        continue;
+                    }
+                };
                 let should_reseed = matches!(
                     &event,
                     DaemonEvent::EventStreamLagged { .. }
@@ -242,17 +258,7 @@ async fn run_connected_loop(
                 });
 
                 if should_reseed {
-                    let seed = fetch_client_seed(&mut event_client).await;
-                    let _ = view.update(&mut cx, |app, cx| {
-                        if let Some((playback, queue, devices)) = seed {
-                            app.playback = Some(playback);
-                            app.set_queue_seed(queue);
-                            app.set_devices_seed(devices);
-                            app.request_artwork_for_current_track();
-                            app.request_current_track_membership();
-                        }
-                        cx.notify();
-                    });
+                    reseed_desktop_client(&view, &mut cx, &mut event_client).await;
                 }
             }
         }
@@ -308,7 +314,28 @@ async fn dispatch_transport_request(
     let is_library_list = matches!(&command, Request::LibraryList { .. });
     let is_followed_artists = matches!(&command, Request::FollowedArtists { .. });
     let is_recently_played = matches!(&command, Request::RecentlyPlayed { .. });
-    let result = client.request(command).await;
+    let mutation_id = command.requires_mutation_id().then(MutationId::new_v7);
+    let result = client
+        .request_with_mutation_id(command.clone(), mutation_id)
+        .await;
+    let result = match result {
+        Ok(response) => Ok(response),
+        Err(first_error) => {
+            tracing::warn!(error = %first_error, "desktop command connection dropped; reconnecting once");
+            match spotuify_protocol::IpcClient::connect_with_source(OperationSource::Agent).await {
+                Ok(mut reconnected) => {
+                    let retry = reconnected
+                        .request_with_mutation_id(command, mutation_id)
+                        .await;
+                    *command_client = Some(reconnected);
+                    retry
+                }
+                Err(reconnect_error) => Err(anyhow::anyhow!(
+                    "command connection closed ({first_error}); reconnect failed: {reconnect_error}"
+                )),
+            }
+        }
+    };
     match result {
         Ok(Response::Ok { data }) => {
             let _ = view.update(cx, |app, cx| {
@@ -436,6 +463,30 @@ async fn dispatch_transport_request(
                     .ok();
         }
     }
+}
+
+async fn reconnect_event_client() -> anyhow::Result<spotuify_protocol::IpcClient> {
+    let mut client = spotuify_protocol::IpcClient::connect().await?;
+    client.subscribe_events().await?;
+    Ok(client)
+}
+
+async fn reseed_desktop_client(
+    view: &gpui::Entity<DesktopApp>,
+    cx: &mut gpui::AsyncApp,
+    client: &mut spotuify_protocol::IpcClient,
+) {
+    let seed = fetch_client_seed(client).await;
+    let _ = view.update(cx, |app, cx| {
+        if let Some((playback, queue, devices)) = seed {
+            app.playback = Some(playback);
+            app.set_queue_seed(queue);
+            app.set_devices_seed(devices);
+            app.request_artwork_for_current_track();
+            app.request_current_track_membership();
+        }
+        cx.notify();
+    });
 }
 
 async fn fetch_doctor_report(

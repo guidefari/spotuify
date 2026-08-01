@@ -8073,11 +8073,13 @@ dependencies = [
 name = "spotuify-desktop"
 version = "0.1.84"
 dependencies = [
+ "anyhow",
  "gpui",
  "spotuify-core",
  "spotuify-launcher",
  "spotuify-protocol",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
