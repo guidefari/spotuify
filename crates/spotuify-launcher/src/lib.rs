@@ -187,6 +187,11 @@ fn daemon_executable_from_env(
         return Ok(PathBuf::from(path));
     }
 
+    #[cfg(target_os = "macos")]
+    if let Some(path) = daemon_executable_from_macos_bundle(&current_exe) {
+        return Ok(path);
+    }
+
     if current_exe
         .file_stem()
         .is_some_and(|stem| stem == "spotuify-desktop")
@@ -197,6 +202,24 @@ fn daemon_executable_from_env(
     }
 
     Ok(current_exe)
+}
+
+#[cfg(target_os = "macos")]
+fn daemon_executable_from_macos_bundle(current_exe: &Path) -> Option<PathBuf> {
+    let macos_dir = current_exe.parent()?;
+    if macos_dir.file_name()? != "MacOS" {
+        return None;
+    }
+    let contents_dir = macos_dir.parent()?;
+    if contents_dir.file_name()? != "Contents" {
+        return None;
+    }
+    let app_bundle = contents_dir.parent()?;
+    if app_bundle.extension()? != "app" {
+        return None;
+    }
+    let cli = contents_dir.join("Resources/spotuify");
+    cli.is_file().then_some(cli)
 }
 
 #[cfg(unix)]
@@ -524,6 +547,23 @@ mod tests {
             .expect_err("desktop must not self-spawn as daemon");
 
         assert!(err.to_string().contains("SPOTUIFY_BIN"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn daemon_executable_uses_bundled_cli_for_macos_app() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let contents = temp.path().join("Spotuify.app/Contents");
+        let macos = contents.join("MacOS");
+        let resources = contents.join("Resources");
+        std::fs::create_dir_all(&macos).expect("create MacOS directory");
+        std::fs::create_dir_all(&resources).expect("create Resources directory");
+        let cli = resources.join("spotuify");
+        std::fs::write(&cli, b"fake").expect("create bundled cli");
+
+        let resolved =
+            daemon_executable_from_env(None, macos.join("SpotuifyDesktop")).expect("bundle cli");
+        assert_eq!(resolved, cli);
     }
 
     #[test]

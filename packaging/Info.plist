@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Spotuify</string>
+    <key>CFBundleDisplayName</key>
+    <string>Spotuify</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.guidefari.spotuify</string>
+    <key>CFBundleVersion</key>
+    <string>@VERSION@</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSION@</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleExecutable</key>
+    <string>SpotuifyDesktop</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.music</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
