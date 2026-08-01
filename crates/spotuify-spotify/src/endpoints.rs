@@ -80,6 +80,10 @@ pub fn track(id: &str) -> String {
     format!("/tracks/{}", encode_component(id))
 }
 
+pub fn album(album_id: &str) -> String {
+    format!("/albums/{}", encode_component(album_id))
+}
+
 pub fn album_tracks(album_id: &str) -> String {
     format!("/albums/{}/tracks", encode_component(album_id))
 }

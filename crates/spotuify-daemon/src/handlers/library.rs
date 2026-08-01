@@ -1015,7 +1015,31 @@ async fn discover_radio(
     })
 }
 
+const LIBRARY_CACHE_WRITE_ATTEMPTS: u32 = 5;
+
 pub(crate) async fn persist_confirmed_library_mutation(
+    state: &DaemonState,
+    mutation: &Mutation,
+) -> anyhow::Result<()> {
+    for attempt in 0..LIBRARY_CACHE_WRITE_ATTEMPTS {
+        match persist_confirmed_library_mutation_once(state, mutation).await {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if is_retryable_sqlite_write_conflict(&error)
+                    && attempt + 1 < LIBRARY_CACHE_WRITE_ATTEMPTS =>
+            {
+                // WAL readers can become stale when the background sync commits
+                // between our lookup and write. A new transaction is required;
+                // SQLite's busy timeout alone cannot resolve BUSY_SNAPSHOT.
+                tokio::time::sleep(std::time::Duration::from_millis(25 * (1_u64 << attempt))).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("the retry loop either returns success or its last error")
+}
+
+async fn persist_confirmed_library_mutation_once(
     state: &DaemonState,
     mutation: &Mutation,
 ) -> anyhow::Result<()> {
@@ -1055,6 +1079,13 @@ pub(crate) async fn persist_confirmed_library_mutation(
     }
     state.store().persist_library_items(&items).await?;
     Ok(())
+}
+
+fn is_retryable_sqlite_write_conflict(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("database is locked")
+        || message.contains("database is busy")
+        || message.contains("code: 517")
 }
 
 async fn apply_uri_mutation(
@@ -1099,6 +1130,16 @@ mod tests {
     use crate::provider_registry::{
         ProviderPlayer, ProviderRegistry, ProviderRuntime, TransportRecovery,
     };
+
+    #[test]
+    fn library_cache_retries_sqlite_snapshot_conflicts() {
+        assert!(is_retryable_sqlite_write_conflict(&anyhow::anyhow!(
+            "error returned from database: (code: 517) database is locked"
+        )));
+        assert!(!is_retryable_sqlite_write_conflict(&anyhow::anyhow!(
+            "error returned from database: constraint failed"
+        )));
+    }
 
     struct RadioProvider {
         inner: FakeProvider,

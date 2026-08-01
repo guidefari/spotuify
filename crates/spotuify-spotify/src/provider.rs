@@ -414,7 +414,7 @@ impl MusicProvider for SpotifyClient {
         uri: &ResourceUri,
     ) -> ProviderResult<Option<MediaItem>> {
         ensure_spotify_uri(uri, "uri")?;
-        if uri.kind() != MediaKind::Track {
+        if !matches!(uri.kind(), MediaKind::Track | MediaKind::Album) {
             return Err(ProviderError::unsupported(format!(
                 "media_item.{}",
                 uri.kind()

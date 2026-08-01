@@ -611,17 +611,27 @@ impl SpotifyClient {
 
     pub async fn media_item_by_uri(&mut self, uri: &str) -> SpotifyResult<Option<MediaItem>> {
         let resource = spotify_uri(uri)?;
-        if resource.kind() != MediaKind::Track {
-            return Ok(None);
+        match resource.kind() {
+            MediaKind::Track => {
+                let Some(track_id) = TrackId::from_uri(uri) else {
+                    return Ok(None);
+                };
+                let path = endpoints::track(track_id.as_str());
+                Ok(self
+                    .request_json::<RawTrack>(Method::GET, &path, None::<()>)
+                    .await?
+                    .map(|item| item.into_media_item(self.provider_id.as_str())))
+            }
+            MediaKind::Album => {
+                let album_id = spotify_resource_id(uri, MediaKind::Album)?;
+                let path = endpoints::album(&album_id);
+                Ok(self
+                    .request_json::<RawAlbum>(Method::GET, &path, None::<()>)
+                    .await?
+                    .map(|item| item.into_media_item(self.provider_id.as_str())))
+            }
+            _ => Ok(None),
         }
-        let Some(track_id) = TrackId::from_uri(uri) else {
-            return Ok(None);
-        };
-        let path = endpoints::track(track_id.as_str());
-        Ok(self
-            .request_json::<RawTrack>(Method::GET, &path, None::<()>)
-            .await?
-            .map(|item| item.into_media_item(self.provider_id.as_str())))
     }
 
     pub async fn playlists_page(
@@ -3328,6 +3338,35 @@ mod tests {
     // implementation detail (the literal header value the helper set),
     // not the user-facing behavior, and locked the codebase into a
     // contract that real Spotify rejects with HTTP 411.
+
+    #[tokio::test]
+    async fn media_item_lookup_fetches_album_metadata() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/albums/album-one"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "album-one",
+                "uri": "spotify:album:album-one",
+                "name": "Album One",
+                "total_tracks": 1,
+                "artists": [{"name": "Artist One", "uri": "spotify:artist:artist-one"}],
+                "images": []
+            })))
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server).await;
+        let album = client
+            .media_item_by_uri("spotify:album:album-one")
+            .await
+            .expect("album lookup should succeed")
+            .expect("Spotify should return the album");
+
+        assert_eq!(album.uri, "spotify:album:album-one");
+        assert_eq!(album.kind, MediaKind::Album);
+        assert_eq!(album.name, "Album One");
+        assert_eq!(album.subtitle, "Artist One");
+    }
 
     #[tokio::test]
     async fn album_tracks_fetches_track_uris_for_queue_expansion() {
