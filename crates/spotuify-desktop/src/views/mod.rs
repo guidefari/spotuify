@@ -1767,48 +1767,6 @@ impl DesktopApp {
                         .text_color(rgb(0x8f7e91))
                         .child(summary.progress),
                 );
-            main = main.child(
-                div()
-                    .mt_6()
-                    .w(px(620.))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_3()
-                    .child(seek_bar(playback, self.slider_preview, cx))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(transport_button(
-                                "now-playing-previous",
-                                "Previous",
-                                PlaybackCommand::Previous,
-                                cx,
-                            ))
-                            .child(transport_button(
-                                "now-playing-play-pause",
-                                if playback.is_some_and(|playback| playback.is_playing) {
-                                    "Pause"
-                                } else {
-                                    "Play"
-                                },
-                                if playback.is_some_and(|playback| playback.is_playing) {
-                                    PlaybackCommand::Pause
-                                } else {
-                                    PlaybackCommand::Resume
-                                },
-                                cx,
-                            ))
-                            .child(transport_button(
-                                "now-playing-next",
-                                "Next",
-                                PlaybackCommand::Next,
-                                cx,
-                            )),
-                    ),
-            );
         } else {
             main = main.child(queue_message("Nothing is playing"));
         }
@@ -2198,11 +2156,15 @@ impl DesktopApp {
                             .w(px(66.))
                             .h(px(66.))
                             .rounded_md()
-                            .bg(rgb(0x312235))
-                            .border_1()
-                            .border_color(rgb(0x4a344d)),
+                            .overflow_hidden()
+                            .when(footer_artwork.is_none(), |element| {
+                                element
+                                    .bg(rgb(0x312235))
+                                    .border_1()
+                                    .border_color(rgb(0x4a344d))
+                            })
+                            .when_some(footer_art, |element, art| element.child(art)),
                     )
-                    .when_some(footer_art, |element, art| element.child(art))
                     .child(
                         div()
                             .ml_4()
@@ -3638,7 +3600,7 @@ fn toast_surface(message: &str) -> impl IntoElement {
     div()
         .absolute()
         .right_6()
-        .top_6()
+        .bottom(px(180.))
         .max_w(px(420.))
         .rounded_lg()
         .border_1()
