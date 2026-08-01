@@ -253,6 +253,7 @@ async fn dispatch_transport_request(
     let is_queue_get = matches!(&command, Request::QueueGet);
     let is_devices_list = matches!(&command, Request::DevicesList);
     let is_saved_tracks = matches!(&command, Request::SavedTracks { .. });
+    let is_recently_played = matches!(&command, Request::RecentlyPlayed);
     let result = client.request(command).await;
     match result {
         Ok(Response::Ok { data }) => {
@@ -261,6 +262,8 @@ async fn dispatch_transport_request(
                     app.apply_daemon_response_for_track(data, Some(track_uri));
                 } else if let Some(playlist) = playlist_tracks_request.as_deref() {
                     app.apply_playlist_tracks_response(playlist, data);
+                } else if is_recently_played {
+                    app.apply_history_response(data);
                 } else {
                     app.apply_daemon_response(data);
                 }
@@ -287,6 +290,9 @@ async fn dispatch_transport_request(
                 }
                 if is_saved_tracks {
                     app.fail_liked_songs(message.clone());
+                }
+                if is_recently_played {
+                    app.fail_history(message.clone());
                 }
                 if let Some(track_uri) = &lyrics_request {
                     app.fail_lyrics(track_uri, message.clone());
@@ -315,6 +321,9 @@ async fn dispatch_transport_request(
                 }
                 if is_saved_tracks {
                     app.fail_liked_songs(error.to_string());
+                }
+                if is_recently_played {
+                    app.fail_history(error.to_string());
                 }
                 if let Some(track_uri) = &lyrics_request {
                     app.fail_lyrics(track_uri, error.to_string());

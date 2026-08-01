@@ -50,6 +50,10 @@ pub struct DesktopApp {
     pub(crate) liked_loading: bool,
     pub(crate) liked_error: Option<String>,
     liked_requested: bool,
+    pub(crate) history: Vec<MediaItem>,
+    pub(crate) history_loading: bool,
+    pub(crate) history_error: Option<String>,
+    history_requested: bool,
     pub(crate) playlists: Vec<Playlist>,
     pub(crate) playlists_loading: bool,
     pub(crate) playlists_error: Option<String>,
@@ -235,6 +239,10 @@ impl DesktopApp {
             liked_loading: false,
             liked_error: None,
             liked_requested: false,
+            history: Vec::new(),
+            history_loading: false,
+            history_error: None,
+            history_requested: false,
             playlists: Vec::new(),
             playlists_loading: false,
             playlists_error: None,
@@ -290,6 +298,9 @@ impl DesktopApp {
         }
         if destination == Destination::LikedSongs {
             self.request_liked_songs();
+        }
+        if destination == Destination::History {
+            self.request_history();
         }
         if destination == Destination::Devices {
             self.request_devices();
@@ -396,9 +407,35 @@ impl DesktopApp {
         });
     }
 
+    fn request_history(&mut self) {
+        if self.history_requested || self.history_loading || self.command_tx.is_none() {
+            return;
+        }
+        self.history_requested = true;
+        self.history_loading = true;
+        self.history_error = None;
+        self.send_request(Request::RecentlyPlayed);
+    }
+
+    fn refresh_history(&mut self) {
+        if self.command_tx.is_none() || self.history_loading {
+            return;
+        }
+        self.history_requested = true;
+        self.history_loading = true;
+        self.history_error = None;
+        self.send_request(Request::RecentlyPlayed);
+    }
+
     pub(crate) fn fail_liked_songs(&mut self, message: String) {
         self.liked_loading = false;
         self.liked_error = Some(message);
+    }
+
+    pub(crate) fn fail_history(&mut self, message: String) {
+        self.history_loading = false;
+        self.history_requested = false;
+        self.history_error = Some(message);
     }
 
     fn transfer_to_device(&mut self, device: String) {
@@ -540,6 +577,15 @@ impl DesktopApp {
 
     pub(crate) fn apply_daemon_response(&mut self, response: ResponseData) {
         self.apply_daemon_response_for_track(response, None);
+    }
+
+    pub(crate) fn apply_history_response(&mut self, response: ResponseData) {
+        if let ResponseData::MediaItems { items } = response {
+            self.history = items;
+            self.history_loading = false;
+            self.history_error = None;
+            self.history_requested = true;
+        }
     }
 
     pub(crate) fn apply_daemon_response_for_track(
@@ -705,6 +751,16 @@ impl DesktopApp {
             }
             DaemonEvent::PlaylistsChanged { .. } if self.playlists_requested => {
                 self.refresh_playlists();
+            }
+            DaemonEvent::SyncFinished { summary }
+                if self.history_requested
+                    && matches!(
+                        summary.target,
+                        spotuify_protocol::SyncTargetData::All
+                            | spotuify_protocol::SyncTargetData::Recent
+                    ) =>
+            {
+                self.refresh_history();
             }
             DaemonEvent::SearchPage {
                 query,
@@ -872,6 +928,8 @@ impl DesktopApp {
             content.child(self.lyrics_pane())
         } else if self.selected_destination == Destination::LikedSongs {
             content.child(self.liked_songs_pane(cx))
+        } else if self.selected_destination == Destination::History {
+            content.child(self.history_pane(cx))
         } else if self.selected_destination == Destination::Playlists {
             content.child(self.playlists_pane(cx))
         } else {
@@ -1023,6 +1081,38 @@ impl DesktopApp {
         let mut rows = div().mt_6().flex().flex_col().gap_2();
         for (index, item) in self.liked_songs.iter().enumerate() {
             rows = rows.child(liked_song_row(index, item, cx));
+        }
+        pane.child(rows)
+    }
+
+    fn history_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+        let pane = div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .child(div().text_3xl().child("History"))
+            .child(
+                div()
+                    .mt_2()
+                    .text_lg()
+                    .text_color(rgb(0xd6c7ba))
+                    .child("Recently played tracks"),
+            );
+
+        if self.history_loading && self.history.is_empty() {
+            return pane.child(queue_message("Loading history..."));
+        }
+        if let Some(error) = &self.history_error {
+            return pane.child(queue_message(&format!("Couldn't load history: {error}")));
+        }
+        if self.history.is_empty() {
+            return pane.child(queue_message("No recently played tracks"));
+        }
+
+        let mut rows = div().mt_6().flex().flex_col().gap_2();
+        for (index, item) in self.history.iter().enumerate() {
+            rows = rows.child(history_row(index, item, cx));
         }
         pane.child(rows)
     }
@@ -1792,6 +1882,64 @@ fn liked_song_row(
                 app.send_request(Request::QueueAdd {
                     uri: queue_uri.clone(),
                 });
+                app.toast = Some(format!("Queued {queue_title}"));
+                cx.notify();
+            }),
+        ))
+}
+
+fn history_row(
+    index: usize,
+    item: &MediaItem,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
+    let uri = item.uri.clone();
+    let title = if item.name.is_empty() {
+        "Untitled track".to_string()
+    } else {
+        item.name.clone()
+    };
+    let subtitle = media_subtitle(item);
+    let play_uri = uri.clone();
+    let play_title = title.clone();
+    let queue_title = title.clone();
+
+    div()
+        .id(SharedString::from(format!("history-{index}")))
+        .w_full()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(0x3b2722))
+        .bg(rgb(0x1b1518))
+        .px_4()
+        .py_3()
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(
+            div().flex_1().child(div().text_sm().child(title)).child(
+                div()
+                    .mt_1()
+                    .text_xs()
+                    .text_color(rgb(0x9e929d))
+                    .child(subtitle),
+            ),
+        )
+        .child(search_row_action(
+            "Play",
+            cx.listener(move |app, _, _, cx| {
+                app.send_playback_command(PlaybackCommand::PlayUri {
+                    uri: play_uri.clone(),
+                    context_uri: None,
+                });
+                app.toast = Some(format!("Playing {play_title}"));
+                cx.notify();
+            }),
+        ))
+        .child(search_row_action(
+            "Queue",
+            cx.listener(move |app, _, _, cx| {
+                app.send_request(Request::QueueAdd { uri: uri.clone() });
                 app.toast = Some(format!("Queued {queue_title}"));
                 cx.notify();
             }),
@@ -3137,6 +3285,83 @@ mod tests {
             })
         ));
         assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn entering_history_requests_recently_played_once() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+
+        app.select_destination(Destination::History);
+        app.select_destination(Destination::History);
+
+        assert!(app.history_loading);
+        assert!(app.history_requested);
+        assert!(matches!(command_rx.try_recv(), Ok(Request::RecentlyPlayed)));
+        assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn history_response_replaces_items_authoritatively() {
+        let mut app = connected_app();
+        app.history_loading = true;
+        let item = MediaItem {
+            name: "Recently played".to_string(),
+            uri: "spotify:track:recent".to_string(),
+            kind: MediaKind::Track,
+            ..MediaItem::default()
+        };
+
+        app.apply_history_response(ResponseData::MediaItems {
+            items: vec![item.clone()],
+        });
+
+        assert_eq!(app.history, vec![item]);
+        assert!(!app.history_loading);
+        assert!(app.history_requested);
+        assert_eq!(app.history_error, None);
+    }
+
+    #[test]
+    fn history_error_clears_loading_and_allows_retry() {
+        let mut app = DesktopApp::new();
+        app.history_requested = true;
+        app.history_loading = true;
+
+        app.fail_history("daemon unavailable".to_string());
+
+        assert!(!app.history_loading);
+        assert!(!app.history_requested);
+        assert_eq!(app.history_error.as_deref(), Some("daemon unavailable"));
+    }
+
+    #[test]
+    fn history_refetches_after_sync_finished() {
+        let mut app = connected_app();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        app.history_requested = true;
+
+        app.apply_daemon_event(DaemonEvent::SyncFinished {
+            summary: spotuify_protocol::CacheSyncSummary {
+                target: spotuify_protocol::SyncTargetData::Recent,
+                playback_snapshots: 0,
+                queue_snapshots: 0,
+                queue_items: 0,
+                devices: 0,
+                playlists: 0,
+                playlist_items: 0,
+                recent_items: 1,
+                library_items: 0,
+                media_items: 0,
+            },
+        });
+
+        assert!(app.history_loading);
+        assert!(matches!(command_rx.try_recv(), Ok(Request::RecentlyPlayed)));
     }
 
     #[test]
