@@ -1,3 +1,4 @@
+use crate::theme;
 use gpui::prelude::*;
 use gpui::{
     div, fill, img, point, px, relative, rgb, App, Bounds, ClickEvent, Context, CursorStyle,
@@ -1218,7 +1219,12 @@ impl DesktopApp {
     }
 
     fn app_shell(&self, state: &ConnectedState, cx: &mut Context<'_, Self>) -> impl IntoElement {
-        let mut content = div().flex_1().h_full().flex().flex_col().bg(rgb(0x120f14));
+        let mut content = div()
+            .flex_1()
+            .h_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(theme::BG_ROOT));
 
         if let Some(banner) = &self.update_banner {
             content = content.child(update_banner_surface(banner));
@@ -1250,8 +1256,8 @@ impl DesktopApp {
         let mut root = div()
             .size_full()
             .relative()
-            .bg(rgb(0x120f14))
-            .text_color(rgb(0xf7efe8))
+            .bg(rgb(theme::BG_ROOT))
+            .text_color(rgb(theme::TEXT_PRIMARY))
             .flex()
             .flex_row()
             .child(self.sidebar(cx))
@@ -1268,16 +1274,21 @@ impl DesktopApp {
         let mut nav = div()
             .w(px(238.))
             .h_full()
-            .bg(rgb(0x211715))
+            .bg(rgb(theme::BG_SIDEBAR))
             .border_r_1()
-            .border_color(rgb(0x3b2722))
+            .border_color(rgb(theme::BORDER))
             .px_4()
             .py_5()
             .flex()
             .flex_col();
 
         nav = nav
-            .child(div().text_xs().text_color(rgb(0xa47562)).child("SPOTUIFY"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme::ACCENT))
+                    .child("SPOTUIFY"),
+            )
             .child(div().mt_1().mb_6().text_2xl().child("Desktop"));
 
         for destination in Destination::ALL {
@@ -1315,7 +1326,7 @@ impl DesktopApp {
                             .child(
                                 div()
                                     .mt_2()
-                                    .text_color(rgb(0xb9aca4))
+                                    .text_color(rgb(theme::TEXT_SECONDARY))
                                     .child(self.selected_destination.stub()),
                             ),
                     )
@@ -1327,7 +1338,7 @@ impl DesktopApp {
                             .whitespace_nowrap()
                             .text_ellipsis()
                             .text_xs()
-                            .text_color(rgb(0xa9b0bc))
+                            .text_color(rgb(theme::TEXT_SECONDARY))
                             .child(format!("last event: {}", state.last_event.as_deref().unwrap_or("none"))),
                     ),
             )
@@ -1335,22 +1346,22 @@ impl DesktopApp {
                 div()
                     .mt_8()
                     .border_1()
-                    .border_color(rgb(0x3b2722))
-                    .bg(rgb(0x1b1518))
+                    .border_color(rgb(theme::BORDER))
+                    .bg(rgb(theme::BG_SURFACE))
                     .rounded_lg()
                     .p_6()
                     .child(div().text_lg().child(format!("{} pane", self.selected_destination.label())))
                     .child(
                         div()
                             .mt_3()
-                            .text_color(rgb(0xb9aca4))
+                            .text_color(rgb(theme::TEXT_SECONDARY))
                             .child("This is a routed shell stub. The sidebar already switches panes; data-heavy panes arrive in their own tickets."),
                     )
                     .child(
                         div()
                             .mt_5()
                             .text_sm()
-                            .text_color(rgb(0x8f969f))
+                            .text_color(rgb(theme::TEXT_MUTED))
                             .child(format!(
                                 "daemon: {} | auth: {} | version: {}",
                                 health_word(state.daemon_status.running),
@@ -1372,7 +1383,7 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(0xd6c7ba))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .child(format!("{} songs", self.liked_total)),
             );
 
@@ -1409,7 +1420,7 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(0xd6c7ba))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .child("Saved albums"),
             );
 
@@ -1450,7 +1461,7 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(0xd6c7ba))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .child("Followed artists"),
             );
 
@@ -1488,7 +1499,7 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(0xd6c7ba))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .child("Recently played tracks"),
             );
 
@@ -1524,7 +1535,7 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(0xd6c7ba))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .child("Your playlists"),
             );
 
@@ -1581,7 +1592,7 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(0xd6c7ba))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .child(media_subtitle(album)),
             );
 
@@ -1636,7 +1647,7 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(0xd6c7ba))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .child("Discography"),
             );
 
@@ -1687,7 +1698,7 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(0xd6c7ba))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .child(format!(
                         "{} tracks · {}",
                         playlist.tracks_total, playlist.owner
@@ -1725,7 +1736,7 @@ impl DesktopApp {
             .flex_col()
             .items_center()
             .justify_center()
-            .bg(rgb(0x1a121b));
+            .bg(rgb(theme::BG_ROOT));
 
         if let Some(item) = item {
             if let Some(image) = self
@@ -1743,28 +1754,32 @@ impl DesktopApp {
                     div()
                         .w(px(420.))
                         .h(px(420.))
-                        .bg(rgb(0x34233b))
+                        .bg(rgb(theme::BG_ELEVATED))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_color(rgb(0x9c849f))
+                        .text_color(rgb(theme::TEXT_SECONDARY))
                         .child("Artwork loading"),
                 );
             }
             main = main
                 .child(div().mt_6().text_3xl().child(item.name.clone()))
-                .child(div().mt_2().text_lg().text_color(rgb(0xc4b1c4)).child(
-                    if item.subtitle.is_empty() {
-                        item.context.clone()
-                    } else {
-                        item.subtitle.clone()
-                    },
-                ))
+                .child(
+                    div()
+                        .mt_2()
+                        .text_lg()
+                        .text_color(rgb(theme::TEXT_SECONDARY))
+                        .child(if item.subtitle.is_empty() {
+                            item.context.clone()
+                        } else {
+                            item.subtitle.clone()
+                        }),
+                )
                 .child(
                     div()
                         .mt_2()
                         .text_sm()
-                        .text_color(rgb(0x8f7e91))
+                        .text_color(rgb(theme::TEXT_MUTED))
                         .child(summary.progress),
                 );
         } else {
@@ -1782,7 +1797,7 @@ impl DesktopApp {
                 .mt_6()
                 .cursor_pointer()
                 .rounded_md()
-                .bg(rgb(0x3b263d))
+                .bg(rgb(theme::BUTTON_SECONDARY))
                 .px_4()
                 .py_2()
                 .text_sm()
@@ -1798,7 +1813,7 @@ impl DesktopApp {
             .h_full()
             .flex()
             .flex_row()
-            .bg(rgb(0x1a121b))
+            .bg(rgb(theme::BG_ROOT))
             .child(main);
         if self.queue_visible {
             pane = pane.child(self.queue_rail());
@@ -1821,7 +1836,7 @@ impl DesktopApp {
                 div()
                     .mt_4()
                     .text_xs()
-                    .text_color(rgb(0xa98ca8))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .child("NEXT UP"),
             );
             for item in &queue.items {
@@ -1843,8 +1858,8 @@ impl DesktopApp {
             .h_full()
             .flex_shrink_0()
             .border_l_1()
-            .border_color(rgb(0x3c2c40))
-            .bg(rgb(0x211725))
+            .border_color(rgb(theme::BORDER))
+            .bg(rgb(theme::BG_ELEVATED))
             .p_5()
             .flex()
             .flex_col()
@@ -1857,7 +1872,7 @@ impl DesktopApp {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(0x9d879e))
+                            .text_color(rgb(theme::TEXT_SECONDARY))
                             .child("Now Playing"),
                     ),
             )
@@ -1884,7 +1899,7 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(0xd6c7ba))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .child("Spotify Connect devices"),
             );
 
@@ -1909,7 +1924,7 @@ impl DesktopApp {
                 .id(SharedString::from(format!("device-{}", device.name)))
                 .rounded_md()
                 .border_1()
-                .border_color(rgb(0x3b2722))
+                .border_color(rgb(theme::BORDER))
                 .px_4()
                 .py_3()
                 .flex()
@@ -1923,11 +1938,16 @@ impl DesktopApp {
                             div()
                                 .mt_1()
                                 .text_xs()
-                                .text_color(rgb(0x9e929d))
+                                .text_color(rgb(theme::TEXT_MUTED))
                                 .child(device.kind.clone()),
                         ),
                 )
-                .child(div().text_xs().text_color(rgb(0xb9aca4)).child(status));
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(theme::TEXT_SECONDARY))
+                        .child(status),
+                );
             if let Some(device_id) = device_id {
                 if !device.is_active && !device.is_restricted {
                     row = row.child(search_row_action(
@@ -1955,7 +1975,7 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(0xd6c7ba))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .child("Lyrics for the current track"),
             );
 
@@ -1995,9 +2015,9 @@ impl DesktopApp {
             lines = lines.child(
                 div()
                     .text_color(if is_active {
-                        rgb(0xfff5ee)
+                        rgb(theme::TEXT_PRIMARY)
                     } else {
-                        rgb(0x8f828d)
+                        rgb(theme::TEXT_MUTED)
                     })
                     .text_size(px(if is_active { 26. } else { 20. }))
                     .font_weight(if is_active {
@@ -2019,7 +2039,7 @@ impl DesktopApp {
                 div()
                     .mt_4()
                     .text_sm()
-                    .text_color(rgb(0xb9aca4))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .child("These lyrics are not synchronized."),
             )
         })
@@ -2082,7 +2102,7 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(0xd6c7ba))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .child("Find tracks, artists, albums, playlists, and episodes."),
             )
             .child(
@@ -2100,9 +2120,9 @@ impl DesktopApp {
                     .text_sm()
                     .text_color(
                         if self.search_error.is_some() && self.search_results.is_empty() {
-                            rgb(0xf0a0a0)
+                            rgb(theme::ERROR)
                         } else {
-                            rgb(0x918698)
+                            rgb(theme::TEXT_MUTED)
                         },
                     )
                     .child(status),
@@ -2139,8 +2159,8 @@ impl DesktopApp {
         div()
             .h(px(164.))
             .border_t_1()
-            .border_color(rgb(0x33252e))
-            .bg(rgb(0x19131d))
+            .border_color(rgb(theme::BORDER))
+            .bg(rgb(theme::BG_SURFACE))
             .px_6()
             .py_4()
             .flex()
@@ -2159,9 +2179,9 @@ impl DesktopApp {
                             .overflow_hidden()
                             .when(footer_artwork.is_none(), |element| {
                                 element
-                                    .bg(rgb(0x312235))
+                                    .bg(rgb(theme::BG_ELEVATED))
                                     .border_1()
-                                    .border_color(rgb(0x4a344d))
+                                    .border_color(rgb(theme::BORDER_STRONG))
                             })
                             .when_some(footer_art, |element, art| element.child(art)),
                     )
@@ -2173,7 +2193,7 @@ impl DesktopApp {
                                 div()
                                     .mt_1()
                                     .text_sm()
-                                    .text_color(rgb(0xb8abbf))
+                                    .text_color(rgb(theme::TEXT_SECONDARY))
                                     .child(summary.subtitle),
                             ),
                     ),
@@ -2240,26 +2260,26 @@ impl DesktopApp {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(0xf0b78f))
+                            .text_color(rgb(theme::ACCENT))
                             .child(summary.state),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(0x918698))
+                            .text_color(rgb(theme::TEXT_MUTED))
                             .child(summary.progress),
                     )
                     .child(volume_bar(playback, self.slider_preview, cx))
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(0x918698))
+                            .text_color(rgb(theme::TEXT_MUTED))
                             .child(summary.device),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(0x918698))
+                            .text_color(rgb(theme::TEXT_MUTED))
                             .child(summary.mode),
                     ),
             )
@@ -2271,10 +2291,10 @@ fn queue_message(message: &str) -> impl IntoElement {
         .mt_6()
         .rounded_lg()
         .border_1()
-        .border_color(rgb(0x3b2722))
-        .bg(rgb(0x1b1518))
+        .border_color(rgb(theme::BORDER))
+        .bg(rgb(theme::BG_SURFACE))
         .p_5()
-        .text_color(rgb(0xb9aca4))
+        .text_color(rgb(theme::TEXT_SECONDARY))
         .child(message.to_string())
 }
 
@@ -2287,7 +2307,11 @@ fn queue_rail_row(
     let image = artwork_url(item, false);
     let mut row = div()
         .rounded_md()
-        .bg(rgb(if current { 0x38233a } else { 0x2a1d2d }))
+        .bg(rgb(if current {
+            theme::QUEUE_CURRENT
+        } else {
+            theme::QUEUE_IDLE
+        }))
         .px_3()
         .py_3()
         .flex()
@@ -2298,15 +2322,19 @@ fn queue_rail_row(
         .or_else(|| artwork_url(item, true).and_then(|url| artwork_cache.get(&url)))
     {
         row = row.child(
-            div().w(px(42.)).h(px(42.)).bg(rgb(0x49334d)).child(
-                img(image.clone())
-                    .w_full()
-                    .h_full()
-                    .object_fit(gpui::ObjectFit::Cover),
-            ),
+            div()
+                .w(px(42.))
+                .h(px(42.))
+                .bg(rgb(theme::BG_ELEVATED))
+                .child(
+                    img(image.clone())
+                        .w_full()
+                        .h_full()
+                        .object_fit(gpui::ObjectFit::Cover),
+                ),
         );
     } else {
-        row = row.child(div().w(px(42.)).h(px(42.)).bg(rgb(0x49334d)));
+        row = row.child(div().w(px(42.)).h(px(42.)).bg(rgb(theme::BG_ELEVATED)));
     }
     row.child(
         div()
@@ -2317,14 +2345,14 @@ fn queue_rail_row(
             } else {
                 div()
                     .text_xs()
-                    .text_color(rgb(0xa98ca8))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .child(label.to_string())
             })
             .child(
                 div()
                     .mt_1()
                     .text_xs()
-                    .text_color(rgb(0xbdaec0))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .truncate()
                     .child(if item.subtitle.is_empty() {
                         item.context.clone()
@@ -2370,8 +2398,16 @@ fn nav_item(
     selected: bool,
     cx: &mut Context<'_, DesktopApp>,
 ) -> impl IntoElement {
-    let background = if selected { 0x3a211b } else { 0x211715 };
-    let foreground = if selected { 0xffc2a6 } else { 0xd8c7bc };
+    let background = if selected {
+        theme::NAV_ACTIVE
+    } else {
+        theme::BG_SIDEBAR
+    };
+    let foreground = if selected {
+        theme::ACCENT
+    } else {
+        theme::TEXT_SECONDARY
+    };
 
     div()
         .id(SharedString::from(format!("nav-{}", destination.id())))
@@ -2383,7 +2419,7 @@ fn nav_item(
         .bg(rgb(background))
         .text_color(rgb(foreground))
         .child(destination.label())
-        .hover(|style| style.bg(rgb(0x2f211f)))
+        .hover(|style| style.bg(rgb(theme::NAV_HOVER)))
         .on_click(cx.listener(move |app, _, _, cx| {
             app.select_destination(destination);
             cx.notify();
@@ -2395,12 +2431,12 @@ fn search_button(cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
         .id("search-submit")
         .cursor_pointer()
         .rounded_md()
-        .bg(rgb(0x9b604f))
+        .bg(rgb(theme::ACCENT))
         .px_4()
         .py_3()
         .text_sm()
-        .text_color(rgb(0xfff5ee))
-        .hover(|style| style.bg(rgb(0xb8745b)))
+        .text_color(rgb(theme::TEXT_PRIMARY))
+        .hover(|style| style.bg(rgb(theme::ACCENT_HOVER)))
         .on_click(cx.listener(|app, _, _, cx| {
             app.start_search();
             cx.notify();
@@ -2440,8 +2476,8 @@ fn search_result_row(
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(0x3b2722))
-        .bg(rgb(0x1b1518))
+        .border_color(rgb(theme::BORDER))
+        .bg(rgb(theme::BG_SURFACE))
         .px_4()
         .py_3()
         .flex()
@@ -2454,7 +2490,7 @@ fn search_result_row(
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0xf7efe8))
+                        .text_color(rgb(theme::TEXT_PRIMARY))
                         .truncate()
                         .child(title),
                 )
@@ -2462,7 +2498,7 @@ fn search_result_row(
                     div()
                         .mt_1()
                         .text_xs()
-                        .text_color(rgb(0x9e929d))
+                        .text_color(rgb(theme::TEXT_MUTED))
                         .truncate()
                         .child(subtitle),
                 ),
@@ -2518,8 +2554,8 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(0x3b2722))
-        .bg(rgb(0x1b1518))
+        .border_color(rgb(theme::BORDER))
+        .bg(rgb(theme::BG_SURFACE))
         .px_4()
         .py_3()
         .flex()
@@ -2532,7 +2568,7 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0xf7efe8))
+                        .text_color(rgb(theme::TEXT_PRIMARY))
                         .truncate()
                         .child(title.clone()),
                 )
@@ -2540,7 +2576,7 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
                     div()
                         .mt_1()
                         .text_xs()
-                        .text_color(rgb(0x9e929d))
+                        .text_color(rgb(theme::TEXT_MUTED))
                         .truncate()
                         .child(media_subtitle(item)),
                 ),
@@ -2601,8 +2637,8 @@ fn artist_row(
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(0x3b2722))
-        .bg(rgb(0x1b1518))
+        .border_color(rgb(theme::BORDER))
+        .bg(rgb(theme::BG_SURFACE))
         .px_4()
         .py_3()
         .flex()
@@ -2612,7 +2648,7 @@ fn artist_row(
             div()
                 .flex_1()
                 .text_sm()
-                .text_color(rgb(0xf7efe8))
+                .text_color(rgb(theme::TEXT_PRIMARY))
                 .child(title.to_string()),
         )
         .child(search_row_action(
@@ -2645,8 +2681,8 @@ fn detail_album_row(
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(0x3b2722))
-        .bg(rgb(0x1b1518))
+        .border_color(rgb(theme::BORDER))
+        .bg(rgb(theme::BG_SURFACE))
         .px_4()
         .py_3()
         .flex()
@@ -2657,7 +2693,7 @@ fn detail_album_row(
                 div()
                     .mt_1()
                     .text_xs()
-                    .text_color(rgb(0x9e929d))
+                    .text_color(rgb(theme::TEXT_MUTED))
                     .child(media_subtitle(item)),
             ),
         )
@@ -2712,8 +2748,8 @@ fn liked_song_row(
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(0x3b2722))
-        .bg(rgb(0x1b1518))
+        .border_color(rgb(theme::BORDER))
+        .bg(rgb(theme::BG_SURFACE))
         .px_4()
         .py_3()
         .flex()
@@ -2726,7 +2762,7 @@ fn liked_song_row(
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0xf7efe8))
+                        .text_color(rgb(theme::TEXT_PRIMARY))
                         .truncate()
                         .child(title),
                 )
@@ -2734,7 +2770,7 @@ fn liked_song_row(
                     div()
                         .mt_1()
                         .text_xs()
-                        .text_color(rgb(0x9e929d))
+                        .text_color(rgb(theme::TEXT_MUTED))
                         .truncate()
                         .child(subtitle),
                 ),
@@ -2783,8 +2819,8 @@ fn history_row(
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(0x3b2722))
-        .bg(rgb(0x1b1518))
+        .border_color(rgb(theme::BORDER))
+        .bg(rgb(theme::BG_SURFACE))
         .px_4()
         .py_3()
         .flex()
@@ -2795,7 +2831,7 @@ fn history_row(
                 div()
                     .mt_1()
                     .text_xs()
-                    .text_color(rgb(0x9e929d))
+                    .text_color(rgb(theme::TEXT_MUTED))
                     .child(subtitle),
             ),
         )
@@ -2831,8 +2867,8 @@ fn playlist_row(
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(0x3b2722))
-        .bg(rgb(0x1b1518))
+        .border_color(rgb(theme::BORDER))
+        .bg(rgb(theme::BG_SURFACE))
         .px_4()
         .py_3()
         .flex()
@@ -2846,7 +2882,7 @@ fn playlist_row(
                     div()
                         .mt_1()
                         .text_xs()
-                        .text_color(rgb(0x9e929d))
+                        .text_color(rgb(theme::TEXT_MUTED))
                         .child(format!(
                             "{} tracks · {}",
                             playlist.tracks_total, playlist.owner
@@ -2883,8 +2919,8 @@ fn playlist_track_row(
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(0x3b2722))
-        .bg(rgb(0x1b1518))
+        .border_color(rgb(theme::BORDER))
+        .bg(rgb(theme::BG_SURFACE))
         .px_4()
         .py_3()
         .flex()
@@ -2895,7 +2931,7 @@ fn playlist_track_row(
                 div()
                     .mt_1()
                     .text_xs()
-                    .text_color(rgb(0x9e929d))
+                    .text_color(rgb(theme::TEXT_MUTED))
                     .child(subtitle),
             ),
         )
@@ -2928,12 +2964,12 @@ fn search_row_action(
         .cursor_pointer()
         .rounded_md()
         .border_1()
-        .border_color(rgb(0x4a344d))
+        .border_color(rgb(theme::BORDER_STRONG))
         .px_3()
         .py_2()
         .text_xs()
-        .text_color(rgb(0xf1e8ff))
-        .hover(|style| style.bg(rgb(0x493052)))
+        .text_color(rgb(theme::TEXT_PRIMARY))
+        .hover(|style| style.bg(rgb(theme::BUTTON_SECONDARY_HOVER)))
         .on_mouse_up(MouseButton::Left, listener)
         .child(label)
 }
@@ -2943,8 +2979,8 @@ fn playlist_picker_surface(app: &DesktopApp, cx: &mut Context<'_, DesktopApp>) -
         .mt_5()
         .rounded_lg()
         .border_1()
-        .border_color(rgb(0x6f3a22))
-        .bg(rgb(0x24171a))
+        .border_color(rgb(theme::ERROR_BORDER))
+        .bg(rgb(theme::ERROR_SURFACE))
         .p_4()
         .child(div().text_sm().child("Choose a playlist"));
 
@@ -2953,7 +2989,7 @@ fn playlist_picker_surface(app: &DesktopApp, cx: &mut Context<'_, DesktopApp>) -
             div()
                 .mt_2()
                 .text_xs()
-                .text_color(rgb(0x9e929d))
+                .text_color(rgb(theme::TEXT_MUTED))
                 .child("Loading playlists…"),
         );
     } else if app.search_playlists.is_empty() {
@@ -2961,7 +2997,7 @@ fn playlist_picker_surface(app: &DesktopApp, cx: &mut Context<'_, DesktopApp>) -
             div()
                 .mt_2()
                 .text_xs()
-                .text_color(rgb(0x9e929d))
+                .text_color(rgb(theme::TEXT_MUTED))
                 .child("No playlists available"),
         );
     } else {
@@ -2978,12 +3014,12 @@ fn playlist_picker_surface(app: &DesktopApp, cx: &mut Context<'_, DesktopApp>) -
                     .cursor_pointer()
                     .rounded_md()
                     .border_1()
-                    .border_color(rgb(0x4a344d))
+                    .border_color(rgb(theme::BORDER_STRONG))
                     .px_3()
                     .py_2()
                     .text_xs()
-                    .text_color(rgb(0xf1e8ff))
-                    .hover(|style| style.bg(rgb(0x493052)))
+                    .text_color(rgb(theme::TEXT_PRIMARY))
+                    .hover(|style| style.bg(rgb(theme::BUTTON_SECONDARY_HOVER)))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |app, _, _, cx| {
@@ -3002,7 +3038,7 @@ fn playlist_picker_surface(app: &DesktopApp, cx: &mut Context<'_, DesktopApp>) -
             .mt_3()
             .cursor_pointer()
             .text_xs()
-            .text_color(rgb(0xd9ac92))
+            .text_color(rgb(theme::ACCENT_HOVER))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|app, _, _, cx| {
@@ -3485,7 +3521,7 @@ impl Element for SearchTextElement {
                     point(bounds.left() + cursor_pos, bounds.top()),
                     gpui::size(px(2.), bounds.bottom() - bounds.top()),
                 ),
-                rgb(0xf0b78f),
+                rgb(theme::ACCENT),
             ))
         } else {
             None
@@ -3502,7 +3538,7 @@ impl Element for SearchTextElement {
                         bounds.bottom(),
                     ),
                 ),
-                rgb(0x493052),
+                rgb(theme::BUTTON_SECONDARY_HOVER),
             )
         });
         SearchTextPrepaint {
@@ -3561,8 +3597,8 @@ impl Render for SearchInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .rounded_md()
             .border_1()
-            .border_color(rgb(0x4a344d))
-            .bg(rgb(0x211715))
+            .border_color(rgb(theme::BORDER_STRONG))
+            .bg(rgb(theme::BG_SIDEBAR))
             .px_3()
             .items_center()
             .text_sm()
@@ -3582,8 +3618,8 @@ fn update_banner_surface(banner: &UpdateBanner) -> impl IntoElement {
         .mt_5()
         .rounded_lg()
         .border_1()
-        .border_color(rgb(0x6f3a22))
-        .bg(rgb(0x321d16))
+        .border_color(rgb(theme::ERROR_BORDER))
+        .bg(rgb(theme::ACCENT_SUBTLE))
         .px_4()
         .py_3()
         .child(format!("Update available: {}", banner.latest_version))
@@ -3591,7 +3627,7 @@ fn update_banner_surface(banner: &UpdateBanner) -> impl IntoElement {
             div()
                 .mt_1()
                 .text_sm()
-                .text_color(rgb(0xd9ac92))
+                .text_color(rgb(theme::ACCENT_HOVER))
                 .child(detail.to_string()),
         )
 }
@@ -3604,12 +3640,12 @@ fn toast_surface(message: &str) -> impl IntoElement {
         .max_w(px(420.))
         .rounded_lg()
         .border_1()
-        .border_color(rgb(0x4c3946))
-        .bg(rgb(0x201926))
+        .border_color(rgb(theme::BORDER_STRONG))
+        .bg(rgb(theme::BG_ELEVATED))
         .px_4()
         .py_3()
         .text_sm()
-        .text_color(rgb(0xf1e8ff))
+        .text_color(rgb(theme::TEXT_PRIMARY))
         .child(message.to_string())
 }
 
@@ -3663,13 +3699,13 @@ fn transport_button(
         .cursor_pointer()
         .rounded_md()
         .border_1()
-        .border_color(rgb(0x4a344d))
-        .bg(rgb(0x2a1b2f))
+        .border_color(rgb(theme::BORDER_STRONG))
+        .bg(rgb(theme::BG_ELEVATED))
         .px_3()
         .py_2()
         .text_xs()
-        .text_color(rgb(0xf1e8ff))
-        .hover(|style| style.bg(rgb(0x493052)))
+        .text_color(rgb(theme::TEXT_PRIMARY))
+        .hover(|style| style.bg(rgb(theme::BUTTON_SECONDARY_HOVER)))
         .on_click(cx.listener(move |app, _, _, _| {
             app.send_playback_command(command.clone());
         }))
@@ -3700,13 +3736,13 @@ fn seek_bar(
         .h(px(14.))
         .cursor_pointer()
         .rounded_md()
-        .bg(rgb(0x34283b))
+        .bg(rgb(theme::SLIDER_TRACK))
         .child(
             div()
                 .h_full()
                 .w(px(SLIDER_WIDTH * fraction))
                 .rounded_md()
-                .bg(rgb(0xf0b78f)),
+                .bg(rgb(theme::ACCENT)),
         )
         .on_drag(SeekDrag, |_, _, _, cx| cx.new(|_| SliderGhost))
         .on_drag_move(cx.listener(|app, event: &DragMoveEvent<SeekDrag>, _, cx| {
@@ -3788,13 +3824,13 @@ fn volume_bar(
         .h(px(10.))
         .cursor_pointer()
         .rounded_md()
-        .bg(rgb(0x34283b))
+        .bg(rgb(theme::SLIDER_TRACK))
         .child(
             div()
                 .h_full()
                 .w(px(140. * fraction))
                 .rounded_md()
-                .bg(rgb(0x9fc7c5)),
+                .bg(rgb(theme::ACCENT)),
         );
 
     if supports_volume {
@@ -4082,25 +4118,30 @@ fn should_toast_playback_action(action: &str) -> bool {
 fn diagnostics_surface(title: &str, body: &str, lines: Vec<String>) -> impl IntoElement {
     let mut status_rows = div().mt_6().flex().flex_col();
     for line in lines {
-        status_rows =
-            status_rows.child(div().mb_2().text_sm().text_color(rgb(0xa9b0bc)).child(line));
+        status_rows = status_rows.child(
+            div()
+                .mb_2()
+                .text_sm()
+                .text_color(rgb(theme::TEXT_SECONDARY))
+                .child(line),
+        );
     }
 
     div()
         .size_full()
-        .bg(rgb(0x1d1413))
+        .bg(rgb(theme::BG_SURFACE))
         .p_8()
         .flex()
         .flex_col()
         .items_start()
         .justify_start()
-        .text_color(rgb(0xf7efe8))
+        .text_color(rgb(theme::TEXT_PRIMARY))
         .child(div().text_3xl().child(title.to_string()))
         .child(
             div()
                 .mt_2()
                 .text_lg()
-                .text_color(rgb(0xd6c7ba))
+                .text_color(rgb(theme::TEXT_SECONDARY))
                 .child(body.to_string()),
         )
         .child(status_rows)
@@ -4152,6 +4193,45 @@ mod tests {
         assert!(app.queue_requested);
         assert!(matches!(command_rx.try_recv(), Ok(Request::QueueGet)));
         assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn queue_snapshot_requests_each_distinct_row_artwork_once() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        let queue_item = |uri: &str, image_url: &str| MediaItem {
+            uri: uri.to_string(),
+            image_url_small: Some(image_url.to_string()),
+            kind: MediaKind::Track,
+            ..MediaItem::default()
+        };
+
+        app.set_queue_seed(Queue {
+            currently_playing: Some(queue_item(
+                "spotify:track:current",
+                "https://example.test/current.jpg",
+            )),
+            items: vec![
+                queue_item("spotify:track:first", "https://example.test/first.jpg"),
+                queue_item("spotify:track:duplicate", "https://example.test/first.jpg"),
+            ],
+            ..Queue::default()
+        });
+
+        let mut urls = Vec::new();
+        while let Ok(Request::Image { url }) = command_rx.try_recv() {
+            urls.push(url);
+        }
+        urls.sort();
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.test/current.jpg".to_string(),
+                "https://example.test/first.jpg".to_string(),
+            ]
+        );
     }
 
     #[test]
