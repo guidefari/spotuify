@@ -264,7 +264,16 @@ pub struct MediaItem {
     pub subtitle: String,
     pub context: String,
     pub duration_ms: u64,
+    /// Default (medium) image URL, using the Spotify image closest to 300px.
     pub image_url: Option<String>,
+    /// Small image URL for row thumbnails. Falls back to `image_url` when
+    /// Spotify only returns one image size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url_small: Option<String>,
+    /// Large image URL for now-playing hero surfaces. Falls back to
+    /// `image_url` when Spotify only returns one image size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url_large: Option<String>,
     pub kind: MediaKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -607,6 +616,8 @@ mod tests {
             context: String::new(),
             duration_ms: 1000,
             image_url: None,
+            image_url_small: None,
+            image_url_large: None,
             kind: MediaKind::Track,
             source: None,
             freshness: None,
@@ -625,6 +636,8 @@ mod tests {
         assert!(!obj.contains_key("resume_position_ms"));
         assert!(!obj.contains_key("fully_played"));
         assert!(!obj.contains_key("release_date"));
+        assert!(!obj.contains_key("image_url_small"));
+        assert!(!obj.contains_key("image_url_large"));
     }
 
     #[test]

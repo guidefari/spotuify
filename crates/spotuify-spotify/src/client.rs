@@ -2374,6 +2374,7 @@ impl RawTrack {
     fn into_media_item(self) -> MediaItem {
         let subtitle = join_names(&self.artists);
         let artists = artist_refs(&self.artists);
+        let (image_url, image_url_small, image_url_large) = image_urls(&self.album.images);
         MediaItem {
             id: self.id,
             uri: self.uri,
@@ -2381,7 +2382,9 @@ impl RawTrack {
             subtitle,
             context: self.album.name.clone(),
             duration_ms: self.duration_ms,
-            image_url: image_url(&self.album.images),
+            image_url,
+            image_url_small,
+            image_url_large,
             kind: MediaKind::Track,
             source: Some("spotify".to_string()),
             freshness: None,
@@ -2464,6 +2467,7 @@ impl RawEpisode {
             fully_played: None,
             resume_position_ms: None,
         });
+        let (image_url, image_url_small, image_url_large) = image_urls(&self.images);
         MediaItem {
             id: self.id,
             uri: self.uri,
@@ -2471,7 +2475,9 @@ impl RawEpisode {
             subtitle: show.clone(),
             context: show,
             duration_ms: self.duration_ms,
-            image_url: image_url(&self.images),
+            image_url,
+            image_url_small,
+            image_url_large,
             kind: MediaKind::Episode,
             source: Some("spotify".to_string()),
             freshness: None,
@@ -2498,6 +2504,7 @@ struct RawShow {
 
 impl RawShow {
     fn into_media_item(self) -> MediaItem {
+        let (image_url, image_url_small, image_url_large) = image_urls(&self.images);
         MediaItem {
             id: self.id,
             uri: self.uri,
@@ -2508,7 +2515,9 @@ impl RawShow {
                 .map(|count| format!("{count} episodes"))
                 .unwrap_or_default(),
             duration_ms: 0,
-            image_url: image_url(&self.images),
+            image_url,
+            image_url_small,
+            image_url_large,
             kind: MediaKind::Show,
             source: Some("spotify".to_string()),
             freshness: None,
@@ -2545,6 +2554,7 @@ impl RawAlbum {
         let subtitle = join_names(&self.artists);
         let artists = artist_refs(&self.artists);
         let album_group = self.album_group.or(self.album_type);
+        let (image_url, image_url_small, image_url_large) = image_urls(&self.images);
         MediaItem {
             id: self.id,
             uri: self.uri,
@@ -2555,7 +2565,9 @@ impl RawAlbum {
                 .map(|n| format!("{n} tracks"))
                 .unwrap_or_default(),
             duration_ms: 0,
-            image_url: image_url(&self.images),
+            image_url,
+            image_url_small,
+            image_url_large,
             kind: MediaKind::Album,
             source: Some("spotify".to_string()),
             freshness: None,
@@ -2581,6 +2593,7 @@ struct RawArtist {
 
 impl RawArtist {
     fn into_media_item(self) -> MediaItem {
+        let (image_url, image_url_small, image_url_large) = image_urls(&self.images);
         MediaItem {
             id: self.id,
             uri: self.uri,
@@ -2591,7 +2604,9 @@ impl RawArtist {
                 .map(|followers| format_followers(followers.total))
                 .unwrap_or_default(),
             duration_ms: 0,
-            image_url: image_url(&self.images),
+            image_url,
+            image_url_small,
+            image_url_large,
             kind: MediaKind::Artist,
             source: Some("spotify".to_string()),
             freshness: None,
@@ -2644,6 +2659,7 @@ impl RawPlaylist {
     fn into_media_item(self) -> Option<MediaItem> {
         let tracks_total = self.tracks_page().map_or(0, |tracks| tracks.total);
         let id = self.id?;
+        let (image_url, image_url_small, image_url_large) = image_urls(&self.images);
         Some(MediaItem {
             uri: self.uri.unwrap_or_else(|| format!("spotify:playlist:{id}")),
             id: Some(id),
@@ -2651,7 +2667,9 @@ impl RawPlaylist {
             subtitle: playlist_owner_name(self.owner),
             context: format!("{tracks_total} tracks"),
             duration_ms: 0,
-            image_url: image_url(&self.images),
+            image_url,
+            image_url_small,
+            image_url_large,
             kind: MediaKind::Playlist,
             source: Some("spotify".to_string()),
             freshness: None,
@@ -2860,12 +2878,33 @@ fn artist_refs(items: &[SimpleNamed]) -> Vec<ArtistRef> {
         .collect()
 }
 
-fn image_url(images: &[ImageRef]) -> Option<String> {
-    images
+fn image_url_for_size(images: &[ImageRef], target: u32) -> Option<String> {
+    let sized = images
         .iter()
-        .filter(|image| image.url.is_some())
-        .min_by_key(|image| image.width.unwrap_or(u32::MAX).abs_diff(300))
-        .and_then(|image| image.url.clone())
+        .filter(|image| image.url.is_some() && image.width.is_some())
+        .min_by_key(|image| image.width.unwrap_or(target).abs_diff(target))
+        .and_then(|image| image.url.clone());
+    sized.or_else(|| images.iter().find_map(|image| image.url.clone()))
+}
+
+fn image_url(images: &[ImageRef]) -> Option<String> {
+    image_url_for_size(images, 300)
+}
+
+fn image_url_small(images: &[ImageRef]) -> Option<String> {
+    image_url_for_size(images, 64)
+}
+
+fn image_url_large(images: &[ImageRef]) -> Option<String> {
+    image_url_for_size(images, 1024)
+}
+
+fn image_urls(images: &[ImageRef]) -> (Option<String>, Option<String>, Option<String>) {
+    (
+        image_url(images),
+        image_url_small(images),
+        image_url_large(images),
+    )
 }
 
 fn fake_playback() -> Playback {
@@ -3067,10 +3106,45 @@ fn selection_like_uri_check(uri: &str) -> AnyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_followers, group_items_by_position, library_endpoint_for_uri,
-        normalize_spotify_response, parse_rfc3339_ms, playlist_remove_items_body,
-        playlist_reorder_body, search_path, Config, MediaKind, RawEpisode, SpotifyClient,
+        format_followers, group_items_by_position, image_url, image_url_large, image_url_small,
+        library_endpoint_for_uri, normalize_spotify_response, parse_rfc3339_ms,
+        playlist_remove_items_body, playlist_reorder_body, search_path, Config, ImageRef,
+        MediaKind, RawEpisode, SpotifyClient,
     };
+
+    #[test]
+    fn image_variants_choose_nearest_sizes() {
+        let images = vec![
+            ImageRef {
+                url: Some("small".to_string()),
+                width: Some(64),
+            },
+            ImageRef {
+                url: Some("medium".to_string()),
+                width: Some(300),
+            },
+            ImageRef {
+                url: Some("large".to_string()),
+                width: Some(640),
+            },
+        ];
+
+        assert_eq!(image_url(&images).as_deref(), Some("medium"));
+        assert_eq!(image_url_small(&images).as_deref(), Some("small"));
+        assert_eq!(image_url_large(&images).as_deref(), Some("large"));
+    }
+
+    #[test]
+    fn image_variants_fall_back_to_unsized_image() {
+        let images = vec![ImageRef {
+            url: Some("only".to_string()),
+            width: None,
+        }];
+
+        assert_eq!(image_url(&images).as_deref(), Some("only"));
+        assert_eq!(image_url_small(&images).as_deref(), Some("only"));
+        assert_eq!(image_url_large(&images).as_deref(), Some("only"));
+    }
 
     #[test]
     fn episode_resume_point_and_release_date_map_into_media_item() {
