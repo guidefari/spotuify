@@ -41,6 +41,7 @@ phosphor_icons! {
     Devices => "icons/phosphor/regular/devices.svg",
     Lyrics => "icons/phosphor/regular/quotes.svg",
     Queue => "icons/phosphor/regular/queue.svg",
+    Volume => "icons/phosphor/regular/speaker-high.svg",
     Previous => "icons/phosphor/bold/skip-back.svg",
     Next => "icons/phosphor/bold/skip-forward.svg",
     Shuffle => "icons/phosphor/bold/shuffle.svg",
@@ -48,6 +49,7 @@ phosphor_icons! {
     RepeatOne => "icons/phosphor/bold/repeat-once.svg",
     Play => "icons/phosphor/fill/play.svg",
     Pause => "icons/phosphor/fill/pause.svg",
+    LikedSongsFilled => "icons/phosphor/fill/heart.svg",
 }
 
 pub(crate) struct Assets;

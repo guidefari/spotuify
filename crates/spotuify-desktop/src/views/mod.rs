@@ -55,6 +55,7 @@ pub struct DesktopApp {
     pub(crate) search_error: Option<String>,
     search_version: u64,
     pub(crate) liked_songs: Vec<MediaItem>,
+    saved_track_uris: HashSet<String>,
     pub(crate) liked_total: u32,
     pub(crate) liked_offset: u32,
     pub(crate) liked_loading: bool,
@@ -312,6 +313,7 @@ impl DesktopApp {
             search_error: None,
             search_version: 0,
             liked_songs: Vec::new(),
+            saved_track_uris: HashSet::new(),
             liked_total: 0,
             liked_offset: 0,
             liked_loading: false,
@@ -755,6 +757,25 @@ impl DesktopApp {
             .map(|item| item.uri.clone())
     }
 
+    fn current_track_is_liked(&self) -> bool {
+        self.current_track_uri()
+            .is_some_and(|uri| self.saved_track_uris.contains(&uri))
+    }
+
+    fn toggle_current_track_like(&mut self) {
+        let Some(uri) = self.current_track_uri() else {
+            return;
+        };
+        if self.saved_track_uris.contains(&uri) {
+            self.send_request(Request::LibraryUnsave { uri });
+        } else {
+            self.send_request(Request::LibrarySave {
+                uri: Some(uri),
+                current: false,
+            });
+        }
+    }
+
     fn current_artwork_url(&self, large: bool) -> Option<String> {
         self.playback
             .as_ref()
@@ -976,6 +997,7 @@ impl DesktopApp {
                 total,
                 offset,
             } => {
+                self.saved_track_uris = items.iter().map(|item| item.uri.clone()).collect();
                 self.liked_songs = items;
                 self.liked_total = total;
                 self.liked_offset = offset;
@@ -1109,7 +1131,16 @@ impl DesktopApp {
                     self.toast = Some(format!("Devices updated: {action}"));
                 }
             }
-            DaemonEvent::LibraryChanged { .. } => {
+            DaemonEvent::LibraryChanged { action, uris, .. } => {
+                match action.as_str() {
+                    "save" => self.saved_track_uris.extend(uris.iter().cloned()),
+                    "unsave" => {
+                        for uri in &uris {
+                            self.saved_track_uris.remove(uri);
+                        }
+                    }
+                    _ => {}
+                }
                 if self.liked_requested {
                     self.refresh_liked_songs();
                 }
@@ -2231,6 +2262,10 @@ impl DesktopApp {
         let shuffle_state = playback.is_some_and(|playback| playback.shuffle);
         let repeat_state = playback.map(|playback| playback.repeat).unwrap_or_default();
         let is_playing = playback.is_some_and(|playback| playback.is_playing);
+        let has_current_track = playback
+            .and_then(|playback| playback.item.as_ref())
+            .is_some();
+        let current_track_is_liked = self.current_track_is_liked();
 
         let footer_artwork = self
             .playback
@@ -2257,13 +2292,14 @@ impl DesktopApp {
             .gap_6()
             .child(
                 div()
-                    .w(px(270.))
+                    .w(px(330.))
                     .flex()
                     .items_center()
                     .child(
                         div()
                             .w(px(66.))
                             .h(px(66.))
+                            .flex_shrink_0()
                             .rounded_md()
                             .overflow_hidden()
                             .when(footer_artwork.is_none(), |element| {
@@ -2277,15 +2313,23 @@ impl DesktopApp {
                     .child(
                         div()
                             .ml_4()
-                            .child(div().text_lg().child(summary.title))
+                            .flex_1()
+                            .overflow_hidden()
+                            .child(div().text_lg().truncate().child(summary.title))
                             .child(
                                 div()
                                     .mt_1()
                                     .text_sm()
                                     .text_color(rgb(theme::TEXT_SECONDARY))
+                                    .truncate()
                                     .child(summary.subtitle),
                             ),
-                    ),
+                    )
+                    .child(footer_like_button(
+                        current_track_is_liked,
+                        has_current_track,
+                        cx,
+                    )),
             )
             .child(
                 div()
@@ -2369,35 +2413,36 @@ impl DesktopApp {
             )
             .child(
                 div()
-                    .w(px(160.))
+                    .w(px(210.))
                     .flex()
                     .flex_col()
                     .items_end()
-                    .gap_2()
+                    .gap_3()
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(rgb(theme::ACCENT))
-                            .child(summary.state),
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap_2()
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .child(app_icon(AppIcon::Devices, 16., theme::TEXT_MUTED))
+                            .child(
+                                div()
+                                    .max_w(px(180.))
+                                    .text_xs()
+                                    .truncate()
+                                    .child(summary.device),
+                            ),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .flex()
+                            .items_center()
+                            .gap_2()
                             .text_color(rgb(theme::TEXT_MUTED))
-                            .child(summary.progress),
-                    )
-                    .child(volume_bar(playback, self.slider_preview, cx))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(theme::TEXT_MUTED))
-                            .child(summary.device),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(theme::TEXT_MUTED))
-                            .child(summary.mode),
+                            .child(app_icon(AppIcon::Volume, 16., theme::TEXT_MUTED))
+                            .child(volume_bar(playback, self.slider_preview, cx)),
                     ),
             )
     }
@@ -3842,6 +3887,54 @@ impl Render for SliderGhost {
     }
 }
 
+fn footer_like_button(
+    liked: bool,
+    enabled: bool,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
+    let label = if liked { "Unlike" } else { "Like" };
+    let foreground = if liked {
+        theme::ACCENT
+    } else {
+        theme::TEXT_SECONDARY
+    };
+
+    div()
+        .id("footer-like")
+        .ml_3()
+        .size(px(38.))
+        .flex_shrink_0()
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(theme::BORDER_STRONG))
+        .bg(rgb(if liked {
+            theme::NAV_ACTIVE
+        } else {
+            theme::BG_ELEVATED
+        }))
+        .text_color(rgb(foreground))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .when(!enabled, |element| element.opacity(0.45))
+        .hover(|style| style.bg(rgb(theme::BUTTON_SECONDARY_HOVER)))
+        .tooltip(icon_tooltip(label))
+        .on_click(cx.listener(|app, _, _, cx| {
+            app.toggle_current_track_like();
+            cx.notify();
+        }))
+        .child(app_icon(
+            if liked {
+                AppIcon::LikedSongsFilled
+            } else {
+                AppIcon::LikedSongs
+            },
+            19.,
+            foreground,
+        ))
+}
+
 fn transport_button(
     id: &'static str,
     label: impl Into<SharedString>,
@@ -4105,10 +4198,8 @@ fn volume_percent(fraction: f32) -> u8 {
 struct PlaybackSummary {
     title: String,
     subtitle: String,
-    state: String,
     progress: String,
     device: String,
-    mode: String,
 }
 
 fn playback_summary(playback: Option<&Playback>) -> PlaybackSummary {
@@ -4116,10 +4207,8 @@ fn playback_summary(playback: Option<&Playback>) -> PlaybackSummary {
         return PlaybackSummary {
             title: "Nothing playing".to_string(),
             subtitle: "Waiting for daemon playback state".to_string(),
-            state: "Idle".to_string(),
             progress: "0:00".to_string(),
             device: "No active device".to_string(),
-            mode: "shuffle off | repeat off".to_string(),
         };
     };
 
@@ -4132,12 +4221,6 @@ fn playback_summary(playback: Option<&Playback>) -> PlaybackSummary {
         .map(media_subtitle)
         .unwrap_or_else(|| "No media item".to_string());
     let duration_ms = item.map_or(0, |item| item.duration_ms);
-    let state = if playback.is_playing {
-        "Playing"
-    } else {
-        "Paused"
-    }
-    .to_string();
     let progress_ms = playback_progress_ms(playback);
     let progress = if duration_ms == 0 {
         format_duration(progress_ms)
@@ -4151,21 +4234,14 @@ fn playback_summary(playback: Option<&Playback>) -> PlaybackSummary {
     let device = playback
         .device
         .as_ref()
-        .map(|device| format!("{} | {}", device.name, device.kind))
+        .map(|device| device.name.clone())
         .unwrap_or_else(|| "No active device".to_string());
-    let mode = format!(
-        "shuffle {} | repeat {}",
-        if playback.shuffle { "on" } else { "off" },
-        playback.repeat
-    );
 
     PlaybackSummary {
         title,
         subtitle,
-        state,
         progress,
         device,
-        mode,
     }
 }
 
@@ -5036,6 +5112,45 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn footer_like_toggles_from_daemon_owned_library_events() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        app.playback = Some(Playback {
+            item: Some(MediaItem {
+                uri: "spotify:track:liked".to_string(),
+                kind: MediaKind::Track,
+                ..MediaItem::default()
+            }),
+            ..Playback::default()
+        });
+
+        app.toggle_current_track_like();
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::LibrarySave {
+                uri: Some(uri),
+                current: false,
+            }) if uri == "spotify:track:liked"
+        ));
+        assert!(!app.current_track_is_liked());
+
+        app.apply_daemon_event(DaemonEvent::LibraryChanged {
+            action: "save".to_string(),
+            uris: vec!["spotify:track:liked".to_string()],
+            provider: None,
+        });
+        assert!(app.current_track_is_liked());
+
+        app.toggle_current_track_like();
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::LibraryUnsave { uri }) if uri == "spotify:track:liked"
+        ));
     }
 
     #[test]
