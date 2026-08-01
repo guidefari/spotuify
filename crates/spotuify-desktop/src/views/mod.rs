@@ -146,7 +146,6 @@ impl UpdateBanner {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Destination {
     NowPlaying,
-    Queue,
     Search,
     LikedSongs,
     Albums,
@@ -160,9 +159,8 @@ pub(crate) enum Destination {
 }
 
 impl Destination {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 11] = [
         Self::NowPlaying,
-        Self::Queue,
         Self::Search,
         Self::LikedSongs,
         Self::Albums,
@@ -178,7 +176,6 @@ impl Destination {
     fn id(self) -> &'static str {
         match self {
             Self::NowPlaying => "now-playing",
-            Self::Queue => "queue",
             Self::Search => "search",
             Self::LikedSongs => "liked-songs",
             Self::Albums => "albums",
@@ -195,7 +192,6 @@ impl Destination {
     fn label(self) -> &'static str {
         match self {
             Self::NowPlaying => "Now Playing",
-            Self::Queue => "Queue",
             Self::Search => "Search",
             Self::LikedSongs => "Liked Songs",
             Self::Albums => "Albums",
@@ -212,7 +208,6 @@ impl Destination {
     fn stub(self) -> &'static str {
         match self {
             Self::NowPlaying => "Current playback details will expand here.",
-            Self::Queue => "Queue management will bind to daemon queue events.",
             Self::Search => "Search tracks, artists, albums, playlists, and episodes.",
             Self::LikedSongs => "Liked songs will reuse the saved tracks daemon request.",
             Self::Albums => "Saved albums will land with the library panes.",
@@ -331,18 +326,17 @@ impl DesktopApp {
         self.devices_loaded = true;
     }
 
-    fn select_destination(&mut self, destination: Destination) {
-        self.selected_destination = if destination == Destination::Queue {
-            self.queue_visible = true;
-            Destination::NowPlaying
-        } else {
-            destination
-        };
-        if destination == Destination::Queue && !self.queue_requested {
+    fn toggle_queue_rail(&mut self) {
+        self.queue_visible = !self.queue_visible;
+        if self.queue_visible && !self.queue_requested {
             self.queue_loading = true;
             self.queue_requested = true;
             self.send_request(Request::QueueGet);
         }
+    }
+
+    fn select_destination(&mut self, destination: Destination) {
+        self.selected_destination = destination;
         if self.selected_destination == Destination::NowPlaying {
             self.request_artwork_for_current_track();
         }
@@ -1818,12 +1812,7 @@ impl DesktopApp {
                 .text_sm()
                 .child(toggle_label)
                 .on_click(cx.listener(|app, _, _, cx| {
-                    app.queue_visible = !app.queue_visible;
-                    if app.queue_visible && !app.queue_requested {
-                        app.queue_loading = true;
-                        app.queue_requested = true;
-                        app.send_request(Request::QueueGet);
-                    }
+                    app.toggle_queue_rail();
                     cx.notify();
                 })),
         );
@@ -4151,39 +4140,34 @@ mod tests {
     fn sidebar_selection_updates_destination() {
         let mut app = DesktopApp::new();
 
-        app.selected_destination = Destination::Queue;
+        app.selected_destination = Destination::Albums;
 
-        assert_eq!(app.selected_destination, Destination::Queue);
+        assert_eq!(app.selected_destination, Destination::Albums);
     }
 
     #[test]
-    fn entering_queue_requests_once_until_snapshot_arrives() {
+    fn sidebar_has_no_queue_destination() {
+        assert!(!Destination::ALL
+            .iter()
+            .any(|destination| destination.label() == "Queue"));
+    }
+
+    #[test]
+    fn opening_queue_rail_requests_once_until_snapshot_arrives() {
         let mut app = DesktopApp::new();
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
         let (slider_tx, _) = watch::channel::<Option<Request>>(None);
         app.set_command_senders(command_tx, slider_tx);
 
-        app.select_destination(Destination::Queue);
-        app.select_destination(Destination::Queue);
+        app.toggle_queue_rail();
+        app.toggle_queue_rail();
+        app.toggle_queue_rail();
 
+        assert!(app.queue_visible);
         assert!(app.queue_loading);
         assert!(app.queue_requested);
         assert!(matches!(command_rx.try_recv(), Ok(Request::QueueGet)));
         assert!(command_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn queue_destination_opens_now_playing_with_visible_rail() {
-        let mut app = DesktopApp::new();
-        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
-        app.set_command_senders(command_tx, slider_tx);
-
-        app.select_destination(Destination::Queue);
-
-        assert_eq!(app.selected_destination, Destination::NowPlaying);
-        assert!(app.queue_visible);
-        assert!(matches!(command_rx.try_recv(), Ok(Request::QueueGet)));
     }
 
     #[test]
