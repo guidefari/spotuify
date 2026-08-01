@@ -89,6 +89,7 @@ pub struct DesktopApp {
     album_tracks_loading: bool,
     album_tracks_error: Option<String>,
     selected_artist: Option<MediaItem>,
+    detail_history: Vec<DetailLocation>,
     artist_albums: Vec<MediaItem>,
     artist_albums_loading: bool,
     artist_albums_error: Option<String>,
@@ -287,6 +288,13 @@ impl Destination {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+enum DetailLocation {
+    Destination(Destination),
+    Album(MediaItem),
+    Artist(MediaItem),
+}
+
 impl DesktopApp {
     pub fn new() -> Self {
         Self {
@@ -350,6 +358,7 @@ impl DesktopApp {
             album_tracks_loading: false,
             album_tracks_error: None,
             selected_artist: None,
+            detail_history: Vec::new(),
             artist_albums: Vec::new(),
             artist_albums_loading: false,
             artist_albums_error: None,
@@ -480,6 +489,68 @@ impl DesktopApp {
         self.playlist_tracks.clear();
         self.playlist_tracks_error = None;
         self.playlist_tracks_loading = false;
+    }
+
+    fn current_detail_location(&self) -> DetailLocation {
+        match self.selected_destination {
+            Destination::Albums => self
+                .selected_album
+                .clone()
+                .map(DetailLocation::Album)
+                .unwrap_or(DetailLocation::Destination(Destination::Albums)),
+            Destination::Artists => self
+                .selected_artist
+                .clone()
+                .map(DetailLocation::Artist)
+                .unwrap_or(DetailLocation::Destination(Destination::Artists)),
+            destination => DetailLocation::Destination(destination),
+        }
+    }
+
+    fn navigate_to_album(&mut self, album: MediaItem) {
+        if album.uri.is_empty() {
+            return;
+        }
+        let current = self.current_detail_location();
+        if current != DetailLocation::Album(album.clone()) {
+            self.detail_history.push(current);
+        }
+        self.selected_destination = Destination::Albums;
+        self.open_album(album);
+    }
+
+    fn navigate_to_artist(&mut self, artist: MediaItem) {
+        if artist.uri.is_empty() {
+            return;
+        }
+        let current = self.current_detail_location();
+        if current != DetailLocation::Artist(artist.clone()) {
+            self.detail_history.push(current);
+        }
+        self.selected_destination = Destination::Artists;
+        self.open_artist(artist);
+    }
+
+    fn navigate_back_from_detail(&mut self) {
+        match self.selected_destination {
+            Destination::Albums => self.close_album(),
+            Destination::Artists => self.close_artist(),
+            _ => {}
+        }
+        let Some(location) = self.detail_history.pop() else {
+            return;
+        };
+        match location {
+            DetailLocation::Destination(destination) => self.selected_destination = destination,
+            DetailLocation::Album(album) => {
+                self.selected_destination = Destination::Albums;
+                self.selected_album = Some(album);
+            }
+            DetailLocation::Artist(artist) => {
+                self.selected_destination = Destination::Artists;
+                self.selected_artist = Some(artist);
+            }
+        }
     }
 
     fn open_album(&mut self, album: MediaItem) {
@@ -1773,7 +1844,7 @@ impl DesktopApp {
                         cx,
                         "Back",
                         cx.listener(|app, _, _, cx| {
-                            app.close_album();
+                            app.navigate_back_from_detail();
                             cx.notify();
                         }),
                     ))
@@ -1788,7 +1859,7 @@ impl DesktopApp {
                     .mt_2()
                     .text_lg()
                     .text_color(rgb(cx.desktop_theme().text_secondary))
-                    .child(media_subtitle(album)),
+                    .child(media_context_links("album-detail", album, cx)),
             );
 
         if self.album_tracks_loading && self.album_tracks.is_empty() {
@@ -1830,7 +1901,7 @@ impl DesktopApp {
                         cx,
                         "Back",
                         cx.listener(|app, _, _, cx| {
-                            app.close_artist();
+                            app.navigate_back_from_detail();
                             cx.notify();
                         }),
                     ))
@@ -1962,26 +2033,20 @@ impl DesktopApp {
                         .child("Artwork loading"),
                 );
             }
-            main = main
-                .child(div().mt_6().text_3xl().child(item.name.clone()))
-                .child(
-                    div()
-                        .mt_2()
-                        .text_lg()
-                        .text_color(rgb(cx.desktop_theme().text_secondary))
-                        .child(if item.subtitle.is_empty() {
-                            item.context.clone()
-                        } else {
-                            item.subtitle.clone()
-                        }),
-                )
-                .child(
-                    div()
-                        .mt_2()
-                        .text_sm()
-                        .text_color(rgb(cx.desktop_theme().text_muted))
-                        .child(summary.progress),
-                );
+            main =
+                main.child(div().mt_6().text_3xl().child(item.name.clone()))
+                    .child(div().mt_2().text_lg().child(media_context_links(
+                        "now-playing",
+                        item,
+                        cx,
+                    )))
+                    .child(
+                        div()
+                            .mt_2()
+                            .text_sm()
+                            .text_color(rgb(cx.desktop_theme().text_muted))
+                            .child(summary.progress),
+                    );
         } else {
             main = main.child(queue_message(cx, "Nothing is playing"));
         }
@@ -2036,6 +2101,7 @@ impl DesktopApp {
             if let Some(item) = &queue.currently_playing {
                 rows = rows.child(queue_rail_row(
                     cx,
+                    "queue-current",
                     "Now playing",
                     item,
                     true,
@@ -2049,8 +2115,15 @@ impl DesktopApp {
                     .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child("NEXT UP"),
             );
-            for item in &queue.items {
-                rows = rows.child(queue_rail_row(cx, "", item, false, &self.artwork_cache));
+            for (index, item) in queue.items.iter().enumerate() {
+                rows = rows.child(queue_rail_row(
+                    cx,
+                    &format!("queue-item-{index}"),
+                    "",
+                    item,
+                    false,
+                    &self.artwork_cache,
+                ));
             }
             if queue.items.is_empty() {
                 rows = rows.child(queue_message(cx, "No upcoming items"));
@@ -2360,6 +2433,10 @@ impl DesktopApp {
         let repeat_state = playback.map(|playback| playback.repeat).unwrap_or_default();
         let is_playing = playback.is_some_and(|playback| playback.is_playing);
         let current_track_like_status = self.current_track_like_status();
+        let footer_context = playback
+            .and_then(|playback| playback.item.as_ref())
+            .map(|item| media_context_links("footer-current-track", item, cx).into_any_element())
+            .unwrap_or_else(|| div().child(summary.subtitle.clone()).into_any_element());
 
         let footer_artwork = self
             .playback
@@ -2416,7 +2493,7 @@ impl DesktopApp {
                                     .text_sm()
                                     .text_color(rgb(cx.desktop_theme().text_secondary))
                                     .truncate()
-                                    .child(summary.subtitle),
+                                    .child(footer_context),
                             ),
                     )
                     .child(footer_like_button(
@@ -2596,7 +2673,8 @@ fn queue_message(cx: &App, message: &str) -> impl IntoElement {
 }
 
 fn queue_rail_row(
-    cx: &App,
+    cx: &mut Context<'_, DesktopApp>,
+    id_prefix: &str,
     label: &str,
     item: &MediaItem,
     current: bool,
@@ -2657,11 +2735,7 @@ fn queue_rail_row(
                     .text_xs()
                     .text_color(rgb(cx.desktop_theme().text_secondary))
                     .truncate()
-                    .child(if item.subtitle.is_empty() {
-                        item.context.clone()
-                    } else {
-                        item.subtitle.clone()
-                    }),
+                    .child(media_context_links(id_prefix, item, cx)),
             ),
     )
 }
@@ -2751,6 +2825,93 @@ fn search_button(cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
         .child("Search")
 }
 
+fn catalog_link(
+    id: String,
+    label: String,
+    target: MediaItem,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
+    div()
+        .id(SharedString::from(id))
+        .cursor_pointer()
+        .text_color(rgb(cx.desktop_theme().accent))
+        .hover(|style| style.text_color(rgb(cx.desktop_theme().accent_hover)))
+        .on_click(cx.listener(move |app, _, _, cx| {
+            match target.kind {
+                MediaKind::Album => app.navigate_to_album(target.clone()),
+                MediaKind::Artist => app.navigate_to_artist(target.clone()),
+                _ => {}
+            }
+            cx.notify();
+        }))
+        .child(label)
+}
+
+fn media_context_links(
+    id_prefix: &str,
+    item: &MediaItem,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
+    let mut links = div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .overflow_hidden()
+        .text_color(rgb(cx.desktop_theme().text_muted));
+    let mut has_content = false;
+
+    if item.artists.is_empty() {
+        if !item.subtitle.is_empty() {
+            links = links.child(div().truncate().child(item.subtitle.clone()));
+            has_content = true;
+        }
+    } else {
+        for (index, artist) in item.artists.iter().enumerate() {
+            if index > 0 {
+                links = links.child("·");
+            }
+            links = links.child(catalog_link(
+                format!("{id_prefix}-artist-{index}"),
+                artist.name.clone(),
+                MediaItem {
+                    name: artist.name.clone(),
+                    uri: artist.uri.clone(),
+                    kind: MediaKind::Artist,
+                    ..MediaItem::default()
+                },
+                cx,
+            ));
+            has_content = true;
+        }
+    }
+
+    if item.kind != MediaKind::Album {
+        if let (Some(album_uri), Some(album_name)) = (&item.album_uri, &item.album) {
+            if has_content {
+                links = links.child("·");
+            }
+            links = links.child(catalog_link(
+                format!("{id_prefix}-album"),
+                album_name.clone(),
+                MediaItem {
+                    name: album_name.clone(),
+                    uri: album_uri.clone(),
+                    kind: MediaKind::Album,
+                    artists: item.artists.clone(),
+                    ..MediaItem::default()
+                },
+                cx,
+            ));
+            has_content = true;
+        }
+    }
+
+    if !has_content {
+        links = links.child(div().truncate().child(media_subtitle(item)));
+    }
+    links
+}
+
 fn search_result_row(
     index: usize,
     item: &MediaItem,
@@ -2762,11 +2923,6 @@ fn search_result_row(
     } else {
         item.name.clone()
     };
-    let subtitle = if item.subtitle.is_empty() {
-        item.kind.to_string()
-    } else {
-        format!("{} · {}", item.subtitle, item.kind)
-    };
     let play_uri = uri.clone();
     let play_title = title.clone();
     let queue_uri = uri.clone();
@@ -2777,6 +2933,8 @@ fn search_result_row(
         MediaKind::Track | MediaKind::Episode | MediaKind::Album | MediaKind::Playlist
     );
     let can_add_to_playlist = matches!(item.kind, MediaKind::Track | MediaKind::Episode);
+    let catalog_target =
+        matches!(item.kind, MediaKind::Album | MediaKind::Artist).then(|| item.clone());
 
     let mut row = div()
         .id(SharedString::from(format!("search-result-{index}")))
@@ -2794,21 +2952,27 @@ fn search_result_row(
             div()
                 .flex_1()
                 .overflow_hidden()
-                .child(
+                .child(if let Some(target) = catalog_target {
+                    catalog_link(
+                        format!("search-result-{index}-catalog-link"),
+                        title,
+                        target,
+                        cx,
+                    )
+                    .into_any_element()
+                } else {
                     div()
                         .text_sm()
                         .text_color(rgb(cx.desktop_theme().text_primary))
                         .truncate()
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .mt_1()
-                        .text_xs()
-                        .text_color(rgb(cx.desktop_theme().text_muted))
-                        .truncate()
-                        .child(subtitle),
-                ),
+                        .child(title)
+                        .into_any_element()
+                })
+                .child(div().mt_1().text_xs().child(media_context_links(
+                    &format!("search-result-{index}"),
+                    item,
+                    cx,
+                ))),
         )
         .child(search_row_action(
             cx,
@@ -2875,20 +3039,19 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
             div()
                 .flex_1()
                 .overflow_hidden()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(cx.desktop_theme().text_primary))
-                        .truncate()
-                        .child(title.clone()),
-                )
+                .child(catalog_link(
+                    format!("album-{index}-link"),
+                    title.clone(),
+                    item.clone(),
+                    cx,
+                ))
                 .child(
                     div()
                         .mt_1()
                         .text_xs()
                         .text_color(rgb(cx.desktop_theme().text_muted))
                         .truncate()
-                        .child(media_subtitle(item)),
+                        .child(media_context_links(&format!("album-{index}"), item, cx)),
                 ),
         );
 
@@ -2903,7 +3066,7 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
                 cx,
                 "Open",
                 cx.listener(move |app, _, _, cx| {
-                    app.open_album(open_album.clone());
+                    app.navigate_to_album(open_album.clone());
                     cx.notify();
                 }),
             ))
@@ -2957,18 +3120,17 @@ fn artist_row(
         .flex()
         .items_center()
         .gap_3()
-        .child(
-            div()
-                .flex_1()
-                .text_sm()
-                .text_color(rgb(cx.desktop_theme().text_primary))
-                .child(title.to_string()),
-        )
+        .child(div().flex_1().child(catalog_link(
+            format!("artist-{index}-link"),
+            title.to_string(),
+            item.clone(),
+            cx,
+        )))
         .child(search_row_action(
             cx,
             "Open",
             cx.listener(move |app, _, _, cx| {
-                app.open_artist(artist.clone());
+                app.navigate_to_artist(artist.clone());
                 cx.notify();
             }),
         ))
@@ -3003,13 +3165,25 @@ fn detail_album_row(
         .items_center()
         .gap_3()
         .child(
-            div().flex_1().child(div().text_sm().child(title)).child(
-                div()
-                    .mt_1()
-                    .text_xs()
-                    .text_color(rgb(cx.desktop_theme().text_muted))
-                    .child(media_subtitle(item)),
-            ),
+            div()
+                .flex_1()
+                .child(catalog_link(
+                    format!("artist-album-{index}-link"),
+                    title,
+                    item.clone(),
+                    cx,
+                ))
+                .child(
+                    div()
+                        .mt_1()
+                        .text_xs()
+                        .text_color(rgb(cx.desktop_theme().text_muted))
+                        .child(media_context_links(
+                            &format!("artist-album-{index}"),
+                            item,
+                            cx,
+                        )),
+                ),
         )
         .child(search_row_action(
             cx,
@@ -3047,13 +3221,6 @@ fn liked_song_row(
         "Untitled song".to_string()
     } else {
         item.name.clone()
-    };
-    let subtitle = if item.subtitle.is_empty() {
-        item.album.clone().unwrap_or_else(|| "Track".to_string())
-    } else if let Some(album) = &item.album {
-        format!("{} · {}", item.subtitle, album)
-    } else {
-        item.subtitle.clone()
     };
     let artwork = artwork_url(item, false)
         .and_then(|url| artwork_cache.get(&url))
@@ -3137,14 +3304,11 @@ fn liked_song_row(
                         .truncate()
                         .child(title),
                 )
-                .child(
-                    div()
-                        .mt_1()
-                        .text_xs()
-                        .text_color(rgb(cx.desktop_theme().text_muted))
-                        .truncate()
-                        .child(subtitle),
-                ),
+                .child(div().mt_1().text_xs().child(media_context_links(
+                    &format!("liked-song-{index}"),
+                    item,
+                    cx,
+                ))),
         )
 }
 
@@ -3182,7 +3346,6 @@ fn history_row(
     } else {
         item.name.clone()
     };
-    let subtitle = media_subtitle(item);
     let play_uri = uri.clone();
     let play_title = title.clone();
     let queue_title = title.clone();
@@ -3199,15 +3362,13 @@ fn history_row(
         .flex()
         .items_center()
         .gap_3()
-        .child(
-            div().flex_1().child(div().text_sm().child(title)).child(
-                div()
-                    .mt_1()
-                    .text_xs()
-                    .text_color(rgb(cx.desktop_theme().text_muted))
-                    .child(subtitle),
-            ),
-        )
+        .child(div().flex_1().child(div().text_sm().child(title)).child(
+            div().mt_1().text_xs().child(media_context_links(
+                &format!("history-{index}"),
+                item,
+                cx,
+            )),
+        ))
         .child(search_row_action(
             cx,
             "Play",
@@ -3285,7 +3446,6 @@ fn playlist_track_row(
     } else {
         item.name.clone()
     };
-    let subtitle = media_subtitle(item);
     let play_uri = uri.clone();
     let play_title = title.clone();
     let queue_title = title.clone();
@@ -3302,15 +3462,13 @@ fn playlist_track_row(
         .flex()
         .items_center()
         .gap_3()
-        .child(
-            div().flex_1().child(div().text_sm().child(title)).child(
-                div()
-                    .mt_1()
-                    .text_xs()
-                    .text_color(rgb(cx.desktop_theme().text_muted))
-                    .child(subtitle),
-            ),
-        )
+        .child(div().flex_1().child(div().text_sm().child(title)).child(
+            div().mt_1().text_xs().child(media_context_links(
+                &format!("playlist-track-{index}"),
+                item,
+                cx,
+            )),
+        ))
         .child(search_row_action(
             cx,
             "Play",
@@ -5652,6 +5810,50 @@ mod tests {
         );
         assert_eq!(app.album_tracks.len(), 1);
         assert!(!app.album_tracks_loading);
+    }
+
+    #[test]
+    fn catalog_navigation_links_preserve_nested_detail_history() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        app.selected_destination = Destination::Search;
+        let album = MediaItem {
+            uri: "spotify:album:album-1".to_string(),
+            name: "Album".to_string(),
+            kind: MediaKind::Album,
+            ..MediaItem::default()
+        };
+        let artist = MediaItem {
+            uri: "spotify:artist:artist-1".to_string(),
+            name: "Artist".to_string(),
+            kind: MediaKind::Artist,
+            ..MediaItem::default()
+        };
+
+        app.navigate_to_album(album.clone());
+        assert_eq!(app.selected_destination, Destination::Albums);
+        assert_eq!(app.selected_album.as_ref(), Some(&album));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::AlbumTracks { album }) if album == "spotify:album:album-1"
+        ));
+
+        app.navigate_to_artist(artist.clone());
+        assert_eq!(app.selected_destination, Destination::Artists);
+        assert_eq!(app.selected_artist.as_ref(), Some(&artist));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::ArtistAlbums { artist }) if artist == "spotify:artist:artist-1"
+        ));
+
+        app.navigate_back_from_detail();
+        assert_eq!(app.selected_destination, Destination::Albums);
+        assert_eq!(app.selected_album.as_ref(), Some(&album));
+        app.navigate_back_from_detail();
+        assert_eq!(app.selected_destination, Destination::Search);
+        assert!(app.selected_album.is_none());
     }
 
     #[test]
