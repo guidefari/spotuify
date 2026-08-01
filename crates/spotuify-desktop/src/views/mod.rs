@@ -88,6 +88,7 @@ pub struct DesktopApp {
     pub(crate) playlist_loading: bool,
     search_input: Option<Entity<SearchInput>>,
     search_scroll: ScrollHandle,
+    liked_songs_scroll: ScrollHandle,
     queue_scroll: ScrollHandle,
     artwork_cache: HashMap<String, Arc<Image>>,
     artwork_requested_urls: HashSet<String>,
@@ -292,6 +293,7 @@ impl DesktopApp {
             playlist_loading: false,
             search_input: None,
             search_scroll: ScrollHandle::new(),
+            liked_songs_scroll: ScrollHandle::new(),
             queue_scroll: ScrollHandle::new(),
             artwork_cache: HashMap::new(),
             artwork_requested_urls: HashSet::new(),
@@ -1402,7 +1404,16 @@ impl DesktopApp {
             return pane.child(queue_message("No liked songs"));
         }
 
-        let mut rows = div().mt_6().flex().flex_col().gap_2();
+        let mut rows = div()
+            .id("liked-songs")
+            .mt_6()
+            .h(px(0.))
+            .flex_1()
+            .overflow_y_scroll()
+            .track_scroll(&self.liked_songs_scroll)
+            .flex()
+            .flex_col()
+            .gap_2();
         for (index, item) in self.liked_songs.iter().enumerate() {
             rows = rows.child(liked_song_row(index, item, cx));
         }
@@ -5507,6 +5518,63 @@ mod gpui_tests {
         assert!(
             scroll.offset().y < px(0.),
             "search result list should move in response to the mouse wheel"
+        );
+    }
+
+    #[gpui::test]
+    fn liked_songs_scroll_with_mouse_wheel(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, _| DesktopApp::new());
+        view.update(cx, |app, cx| {
+            app.state = DesktopState::Connected(ConnectedState {
+                daemon_status: DaemonStatus {
+                    running: true,
+                    socket_path: "test.sock".to_string(),
+                    socket_exists: true,
+                    socket_reachable: true,
+                    stale_socket: false,
+                    daemon_pid: None,
+                    uptime_secs: None,
+                    protocol_version: IPC_PROTOCOL_VERSION,
+                    daemon_version: Some("test".to_string()),
+                    daemon_build_id: None,
+                    audio_health: None,
+                },
+                doctor_report: None,
+                last_event: None,
+            });
+            app.selected_destination = Destination::LikedSongs;
+            app.liked_total = 40;
+            app.liked_songs = (0..40)
+                .map(|index| MediaItem {
+                    name: format!("Liked track {index}"),
+                    uri: spotuify_core::ResourceUri::spotify(MediaKind::Track, format!("{index}"))
+                        .expect("test track uri is valid")
+                        .as_uri(),
+                    kind: MediaKind::Track,
+                    ..MediaItem::default()
+                })
+                .collect();
+            cx.notify();
+        });
+        cx.simulate_resize(size(px(900.), px(650.)));
+        cx.run_until_parked();
+
+        let scroll = cx.read(|app| view.read(app).liked_songs_scroll.clone());
+        assert!(
+            scroll.max_offset().height > px(0.),
+            "liked songs should have overflow after layout"
+        );
+        let bounds = scroll.bounds();
+        cx.simulate_event(ScrollWheelEvent {
+            position: bounds.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-500.))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+
+        assert!(
+            scroll.offset().y < px(0.),
+            "liked songs should move in response to the mouse wheel"
         );
     }
 
