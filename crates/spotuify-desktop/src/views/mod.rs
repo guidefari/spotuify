@@ -822,6 +822,17 @@ impl DesktopApp {
         }
     }
 
+    fn request_artwork_for_liked_songs(&mut self) {
+        let urls: Vec<_> = self
+            .liked_songs
+            .iter()
+            .filter_map(|item| artwork_url(item, false))
+            .collect();
+        for url in urls {
+            self.request_artwork(url);
+        }
+    }
+
     fn request_artwork(&mut self, url: String) {
         if self.artwork_cache.contains_key(&url)
             || self.artwork_requested_urls.contains(&url)
@@ -1023,6 +1034,7 @@ impl DesktopApp {
                 self.library_membership_known_uris
                     .extend(items.iter().map(|item| item.uri.clone()));
                 self.liked_songs = items;
+                self.request_artwork_for_liked_songs();
                 self.liked_total = total;
                 self.liked_offset = offset;
                 self.liked_loading = false;
@@ -1563,16 +1575,16 @@ impl DesktopApp {
 
         let mut rows = div()
             .id("liked-songs")
-            .mt_6()
+            .mt_4()
             .h(px(0.))
             .flex_1()
             .overflow_y_scroll()
             .track_scroll(&self.liked_songs_scroll)
             .flex()
             .flex_col()
-            .gap_2();
+            .gap_1();
         for (index, item) in self.liked_songs.iter().enumerate() {
-            rows = rows.child(liked_song_row(index, item, cx));
+            rows = rows.child(liked_song_row(index, item, &self.artwork_cache, cx));
         }
         pane.child(rows)
     }
@@ -3027,6 +3039,7 @@ fn detail_album_row(
 fn liked_song_row(
     index: usize,
     item: &MediaItem,
+    artwork_cache: &HashMap<String, Arc<Image>>,
     cx: &mut Context<'_, DesktopApp>,
 ) -> impl IntoElement {
     let uri = item.uri.clone();
@@ -3042,6 +3055,9 @@ fn liked_song_row(
     } else {
         item.subtitle.clone()
     };
+    let artwork = artwork_url(item, false)
+        .and_then(|url| artwork_cache.get(&url))
+        .or_else(|| artwork_url(item, true).and_then(|url| artwork_cache.get(&url)));
     let play_uri = uri.clone();
     let play_title = title.clone();
     let queue_uri = uri;
@@ -3050,15 +3066,39 @@ fn liked_song_row(
     div()
         .id(SharedString::from(format!("liked-song-{index}")))
         .w_full()
+        .h(px(56.))
         .rounded_md()
-        .border_1()
-        .border_color(rgb(cx.desktop_theme().border))
-        .bg(rgb(cx.desktop_theme().bg_surface))
-        .px_4()
-        .py_3()
+        .px_2()
         .flex()
         .items_center()
         .gap_3()
+        .hover(|style| style.bg(rgb(cx.desktop_theme().bg_elevated)))
+        .child(
+            div()
+                .size(px(42.))
+                .flex_shrink_0()
+                .rounded_sm()
+                .overflow_hidden()
+                .bg(rgb(cx.desktop_theme().bg_elevated))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when_some(artwork.cloned(), |element, artwork| {
+                    element.child(
+                        img(artwork)
+                            .w_full()
+                            .h_full()
+                            .object_fit(gpui::ObjectFit::Cover),
+                    )
+                })
+                .when(artwork.is_none(), |element| {
+                    element.child(app_icon(
+                        AppIcon::NowPlaying,
+                        17.,
+                        cx.desktop_theme().text_muted,
+                    ))
+                }),
+        )
         .child(
             div()
                 .flex_1()
@@ -3079,9 +3119,11 @@ fn liked_song_row(
                         .child(subtitle),
                 ),
         )
-        .child(search_row_action(
+        .child(liked_song_action(
             cx,
+            format!("liked-song-{index}-play"),
             "Play",
+            AppIcon::Play,
             cx.listener(move |app, _, _, cx| {
                 app.send_playback_command(PlaybackCommand::PlayUri {
                     uri: play_uri.clone(),
@@ -3091,9 +3133,11 @@ fn liked_song_row(
                 cx.notify();
             }),
         ))
-        .child(search_row_action(
+        .child(liked_song_action(
             cx,
-            "Queue",
+            format!("liked-song-{index}-queue"),
+            "Add to queue",
+            AppIcon::Queue,
             cx.listener(move |app, _, _, cx| {
                 app.send_request(Request::QueueAdd {
                     uri: queue_uri.clone(),
@@ -3102,6 +3146,29 @@ fn liked_song_row(
                 cx.notify();
             }),
         ))
+}
+
+fn liked_song_action(
+    cx: &App,
+    id: String,
+    label: &'static str,
+    icon: AppIcon,
+    listener: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(SharedString::from(id))
+        .size(px(34.))
+        .flex_shrink_0()
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .text_color(rgb(cx.desktop_theme().text_secondary))
+        .hover(|style| style.bg(rgb(cx.desktop_theme().button_secondary_hover)))
+        .tooltip(icon_tooltip(label))
+        .on_mouse_up(MouseButton::Left, listener)
+        .child(app_icon(icon, 16., cx.desktop_theme().text_secondary))
 }
 
 fn history_row(
@@ -4930,6 +4997,7 @@ mod tests {
             name: "Saved song".to_string(),
             uri: "spotify:track:saved".to_string(),
             kind: MediaKind::Track,
+            image_url_small: Some("https://images.test/saved-small.jpg".to_string()),
             ..MediaItem::default()
         };
         app.apply_daemon_response(ResponseData::SavedTracksPage {
@@ -4941,6 +5009,10 @@ mod tests {
         assert_eq!(app.liked_total, 101);
         assert_eq!(app.liked_offset, 0);
         assert!(!app.liked_loading);
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::Image { url }) if url == "https://images.test/saved-small.jpg"
+        ));
 
         app.apply_daemon_event(DaemonEvent::LibraryChanged {
             action: "saved".to_string(),
