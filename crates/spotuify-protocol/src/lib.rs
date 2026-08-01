@@ -207,6 +207,11 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider: Option<ProviderId>,
     },
+    /// Check cached saved-track membership without fetching a partial page.
+    /// Returns one result per URI in the same order.
+    LibraryContains {
+        uris: Vec<String>,
+    },
     /// Subscribed podcasts — the user's saved shows (`GET /me/shows`),
     /// served from the synced library cache.
     SavedShows {
@@ -734,6 +739,7 @@ impl Request {
             | Self::QueueAdd { .. }
             | Self::QueueAddMany { .. }
             | Self::SavedTracks { .. }
+            | Self::LibraryContains { .. }
             | Self::SavedShows { .. }
             | Self::ShowEpisodes { .. }
             | Self::EpisodeFeed { .. }
@@ -800,6 +806,7 @@ impl Request {
             Self::QueueAdd { .. } => "queue-add",
             Self::QueueAddMany { .. } => "queue-add-many",
             Self::SavedTracks { .. } => "saved-tracks",
+            Self::LibraryContains { .. } => "library-contains",
             Self::SavedShows { .. } => "saved-shows",
             Self::ShowEpisodes { .. } => "show-episodes",
             Self::PlaylistsList { .. } => "playlists-list",
@@ -1356,6 +1363,13 @@ impl IpcErrorKind {
     }
 }
 
+/// Saved-library membership for one provider track URI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LibraryMembership {
+    pub uri: String,
+    pub saved: bool,
+}
+
 /// One listening session: a run of consecutively-played tracks bounded by a
 /// gap larger than the sessionization threshold. `tracks` are newest-first
 /// within the session; `context_label` is the dominant context (album/playlist
@@ -1469,6 +1483,9 @@ pub enum ResponseData {
         items: Vec<MediaItem>,
         total: u32,
         offset: u32,
+    },
+    LibraryMembership {
+        memberships: Vec<LibraryMembership>,
     },
     ListenSessions {
         sessions: Vec<ListenSession>,
@@ -3852,6 +3869,40 @@ mod tests {
             }
             other => panic!("expected saved-tracks-page, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn library_membership_request_and_response_round_trip() {
+        let request = Request::LibraryContains {
+            uris: vec!["spotify:track:saved".to_string()],
+        };
+        let raw = serde_json::to_string(&request).unwrap();
+        assert!(raw.contains("\"cmd\":\"library-contains\""), "wire: {raw}");
+        assert_eq!(serde_json::from_str::<Request>(&raw).unwrap(), request);
+
+        let response = ResponseData::LibraryMembership {
+            memberships: vec![crate::LibraryMembership {
+                uri: "spotify:track:saved".to_string(),
+                saved: true,
+            }],
+        };
+        let raw = serde_json::to_string(&response).unwrap();
+        assert!(
+            raw.contains("\"kind\":\"library-membership\""),
+            "wire: {raw}"
+        );
+        let ResponseData::LibraryMembership { memberships } =
+            serde_json::from_str::<ResponseData>(&raw).unwrap()
+        else {
+            panic!("expected library membership response")
+        };
+        assert_eq!(
+            memberships,
+            vec![crate::LibraryMembership {
+                uri: "spotify:track:saved".to_string(),
+                saved: true,
+            }]
+        );
     }
 
     #[test]

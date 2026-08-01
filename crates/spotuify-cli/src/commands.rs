@@ -2204,6 +2204,9 @@ pub async fn ipc_library(command: crate::LibraryCommand) -> Result<()> {
                 format,
             )
         }
+        crate::LibraryCommand::Contains { uris, format } => {
+            (Request::LibraryContains { uris }, format)
+        }
         crate::LibraryCommand::Shows {
             limit,
             provider,
@@ -2227,6 +2230,9 @@ pub async fn ipc_library(command: crate::LibraryCommand) -> Result<()> {
         // Saved tracks now answer with a paged variant carrying `total`; the
         // CLI keeps printing the page's items so its output stays stable.
         ResponseData::SavedTracksPage { items, .. } => output::print_media_items(&items, format),
+        ResponseData::LibraryMembership { memberships } => {
+            output::print_library_memberships(&memberships, format)
+        }
         _ => unexpected_response(),
     }
 }

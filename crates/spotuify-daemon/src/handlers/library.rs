@@ -7,7 +7,8 @@ use spotuify_core::{
     ProviderError, RequestContext, ResourceUri,
 };
 use spotuify_protocol::{
-    DaemonEvent, MutationId, OperationKind, OperationSource, Request, ResponseData,
+    DaemonEvent, LibraryMembership, MutationId, OperationKind, OperationSource, Request,
+    ResponseData,
 };
 use uuid::Uuid;
 
@@ -80,6 +81,27 @@ pub(crate) async fn dispatch(
                 }
                 Err(err) => Err(err),
             }
+        }
+        Request::LibraryContains { uris } => {
+            if uris.len() > 50 {
+                return Err(ProviderError::InvalidInput {
+                    field: "uris".to_string(),
+                    message: "library membership accepts at most 50 track URIs".to_string(),
+                }
+                .into());
+            }
+            for uri in &uris {
+                let resource = ResourceUri::parse(uri)?;
+                require_resource_kind(&resource, MediaKind::Track, "uri")?;
+            }
+            let saved = state.store().saved_track_membership(&uris).await?;
+            Ok(ResponseData::LibraryMembership {
+                memberships: uris
+                    .into_iter()
+                    .zip(saved)
+                    .map(|(uri, saved)| LibraryMembership { uri, saved })
+                    .collect(),
+            })
         }
         Request::SavedShows { limit, provider } => {
             let (provider, _) = state.provider_or_default(provider.as_ref()).await?;

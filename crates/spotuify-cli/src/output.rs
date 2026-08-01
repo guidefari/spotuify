@@ -9,8 +9,8 @@ use spotuify_core::{
     ProviderId, Queue, Reminder, StoredAnalyticsEvent, SyncedLyrics,
 };
 use spotuify_protocol::{
-    CacheStatus, CacheSyncSummary, ListenSession, PlaylistCreateReceipt, ReindexStats,
-    ResponseData, SystemDiagnostics,
+    CacheStatus, CacheSyncSummary, LibraryMembership, ListenSession, PlaylistCreateReceipt,
+    ReindexStats, ResponseData, SystemDiagnostics,
 };
 
 // Re-export OutputFormat so existing `crate::output::OutputFormat`
@@ -580,6 +580,56 @@ fn write_devices<W: Write>(
 
 pub fn print_media_items(items: &[MediaItem], format: OutputFormat) -> Result<()> {
     write_media_items(&mut io::stdout(), items, format)
+}
+
+pub fn print_library_memberships(
+    memberships: &[LibraryMembership],
+    format: OutputFormat,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json => print_json(memberships),
+        OutputFormat::Jsonl => {
+            for membership in memberships {
+                print_json_line(membership)?;
+            }
+            Ok(())
+        }
+        OutputFormat::Ids => {
+            for membership in memberships.iter().filter(|membership| membership.saved) {
+                println!("{}", membership.uri);
+            }
+            Ok(())
+        }
+        OutputFormat::Csv => {
+            println!("uri,saved");
+            for membership in memberships {
+                println!(
+                    "{}",
+                    csv_row(&[&membership.uri, &membership.saved.to_string()])
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Table => {
+            let rows = memberships
+                .iter()
+                .map(|membership| {
+                    vec![
+                        if membership.saved { "yes" } else { "no" }.to_string(),
+                        membership.uri.clone(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            write_table(
+                &mut io::stdout(),
+                &["SAVED", "URI"],
+                &rows,
+                &[Column::left(5, 5), Column::left(8, 80)],
+                Style::stdout(),
+            )?;
+            Ok(())
+        }
+    }
 }
 
 /// Section order for an artist's provider-neutral discography grouping.
@@ -2065,6 +2115,9 @@ pub fn print_response_data(
         }
         D::SearchResults { items } | D::MediaItems { items } | D::SavedTracksPage { items, .. } => {
             return print_media_items(items, format)
+        }
+        D::LibraryMembership { memberships } => {
+            return print_library_memberships(memberships, format)
         }
         D::ListenSessions { sessions } => return print_listen_sessions(sessions, format),
         D::SearchStarted {

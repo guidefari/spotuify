@@ -933,6 +933,7 @@ fn is_transport_request(payload: &IpcPayload) -> bool {
             | Request::DevicesList
             | Request::QueueAdd { .. }
             | Request::QueueGet
+            | Request::LibraryContains { .. }
             | Request::LibrarySave { .. }
             | Request::LibraryUnsave { .. }
             | Request::PlaylistAddItems { .. }

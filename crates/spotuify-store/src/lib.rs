@@ -637,6 +637,24 @@ impl Store {
         ))
     }
 
+    /// Return saved-track membership for each URI in input order.
+    pub async fn saved_track_membership(&self, uris: &[String]) -> Result<Vec<bool>> {
+        let mut memberships = Vec::with_capacity(uris.len());
+        for uri in uris {
+            let saved = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(
+                    SELECT 1 FROM library_items
+                    WHERE item_uri = ? AND kind = 'track' AND saved = 1
+                 )",
+            )
+            .bind(uri)
+            .fetch_one(&self.reader)
+            .await?;
+            memberships.push(saved);
+        }
+        Ok(memberships)
+    }
+
     /// Subscribed podcasts (cache-backed `Request::SavedShows`). Saved shows only.
     pub async fn list_saved_shows(
         &self,
@@ -6246,6 +6264,25 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].uri, spotify[1].uri);
         assert_eq!(items[0].freshness.as_deref(), Some("cached"));
+    }
+
+    #[tokio::test]
+    async fn saved_track_membership_preserves_input_order_and_marks_missing_uris() {
+        let store = Store::in_memory().await.unwrap();
+        store
+            .persist_library_items(&[track("spotify:track:saved", "Saved", "Artist")])
+            .await
+            .unwrap();
+
+        let memberships = store
+            .saved_track_membership(&[
+                "spotify:track:missing".to_string(),
+                "spotify:track:saved".to_string(),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(memberships, vec![false, true]);
     }
 
     #[tokio::test]

@@ -56,6 +56,8 @@ pub struct DesktopApp {
     search_version: u64,
     pub(crate) liked_songs: Vec<MediaItem>,
     saved_track_uris: HashSet<String>,
+    library_membership_known_uris: HashSet<String>,
+    library_membership_requested_uris: HashSet<String>,
     pub(crate) liked_total: u32,
     pub(crate) liked_offset: u32,
     pub(crate) liked_loading: bool,
@@ -314,6 +316,8 @@ impl DesktopApp {
             search_version: 0,
             liked_songs: Vec::new(),
             saved_track_uris: HashSet::new(),
+            library_membership_known_uris: HashSet::new(),
+            library_membership_requested_uris: HashSet::new(),
             liked_total: 0,
             liked_offset: 0,
             liked_loading: false,
@@ -757,22 +761,40 @@ impl DesktopApp {
             .map(|item| item.uri.clone())
     }
 
+    fn current_track_like_status(&self) -> Option<bool> {
+        let uri = self.current_track_uri()?;
+        self.library_membership_known_uris
+            .contains(&uri)
+            .then(|| self.saved_track_uris.contains(&uri))
+    }
+
     fn current_track_is_liked(&self) -> bool {
-        self.current_track_uri()
-            .is_some_and(|uri| self.saved_track_uris.contains(&uri))
+        self.current_track_like_status() == Some(true)
+    }
+
+    pub(crate) fn request_current_track_membership(&mut self) {
+        if self.command_tx.is_none() {
+            return;
+        }
+        let Some(uri) = self.current_track_uri() else {
+            return;
+        };
+        if self.library_membership_requested_uris.insert(uri.clone()) {
+            self.send_request(Request::LibraryContains { uris: vec![uri] });
+        }
     }
 
     fn toggle_current_track_like(&mut self) {
         let Some(uri) = self.current_track_uri() else {
             return;
         };
-        if self.saved_track_uris.contains(&uri) {
-            self.send_request(Request::LibraryUnsave { uri });
-        } else {
-            self.send_request(Request::LibrarySave {
+        match self.current_track_like_status() {
+            Some(true) => self.send_request(Request::LibraryUnsave { uri }),
+            Some(false) => self.send_request(Request::LibrarySave {
                 uri: Some(uri),
                 current: false,
-            });
+            }),
+            None => {}
         }
     }
 
@@ -997,13 +1019,27 @@ impl DesktopApp {
                 total,
                 offset,
             } => {
-                self.saved_track_uris = items.iter().map(|item| item.uri.clone()).collect();
+                self.saved_track_uris
+                    .extend(items.iter().map(|item| item.uri.clone()));
+                self.library_membership_known_uris
+                    .extend(items.iter().map(|item| item.uri.clone()));
                 self.liked_songs = items;
                 self.liked_total = total;
                 self.liked_offset = offset;
                 self.liked_loading = false;
                 self.liked_error = None;
                 self.liked_requested = true;
+            }
+            ResponseData::LibraryMembership { memberships } => {
+                for membership in memberships {
+                    self.library_membership_known_uris
+                        .insert(membership.uri.clone());
+                    if membership.saved {
+                        self.saved_track_uris.insert(membership.uri);
+                    } else {
+                        self.saved_track_uris.remove(&membership.uri);
+                    }
+                }
             }
             _ => {}
         }
@@ -1103,6 +1139,7 @@ impl DesktopApp {
                         });
                     self.playback = Some(playback);
                     self.request_artwork_for_current_track();
+                    self.request_current_track_membership();
                     if self.current_track_uri().as_deref() != self.lyrics_track_uri.as_deref() {
                         self.lyrics_requested_uri = None;
                         self.request_lyrics_for_current_track();
@@ -1133,10 +1170,15 @@ impl DesktopApp {
             }
             DaemonEvent::LibraryChanged { action, uris, .. } => {
                 match action.as_str() {
-                    "save" => self.saved_track_uris.extend(uris.iter().cloned()),
+                    "save" => {
+                        self.saved_track_uris.extend(uris.iter().cloned());
+                        self.library_membership_known_uris
+                            .extend(uris.iter().cloned());
+                    }
                     "unsave" => {
                         for uri in &uris {
                             self.saved_track_uris.remove(uri);
+                            self.library_membership_known_uris.insert(uri.clone());
                         }
                     }
                     _ => {}
@@ -2262,10 +2304,7 @@ impl DesktopApp {
         let shuffle_state = playback.is_some_and(|playback| playback.shuffle);
         let repeat_state = playback.map(|playback| playback.repeat).unwrap_or_default();
         let is_playing = playback.is_some_and(|playback| playback.is_playing);
-        let has_current_track = playback
-            .and_then(|playback| playback.item.as_ref())
-            .is_some();
-        let current_track_is_liked = self.current_track_is_liked();
+        let current_track_like_status = self.current_track_like_status();
 
         let footer_artwork = self
             .playback
@@ -2326,8 +2365,8 @@ impl DesktopApp {
                             ),
                     )
                     .child(footer_like_button(
-                        current_track_is_liked,
-                        has_current_track,
+                        current_track_like_status == Some(true),
+                        current_track_like_status.is_some(),
                         cx,
                     )),
             )
@@ -5115,6 +5154,41 @@ mod tests {
     }
 
     #[test]
+    fn current_track_membership_is_requested_once_and_applied_authoritatively() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        app.playback = Some(Playback {
+            item: Some(MediaItem {
+                uri: "spotify:track:already-saved".to_string(),
+                kind: MediaKind::Track,
+                ..MediaItem::default()
+            }),
+            ..Playback::default()
+        });
+
+        app.request_current_track_membership();
+        app.request_current_track_membership();
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::LibraryContains { uris })
+                if uris == vec!["spotify:track:already-saved"]
+        ));
+        assert!(command_rx.try_recv().is_err());
+        app.toggle_current_track_like();
+        assert!(command_rx.try_recv().is_err());
+
+        app.apply_daemon_response(ResponseData::LibraryMembership {
+            memberships: vec![spotuify_protocol::LibraryMembership {
+                uri: "spotify:track:already-saved".to_string(),
+                saved: true,
+            }],
+        });
+        assert!(app.current_track_is_liked());
+    }
+
+    #[test]
     fn footer_like_toggles_from_daemon_owned_library_events() {
         let mut app = DesktopApp::new();
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -5127,6 +5201,12 @@ mod tests {
                 ..MediaItem::default()
             }),
             ..Playback::default()
+        });
+        app.apply_daemon_response(ResponseData::LibraryMembership {
+            memberships: vec![spotuify_protocol::LibraryMembership {
+                uri: "spotify:track:liked".to_string(),
+                saved: false,
+            }],
         });
 
         app.toggle_current_track_like();

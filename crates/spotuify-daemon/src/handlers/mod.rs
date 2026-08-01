@@ -68,6 +68,7 @@ pub(crate) fn categorize(request: &Request) -> Cat {
             Cat::Search
         }
         Request::LibraryList { .. }
+        | Request::LibraryContains { .. }
         | Request::LibrarySave { .. }
         | Request::LibraryUnsave { .. }
         | Request::SavedTracks { .. }

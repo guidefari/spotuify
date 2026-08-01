@@ -926,6 +926,7 @@ fn kind_label(data: &spotuify_protocol::ResponseData) -> &'static str {
         D::Playlists { .. } => "playlists",
         D::MediaItems { .. } => "media_items",
         D::SavedTracksPage { .. } => "saved_tracks_page",
+        D::LibraryMembership { .. } => "library_membership",
         D::ListenSessions { .. } => "listen_sessions",
         D::Logs { .. } => "logs",
         D::Mutation { .. } => "mutation",

@@ -483,6 +483,14 @@ pub enum LibraryCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Check whether provider track URIs are saved in the local library cache.
+    Contains {
+        /// Provider track URIs to check (maximum 50).
+        #[arg(required = true, num_args = 1..=50)]
+        uris: Vec<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Print subscribed podcasts (saved shows).
     Shows {
         #[arg(long, default_value_t = 200)]
