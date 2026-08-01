@@ -50,6 +50,14 @@ pub struct DesktopApp {
     pub(crate) liked_loading: bool,
     pub(crate) liked_error: Option<String>,
     liked_requested: bool,
+    pub(crate) playlists: Vec<Playlist>,
+    pub(crate) playlists_loading: bool,
+    pub(crate) playlists_error: Option<String>,
+    playlists_requested: bool,
+    selected_playlist: Option<Playlist>,
+    playlist_tracks: Vec<MediaItem>,
+    playlist_tracks_loading: bool,
+    playlist_tracks_error: Option<String>,
     search_playlists: Vec<Playlist>,
     playlist_picker_uri: Option<String>,
     pub(crate) playlist_loading: bool,
@@ -227,6 +235,14 @@ impl DesktopApp {
             liked_loading: false,
             liked_error: None,
             liked_requested: false,
+            playlists: Vec::new(),
+            playlists_loading: false,
+            playlists_error: None,
+            playlists_requested: false,
+            selected_playlist: None,
+            playlist_tracks: Vec::new(),
+            playlist_tracks_loading: false,
+            playlist_tracks_error: None,
             search_playlists: Vec::new(),
             playlist_picker_uri: None,
             playlist_loading: false,
@@ -280,6 +296,65 @@ impl DesktopApp {
         }
         if destination == Destination::Lyrics {
             self.request_lyrics_for_current_track();
+        }
+        if destination == Destination::Playlists {
+            self.request_playlists();
+        }
+    }
+
+    fn request_playlists(&mut self) {
+        if self.playlists_requested || self.playlists_loading || self.command_tx.is_none() {
+            return;
+        }
+        self.playlists_requested = true;
+        self.playlists_loading = true;
+        self.playlists_error = None;
+        self.send_request(Request::PlaylistsList);
+    }
+
+    fn refresh_playlists(&mut self) {
+        if self.command_tx.is_none() || self.playlists_loading {
+            return;
+        }
+        self.playlists_requested = true;
+        self.playlists_loading = true;
+        self.playlists_error = None;
+        self.send_request(Request::PlaylistsList);
+    }
+
+    pub(crate) fn fail_playlists(&mut self, message: String) {
+        self.playlists_loading = false;
+        self.playlists_requested = false;
+        self.playlist_loading = false;
+        self.playlists_error = Some(message);
+    }
+
+    fn open_playlist(&mut self, playlist: Playlist) {
+        self.selected_playlist = Some(playlist.clone());
+        self.playlist_tracks.clear();
+        self.playlist_tracks_error = None;
+        self.playlist_tracks_loading = true;
+        self.send_request(Request::PlaylistTracks {
+            playlist: playlist.id,
+            wait: false,
+        });
+    }
+
+    fn close_playlist(&mut self) {
+        self.selected_playlist = None;
+        self.playlist_tracks.clear();
+        self.playlist_tracks_error = None;
+        self.playlist_tracks_loading = false;
+    }
+
+    pub(crate) fn fail_playlist_tracks(&mut self, playlist: &str, message: String) {
+        if self
+            .selected_playlist
+            .as_ref()
+            .is_some_and(|item| item.id == playlist)
+        {
+            self.playlist_tracks_loading = false;
+            self.playlist_tracks_error = Some(message);
         }
     }
 
@@ -474,8 +549,12 @@ impl DesktopApp {
     ) {
         match response {
             ResponseData::Playlists { playlists } => {
+                self.playlists = playlists.clone();
+                self.playlists_error = None;
                 self.search_playlists = playlists;
                 self.playlist_loading = false;
+                self.playlists_loading = false;
+                self.playlists_requested = true;
             }
             ResponseData::Queue { queue } => {
                 self.queue = Some(queue);
@@ -523,6 +602,25 @@ impl DesktopApp {
                 self.liked_requested = true;
             }
             _ => {}
+        }
+    }
+
+    pub(crate) fn apply_playlist_tracks_response(
+        &mut self,
+        playlist: &str,
+        response: ResponseData,
+    ) {
+        if !self
+            .selected_playlist
+            .as_ref()
+            .is_some_and(|selected| selected.id == playlist)
+        {
+            return;
+        }
+        if let ResponseData::MediaItems { items } = response {
+            self.playlist_tracks = items;
+            self.playlist_tracks_loading = false;
+            self.playlist_tracks_error = None;
         }
     }
 
@@ -604,6 +702,9 @@ impl DesktopApp {
             }
             DaemonEvent::LibraryChanged { .. } if self.liked_requested => {
                 self.refresh_liked_songs();
+            }
+            DaemonEvent::PlaylistsChanged { .. } if self.playlists_requested => {
+                self.refresh_playlists();
             }
             DaemonEvent::SearchPage {
                 query,
@@ -771,6 +872,8 @@ impl DesktopApp {
             content.child(self.lyrics_pane())
         } else if self.selected_destination == Destination::LikedSongs {
             content.child(self.liked_songs_pane(cx))
+        } else if self.selected_destination == Destination::Playlists {
+            content.child(self.playlists_pane(cx))
         } else {
             content.child(self.content_pane(state))
         }
@@ -920,6 +1023,100 @@ impl DesktopApp {
         let mut rows = div().mt_6().flex().flex_col().gap_2();
         for (index, item) in self.liked_songs.iter().enumerate() {
             rows = rows.child(liked_song_row(index, item, cx));
+        }
+        pane.child(rows)
+    }
+
+    fn playlists_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+        if let Some(playlist) = &self.selected_playlist {
+            return self.playlist_detail_pane(playlist, cx).into_any_element();
+        }
+
+        let pane = div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .child(div().text_3xl().child("Playlists"))
+            .child(
+                div()
+                    .mt_2()
+                    .text_lg()
+                    .text_color(rgb(0xd6c7ba))
+                    .child("Your playlists"),
+            );
+
+        if self.playlists_loading && self.playlists.is_empty() {
+            return pane
+                .child(queue_message("Loading playlists..."))
+                .into_any_element();
+        }
+        if let Some(error) = &self.playlists_error {
+            return pane
+                .child(queue_message(&format!("Couldn't load playlists: {error}")))
+                .into_any_element();
+        }
+        if self.playlists.is_empty() {
+            return pane.child(queue_message("No playlists")).into_any_element();
+        }
+
+        let mut rows = div().mt_6().flex().flex_col().gap_2();
+        for (index, playlist) in self.playlists.iter().enumerate() {
+            rows = rows.child(playlist_row(index, playlist, cx));
+        }
+        pane.child(rows).into_any_element()
+    }
+
+    fn playlist_detail_pane(
+        &self,
+        playlist: &Playlist,
+        cx: &mut Context<'_, DesktopApp>,
+    ) -> impl IntoElement {
+        let pane = div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(search_row_action(
+                        "Back",
+                        cx.listener(|app, _, _, cx| {
+                            app.close_playlist();
+                            cx.notify();
+                        }),
+                    ))
+                    .child(div().text_3xl().child(playlist.name.clone())),
+            )
+            .child(
+                div()
+                    .mt_2()
+                    .text_lg()
+                    .text_color(rgb(0xd6c7ba))
+                    .child(format!(
+                        "{} tracks · {}",
+                        playlist.tracks_total, playlist.owner
+                    )),
+            );
+
+        if self.playlist_tracks_loading && self.playlist_tracks.is_empty() {
+            return pane.child(queue_message("Loading playlist tracks..."));
+        }
+        if let Some(error) = &self.playlist_tracks_error {
+            return pane.child(queue_message(&format!(
+                "Couldn't load playlist tracks: {error}"
+            )));
+        }
+        if self.playlist_tracks.is_empty() {
+            return pane.child(queue_message("No tracks in this playlist"));
+        }
+
+        let mut rows = div().mt_6().flex().flex_col().gap_2();
+        for (index, item) in self.playlist_tracks.iter().enumerate() {
+            rows = rows.child(playlist_track_row(index, item, cx));
         }
         pane.child(rows)
     }
@@ -1595,6 +1792,106 @@ fn liked_song_row(
                 app.send_request(Request::QueueAdd {
                     uri: queue_uri.clone(),
                 });
+                app.toast = Some(format!("Queued {queue_title}"));
+                cx.notify();
+            }),
+        ))
+}
+
+fn playlist_row(
+    index: usize,
+    playlist: &Playlist,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
+    let playlist = playlist.clone();
+    div()
+        .id(SharedString::from(format!("playlist-{index}")))
+        .w_full()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(0x3b2722))
+        .bg(rgb(0x1b1518))
+        .px_4()
+        .py_3()
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .flex_1()
+                .child(div().text_sm().child(playlist.name.clone()))
+                .child(
+                    div()
+                        .mt_1()
+                        .text_xs()
+                        .text_color(rgb(0x9e929d))
+                        .child(format!(
+                            "{} tracks · {}",
+                            playlist.tracks_total, playlist.owner
+                        )),
+                ),
+        )
+        .child(search_row_action(
+            "Open",
+            cx.listener(move |app, _, _, cx| {
+                app.open_playlist(playlist.clone());
+                cx.notify();
+            }),
+        ))
+}
+
+fn playlist_track_row(
+    index: usize,
+    item: &MediaItem,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
+    let uri = item.uri.clone();
+    let title = if item.name.is_empty() {
+        "Untitled track".to_string()
+    } else {
+        item.name.clone()
+    };
+    let subtitle = media_subtitle(item);
+    let play_uri = uri.clone();
+    let play_title = title.clone();
+    let queue_title = title.clone();
+
+    div()
+        .id(SharedString::from(format!("playlist-track-{index}")))
+        .w_full()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(0x3b2722))
+        .bg(rgb(0x1b1518))
+        .px_4()
+        .py_3()
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(
+            div().flex_1().child(div().text_sm().child(title)).child(
+                div()
+                    .mt_1()
+                    .text_xs()
+                    .text_color(rgb(0x9e929d))
+                    .child(subtitle),
+            ),
+        )
+        .child(search_row_action(
+            "Play",
+            cx.listener(move |app, _, _, cx| {
+                app.send_playback_command(PlaybackCommand::PlayUri {
+                    uri: play_uri.clone(),
+                    context_uri: None,
+                });
+                app.toast = Some(format!("Playing {play_title}"));
+                cx.notify();
+            }),
+        ))
+        .child(search_row_action(
+            "Queue",
+            cx.listener(move |app, _, _, cx| {
+                app.send_request(Request::QueueAdd { uri: uri.clone() });
                 app.toast = Some(format!("Queued {queue_title}"));
                 cx.notify();
             }),
@@ -3303,6 +3600,97 @@ mod tests {
 
         assert!(!app.playlist_loading);
         assert_eq!(app.search_playlists[0].name, "Favorites");
+    }
+
+    #[test]
+    fn entering_playlists_requests_once_until_response_arrives() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+
+        app.select_destination(Destination::Playlists);
+        app.select_destination(Destination::Playlists);
+
+        assert!(app.playlists_loading);
+        assert!(app.playlists_requested);
+        assert!(matches!(command_rx.try_recv(), Ok(Request::PlaylistsList)));
+        assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn playlists_response_populates_list_state() {
+        let mut app = DesktopApp::new();
+        app.playlists_loading = true;
+        app.apply_daemon_response(ResponseData::Playlists {
+            playlists: vec![Playlist {
+                id: "playlist-1".to_string(),
+                name: "Favorites".to_string(),
+                owner: "me".to_string(),
+                tracks_total: 2,
+                image_url: None,
+                snapshot_id: None,
+            }],
+        });
+
+        assert_eq!(app.playlists.len(), 1);
+        assert_eq!(app.playlists[0].name, "Favorites");
+        assert!(!app.playlists_loading);
+        assert!(app.playlists_requested);
+    }
+
+    #[test]
+    fn playlist_tracks_response_populates_selected_detail() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        app.open_playlist(Playlist {
+            id: "playlist-1".to_string(),
+            name: "Favorites".to_string(),
+            owner: "me".to_string(),
+            tracks_total: 1,
+            image_url: None,
+            snapshot_id: None,
+        });
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::PlaylistTracks { playlist, wait: false }) if playlist == "playlist-1"
+        ));
+
+        app.apply_playlist_tracks_response(
+            "playlist-1",
+            ResponseData::MediaItems {
+                items: vec![MediaItem {
+                    name: "Song".to_string(),
+                    uri: "spotify:track:song".to_string(),
+                    kind: MediaKind::Track,
+                    ..MediaItem::default()
+                }],
+            },
+        );
+
+        assert_eq!(app.playlist_tracks.len(), 1);
+        assert_eq!(app.playlist_tracks[0].name, "Song");
+        assert!(!app.playlist_tracks_loading);
+    }
+
+    #[test]
+    fn loaded_playlists_refetch_on_change_event() {
+        let mut app = connected_app();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        app.playlists_requested = true;
+        app.playlists_loading = false;
+
+        app.apply_daemon_event(DaemonEvent::PlaylistsChanged {
+            action: "updated".to_string(),
+            playlist: Some("playlist-1".to_string()),
+        });
+
+        assert!(app.playlists_loading);
+        assert!(matches!(command_rx.try_recv(), Ok(Request::PlaylistsList)));
     }
 
     #[test]

@@ -246,6 +246,10 @@ async fn dispatch_transport_request(
         _ => None,
     };
     let is_playlist_list = matches!(&command, Request::PlaylistsList { .. });
+    let playlist_tracks_request = match &command {
+        Request::PlaylistTracks { playlist, .. } => Some(playlist.clone()),
+        _ => None,
+    };
     let is_queue_get = matches!(&command, Request::QueueGet);
     let is_devices_list = matches!(&command, Request::DevicesList);
     let is_saved_tracks = matches!(&command, Request::SavedTracks { .. });
@@ -255,6 +259,8 @@ async fn dispatch_transport_request(
             let _ = view.update(cx, |app, cx| {
                 if let Some(track_uri) = lyrics_request.as_deref() {
                     app.apply_daemon_response_for_track(data, Some(track_uri));
+                } else if let Some(playlist) = playlist_tracks_request.as_deref() {
+                    app.apply_playlist_tracks_response(playlist, data);
                 } else {
                     app.apply_daemon_response(data);
                 }
@@ -267,7 +273,10 @@ async fn dispatch_transport_request(
                     app.fail_search(query, *version, message.clone());
                 }
                 if is_playlist_list {
-                    app.playlist_loading = false;
+                    app.fail_playlists(message.clone());
+                }
+                if let Some(playlist) = &playlist_tracks_request {
+                    app.fail_playlist_tracks(playlist, message.clone());
                 }
                 if is_queue_get {
                     app.queue_loading = false;
@@ -292,7 +301,10 @@ async fn dispatch_transport_request(
                     app.fail_search(query, *version, error.to_string());
                 }
                 if is_playlist_list {
-                    app.playlist_loading = false;
+                    app.fail_playlists(error.to_string());
+                }
+                if let Some(playlist) = &playlist_tracks_request {
+                    app.fail_playlist_tracks(playlist, error.to_string());
                 }
                 if is_queue_get {
                     app.queue_loading = false;
