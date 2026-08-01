@@ -6,7 +6,7 @@ use gpui::{
     MouseDownEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollHandle, ShapedLine,
     SharedString, Style, TextRun, UTF16Selection, WeakEntity, Window,
 };
-use spotuify_core::{MediaItem, MediaKind, Playback, Playlist, RepeatMode};
+use spotuify_core::{Device, MediaItem, MediaKind, Playback, Playlist, Queue};
 use spotuify_launcher::SocketState;
 use spotuify_protocol::{
     DaemonEvent, DaemonStatus, DoctorReport, PlaybackCommand, ReceiptId, Request, ResponseData,
@@ -20,6 +20,12 @@ pub struct DesktopApp {
     pub(crate) state: DesktopState,
     pub(crate) selected_destination: Destination,
     pub(crate) playback: Option<Playback>,
+    pub(crate) queue: Option<Queue>,
+    pub(crate) queue_loading: bool,
+    pub(crate) queue_requested: bool,
+    pub(crate) devices: Vec<Device>,
+    pub(crate) devices_loading: bool,
+    pub(crate) devices_loaded: bool,
     pub(crate) update_banner: Option<UpdateBanner>,
     pub(crate) toast: Option<String>,
     pub(crate) command_tx: Option<UnboundedSender<Request>>,
@@ -174,6 +180,12 @@ impl DesktopApp {
             state: DesktopState::Booting,
             selected_destination: Destination::NowPlaying,
             playback: None,
+            queue: None,
+            queue_loading: false,
+            queue_requested: false,
+            devices: Vec::new(),
+            devices_loading: false,
+            devices_loaded: false,
             update_banner: None,
             toast: None,
             command_tx: None,
@@ -208,6 +220,47 @@ impl DesktopApp {
 
     pub(crate) fn set_search_sender(&mut self, search_tx: watch::Sender<Option<SearchRequest>>) {
         self.search_tx = Some(search_tx);
+    }
+
+    pub(crate) fn set_queue_seed(&mut self, queue: Queue) {
+        self.queue = Some(queue);
+        self.queue_loading = false;
+        self.queue_requested = true;
+    }
+
+    pub(crate) fn set_devices_seed(&mut self, devices: Vec<Device>) {
+        self.devices = devices;
+        self.devices_loading = false;
+        self.devices_loaded = true;
+    }
+
+    fn select_destination(&mut self, destination: Destination) {
+        self.selected_destination = destination;
+        if destination == Destination::Queue && !self.queue_requested {
+            self.queue_loading = true;
+            self.queue_requested = true;
+            self.send_request(Request::QueueGet);
+        }
+        if destination == Destination::Devices {
+            self.request_devices();
+        }
+    }
+
+    pub(crate) fn request_devices(&mut self) {
+        if self.devices_loaded || self.devices_loading {
+            return;
+        }
+        if self.command_tx.is_none() {
+            self.toast = Some("Transport is not connected to the daemon".to_string());
+            return;
+        }
+        self.devices_loading = true;
+        self.send_request(Request::DevicesList);
+    }
+
+    fn transfer_to_device(&mut self, device: String) {
+        self.send_request(Request::DeviceTransfer { device });
+        self.toast = Some("Transferring playback".to_string());
     }
 
     fn send_request(&mut self, request: Request) {
@@ -277,9 +330,8 @@ impl DesktopApp {
         self.send_request(Request::SearchStream {
             query,
             scope: SearchScopeData::All,
-            source: SearchSourceData::legacy_default_remote(),
+            source: SearchSourceData::Spotify,
             version: self.search_version,
-            provider: None,
         });
     }
 
@@ -287,7 +339,7 @@ impl DesktopApp {
         self.playlist_picker_uri = Some(uri);
         self.playlist_loading = true;
         self.search_playlists.clear();
-        self.send_request(Request::PlaylistsList { provider: None });
+        self.send_request(Request::PlaylistsList);
     }
 
     fn add_search_result_to_playlist(&mut self, playlist: String) {
@@ -298,15 +350,27 @@ impl DesktopApp {
         self.send_request(Request::PlaylistAddItems {
             playlist,
             uris: vec![uri],
-            provider: None,
         });
         self.toast = Some("Adding track to playlist".to_string());
     }
 
     pub(crate) fn apply_daemon_response(&mut self, response: ResponseData) {
-        if let ResponseData::Playlists { playlists } = response {
-            self.search_playlists = playlists;
-            self.playlist_loading = false;
+        match response {
+            ResponseData::Playlists { playlists } => {
+                self.search_playlists = playlists;
+                self.playlist_loading = false;
+            }
+            ResponseData::Queue { queue } => {
+                self.queue = Some(queue);
+                self.queue_loading = false;
+                self.queue_requested = true;
+            }
+            ResponseData::Devices { devices } => {
+                self.devices = devices;
+                self.devices_loading = false;
+                self.devices_loaded = true;
+            }
+            _ => {}
         }
     }
 
@@ -361,6 +425,23 @@ impl DesktopApp {
                 }
                 if should_toast_playback_action(&action) {
                     self.toast = Some(format!("Playback updated: {action}"));
+                }
+            }
+            DaemonEvent::QueueChanged {
+                queue: Some(queue), ..
+            } => {
+                self.queue = Some(queue);
+                self.queue_loading = false;
+                self.queue_requested = true;
+            }
+            DaemonEvent::DevicesChanged {
+                action, devices, ..
+            } => {
+                if let Some(devices) = devices {
+                    self.set_devices_seed(devices);
+                }
+                if !matches!(action.as_str(), "snapshot" | "synced" | "sync" | "poll") {
+                    self.toast = Some(format!("Devices updated: {action}"));
                 }
             }
             DaemonEvent::SearchPage {
@@ -521,6 +602,10 @@ impl DesktopApp {
 
         content = if self.selected_destination == Destination::Search {
             content.child(self.search_pane(cx))
+        } else if self.selected_destination == Destination::Queue {
+            content.child(self.queue_pane(state))
+        } else if self.selected_destination == Destination::Devices {
+            content.child(self.devices_pane(cx))
         } else {
             content.child(self.content_pane(state))
         }
@@ -640,6 +725,122 @@ impl DesktopApp {
             )
     }
 
+    fn queue_pane(&self, _state: &ConnectedState) -> impl IntoElement {
+        let mut pane = div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .child(div().text_3xl().child("Queue"))
+            .child(
+                div()
+                    .mt_2()
+                    .text_lg()
+                    .text_color(rgb(0xd6c7ba))
+                    .child("What plays next"),
+            );
+
+        if self.queue_loading && self.queue.is_none() {
+            return pane.child(queue_message("Loading queue..."));
+        }
+
+        let Some(queue) = &self.queue else {
+            return pane.child(queue_message("Queue is not loaded yet"));
+        };
+
+        let current = queue
+            .currently_playing
+            .as_ref()
+            .map(queue_item_label)
+            .unwrap_or_else(|| "Nothing is currently playing".to_string());
+        pane = pane.child(queue_section("CURRENT", current, false));
+
+        if queue.items.is_empty() {
+            pane.child(queue_message("No upcoming items"))
+        } else {
+            let mut upcoming = div().mt_4().flex().flex_col().gap_2();
+            for (index, item) in queue.items.iter().enumerate() {
+                upcoming = upcoming.child(queue_section(
+                    &format!("{}", index + 1),
+                    queue_item_label(item),
+                    true,
+                ));
+            }
+            pane.child(upcoming)
+        }
+    }
+
+    fn devices_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+        let pane = div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .child(div().text_3xl().child("Devices"))
+            .child(
+                div()
+                    .mt_2()
+                    .text_lg()
+                    .text_color(rgb(0xd6c7ba))
+                    .child("Spotify Connect devices"),
+            );
+
+        if self.devices_loading {
+            return pane.child(queue_message("Loading devices..."));
+        }
+        if self.devices.is_empty() {
+            return pane.child(queue_message("No devices available"));
+        }
+
+        let mut rows = div().mt_4().flex().flex_col().gap_2();
+        for device in &self.devices {
+            let device_id = device.id.clone();
+            let status = if device.is_restricted {
+                "Restricted"
+            } else if device.is_active {
+                "Active"
+            } else {
+                "Available"
+            };
+            let mut row = div()
+                .id(SharedString::from(format!("device-{}", device.name)))
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(0x3b2722))
+                .px_4()
+                .py_3()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .flex_1()
+                        .child(div().text_sm().child(device.name.clone()))
+                        .child(
+                            div()
+                                .mt_1()
+                                .text_xs()
+                                .text_color(rgb(0x9e929d))
+                                .child(device.kind.clone()),
+                        ),
+                )
+                .child(div().text_xs().text_color(rgb(0xb9aca4)).child(status));
+            if let Some(device_id) = device_id {
+                if !device.is_active && !device.is_restricted {
+                    row = row.child(search_row_action(
+                        "Transfer",
+                        cx.listener(move |app, _, _, cx| {
+                            app.transfer_to_device(device_id.clone());
+                            cx.notify();
+                        }),
+                    ));
+                }
+            }
+            rows = rows.child(row);
+        }
+        pane.child(rows)
+    }
+
     fn search_pane(&self, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let input = self
             .search_input
@@ -736,7 +937,7 @@ impl DesktopApp {
         let playback = self.playback.as_ref();
         let shuffle_state = playback.is_some_and(|playback| playback.shuffle);
         let repeat_state = playback
-            .map(|playback| playback.repeat.label())
+            .map(|playback| playback.repeat.as_str())
             .unwrap_or("off");
         let is_playing = playback.is_some_and(|playback| playback.is_playing);
 
@@ -823,8 +1024,7 @@ impl DesktopApp {
                                 "repeat",
                                 format!("Repeat {repeat_state}"),
                                 PlaybackCommand::Repeat {
-                                    state: RepeatMode::parse(next_repeat_state(repeat_state))
-                                        .unwrap_or_default(),
+                                    state: next_repeat_state(repeat_state).to_string(),
                                 },
                                 cx,
                             )),
@@ -866,6 +1066,43 @@ impl DesktopApp {
     }
 }
 
+fn queue_message(message: &str) -> impl IntoElement {
+    div()
+        .mt_6()
+        .rounded_lg()
+        .border_1()
+        .border_color(rgb(0x3b2722))
+        .bg(rgb(0x1b1518))
+        .p_5()
+        .text_color(rgb(0xb9aca4))
+        .child(message.to_string())
+}
+
+fn queue_section(label: &str, item: String, upcoming: bool) -> impl IntoElement {
+    div()
+        .mt_6()
+        .rounded_lg()
+        .border_1()
+        .border_color(rgb(if upcoming { 0x3b2722 } else { 0x6f3a22 }))
+        .bg(rgb(if upcoming { 0x1b1518 } else { 0x24171a }))
+        .p_5()
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(0xd9ac92))
+                .child(label.to_string()),
+        )
+        .child(div().mt_2().text_lg().child(item))
+}
+
+fn queue_item_label(item: &MediaItem) -> String {
+    if item.subtitle.is_empty() {
+        item.name.clone()
+    } else {
+        format!("{} · {}", item.name, item.subtitle)
+    }
+}
+
 fn nav_item(
     destination: Destination,
     selected: bool,
@@ -886,7 +1123,7 @@ fn nav_item(
         .child(destination.label())
         .hover(|style| style.bg(rgb(0x2f211f)))
         .on_click(cx.listener(move |app, _, _, cx| {
-            app.selected_destination = destination;
+            app.select_destination(destination);
             cx.notify();
         }))
 }
@@ -2114,8 +2351,6 @@ fn event_label(event: &DaemonEvent) -> String {
         DaemonEvent::SchemaCompat { endpoint, .. } => format!("schema-compat:{endpoint}"),
         DaemonEvent::PlayerReady { name, .. } => format!("player-ready:{name}"),
         DaemonEvent::PlayerDegraded { .. } => "player-degraded".to_string(),
-        DaemonEvent::ProviderPolicy { .. } => "provider-policy".to_string(),
-        DaemonEvent::ProviderPolicyCleared { .. } => "provider-policy-cleared".to_string(),
         DaemonEvent::PremiumRequired => "premium-required".to_string(),
         DaemonEvent::SessionDisconnected { .. } => "session-disconnected".to_string(),
         DaemonEvent::PlayerFailed { .. } => "player-failed".to_string(),
@@ -2138,7 +2373,6 @@ fn event_label(event: &DaemonEvent) -> String {
         DaemonEvent::UpdateAvailable { latest_version, .. } => {
             format!("update-available:{latest_version}")
         }
-        DaemonEvent::AuthMigrationRecommended { .. } => "auth-migration-recommended".to_string(),
         DaemonEvent::Unknown => "unknown".to_string(),
     };
 
@@ -2213,6 +2447,135 @@ mod tests {
     }
 
     #[test]
+    fn entering_queue_requests_once_until_snapshot_arrives() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+
+        app.select_destination(Destination::Queue);
+        app.select_destination(Destination::Queue);
+
+        assert!(app.queue_loading);
+        assert!(app.queue_requested);
+        assert!(matches!(command_rx.try_recv(), Ok(Request::QueueGet)));
+        assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn queue_response_and_event_replace_snapshot_authoritatively() {
+        let mut app = connected_app();
+        let first = MediaItem {
+            name: "First".to_string(),
+            uri: "spotify:track:first".to_string(),
+            ..MediaItem::default()
+        };
+        let second = MediaItem {
+            name: "Second".to_string(),
+            uri: "spotify:track:second".to_string(),
+            ..MediaItem::default()
+        };
+
+        app.apply_daemon_response(ResponseData::Queue {
+            queue: Queue {
+                items: vec![first.clone()],
+                ..Queue::default()
+            },
+        });
+        assert_eq!(app.queue.as_ref().unwrap().items, vec![first]);
+        assert!(!app.queue_loading);
+
+        app.apply_daemon_event(DaemonEvent::QueueChanged {
+            action: "synced".to_string(),
+            uris: vec![second.uri.clone()],
+            queue: Some(Queue {
+                items: vec![second.clone()],
+                ..Queue::default()
+            }),
+        });
+        assert_eq!(app.queue.as_ref().unwrap().items, vec![second]);
+    }
+
+    #[test]
+    fn client_seed_sets_queue_snapshot() {
+        let mut app = DesktopApp::new();
+        let item = MediaItem {
+            name: "Seeded".to_string(),
+            ..MediaItem::default()
+        };
+
+        app.set_queue_seed(Queue {
+            currently_playing: Some(item.clone()),
+            ..Queue::default()
+        });
+
+        assert_eq!(app.queue.as_ref().unwrap().currently_playing, Some(item));
+        assert!(app.queue_requested);
+        assert!(!app.queue_loading);
+    }
+
+    fn test_device(name: &str, active: bool) -> Device {
+        Device {
+            id: Some(format!("{name}-id")),
+            name: name.to_string(),
+            kind: "Computer".to_string(),
+            is_active: active,
+            is_restricted: false,
+            volume_percent: Some(50),
+            supports_volume: true,
+        }
+    }
+
+    #[test]
+    fn devices_seed_response_and_event_update_snapshot() {
+        let mut app = DesktopApp::new();
+        app.set_devices_seed(vec![test_device("seed", true)]);
+        assert!(app.devices_loaded);
+        assert_eq!(app.devices[0].name, "seed");
+
+        app.apply_daemon_response(ResponseData::Devices {
+            devices: vec![test_device("response", false)],
+        });
+        assert_eq!(app.devices[0].name, "response");
+        assert!(!app.devices_loading);
+
+        app.apply_daemon_event(DaemonEvent::DevicesChanged {
+            action: "synced".to_string(),
+            devices: Some(vec![test_device("event", false)]),
+        });
+        assert_eq!(app.devices[0].name, "event");
+    }
+
+    #[test]
+    fn entering_devices_requests_once_until_snapshot_arrives() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+
+        app.select_destination(Destination::Devices);
+        app.select_destination(Destination::Devices);
+
+        assert!(app.devices_loading);
+        assert!(matches!(command_rx.try_recv(), Ok(Request::DevicesList)));
+        assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn device_transfer_uses_protocol_request() {
+        let mut app = connected_app();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+
+        app.transfer_to_device("phone-id".to_string());
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::DeviceTransfer { device }) if device == "phone-id"
+        ));
+    }
+
+    #[test]
     fn playback_event_updates_footer_state() {
         let mut app = connected_app();
         let playback = Playback {
@@ -2225,7 +2588,7 @@ mod tests {
             }),
             is_playing: true,
             progress_ms: 61_000,
-            repeat: RepeatMode::Context,
+            repeat: "context".to_string(),
             ..Playback::default()
         };
 
@@ -2247,14 +2610,14 @@ mod tests {
             action: "optimistic-shuffle".to_string(),
             playback: Some(Playback {
                 shuffle: true,
-                repeat: RepeatMode::Track,
+                repeat: "track".to_string(),
                 ..Playback::default()
             }),
         });
 
         let playback = app.playback.expect("playback event should seed state");
         assert!(playback.shuffle);
-        assert_eq!(playback.repeat, RepeatMode::Track);
+        assert_eq!(playback.repeat, "track");
     }
 
     #[test]
@@ -2327,10 +2690,9 @@ mod tests {
             Ok(Request::SearchStream {
                 query,
                 scope: SearchScopeData::All,
-                source: SearchSourceData::Remote(source_provider),
+                source: SearchSourceData::Spotify,
                 version: 1,
-                provider: None,
-            }) if query == "radiohead" && source_provider.as_str() == "spotify"
+            }) if query == "radiohead"
         ));
     }
 
@@ -2352,7 +2714,6 @@ mod tests {
             offset: 0,
             version: 1,
             items: vec![item.clone()],
-            provider: None,
         });
         assert!(app.search_results.is_empty());
 
@@ -2363,14 +2724,12 @@ mod tests {
             offset: 0,
             version: 2,
             items: vec![item],
-            provider: None,
         });
         assert_eq!(app.search_results.len(), 1);
 
         app.apply_daemon_event(DaemonEvent::SearchComplete {
             query: "radiohead".to_string(),
             version: 2,
-            provider: None,
         });
         assert!(!app.search_loading);
     }
@@ -2388,7 +2747,6 @@ mod tests {
             kind: Some(MediaKind::Playlist),
             offset: Some(0),
             message: "playlist page failed".to_string(),
-            provider: None,
         });
         assert!(app.search_loading);
         assert_eq!(app.search_error.as_deref(), Some("playlist page failed"));
@@ -2409,7 +2767,6 @@ mod tests {
             offset: 0,
             version: 1,
             items: vec![show],
-            provider: None,
         });
         app.apply_daemon_event(DaemonEvent::SearchPage {
             query: app.search_query.clone(),
@@ -2417,7 +2774,6 @@ mod tests {
             offset: 0,
             version: 1,
             items: vec![track],
-            provider: None,
         });
 
         assert_eq!(app.search_results[0].kind, MediaKind::Track);
@@ -2425,7 +2781,6 @@ mod tests {
         app.apply_daemon_event(DaemonEvent::SearchComplete {
             query: app.search_query.clone(),
             version: 1,
-            provider: None,
         });
         assert!(!app.search_loading);
     }
@@ -2443,7 +2798,7 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 1,
                 image_url: None,
-                version_token: None,
+                snapshot_id: None,
             }],
         });
 
@@ -2682,10 +3037,6 @@ mod tests {
                 recent_items: 0,
                 library_items: 0,
                 media_items: 0,
-                provider: None,
-                status: Default::default(),
-                error: None,
-                provider_outcomes: Vec::new(),
             },
         });
 
