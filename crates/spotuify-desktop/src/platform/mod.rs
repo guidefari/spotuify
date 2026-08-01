@@ -1,6 +1,9 @@
 pub mod macos;
 
-use gpui::{AppContext, Application, WindowOptions};
+use gpui::{
+    actions, App, AppContext, Application, KeyBinding, Menu, MenuItem, SystemMenuType,
+    WindowOptions,
+};
 use spotuify_core::{Device, Playback, Queue};
 use spotuify_launcher::{daemon_status, ensure_daemon_running, inspect_socket_state, SocketState};
 use spotuify_protocol::{
@@ -15,6 +18,8 @@ use crate::{
     theme,
     views::{DesktopApp, SearchRequest},
 };
+
+actions!(spotuify, [OpenPreferences, Quit]);
 
 pub fn run() {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -31,6 +36,19 @@ pub fn run() {
     let _runtime_guard = runtime.enter();
 
     Application::new().with_assets(Assets).run(move |app| {
+        app.activate(true);
+        app.bind_keys([KeyBinding::new("cmd-,", OpenPreferences, None)]);
+        app.on_action(quit);
+        app.set_menus(vec![Menu {
+            name: "Spotuify".into(),
+            items: vec![
+                MenuItem::action("Settings…", OpenPreferences),
+                MenuItem::separator(),
+                MenuItem::os_submenu("Services", SystemMenuType::Services),
+                MenuItem::separator(),
+                MenuItem::action("Quit Spotuify", Quit),
+            ],
+        }]);
         if let Err(error) = app
             .text_system()
             .add_fonts(vec![Cow::Borrowed(include_bytes!(
@@ -54,6 +72,10 @@ pub fn run() {
             view
         });
     });
+}
+
+fn quit(_: &Quit, cx: &mut App) {
+    cx.quit();
 }
 
 async fn bootstrap(view: gpui::Entity<DesktopApp>, mut cx: gpui::AsyncApp) {

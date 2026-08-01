@@ -1,6 +1,7 @@
 use crate::{
     icons::{icon as app_icon, tooltip as icon_tooltip, AppIcon},
-    theme::{self, ActiveTheme},
+    platform::OpenPreferences,
+    theme::{self, ActiveTheme, ThemePreference},
 };
 use gpui::prelude::*;
 use gpui::{
@@ -206,6 +207,7 @@ pub(crate) enum Destination {
     Notifications,
     Devices,
     Lyrics,
+    Preferences,
 }
 
 impl Destination {
@@ -236,6 +238,7 @@ impl Destination {
             Self::Notifications => "notifications",
             Self::Devices => "devices",
             Self::Lyrics => "lyrics",
+            Self::Preferences => "preferences",
         }
     }
 
@@ -252,6 +255,7 @@ impl Destination {
             Self::Notifications => "Notifications",
             Self::Devices => "Devices",
             Self::Lyrics => "Lyrics",
+            Self::Preferences => "Preferences",
         }
     }
 
@@ -268,6 +272,7 @@ impl Destination {
             Self::Notifications => AppIcon::Notifications,
             Self::Devices => AppIcon::Devices,
             Self::Lyrics => AppIcon::Lyrics,
+            Self::Preferences => AppIcon::Preferences,
         }
     }
 
@@ -284,6 +289,7 @@ impl Destination {
             Self::Notifications => "Reminder and notification inbox state will appear here.",
             Self::Devices => "Device selection will bind to daemon devices state.",
             Self::Lyrics => "Synced lyrics for the current track.",
+            Self::Preferences => "Desktop appearance and behavior.",
         }
     }
 }
@@ -441,6 +447,32 @@ impl DesktopApp {
             self.queue_requested = true;
             self.send_request(Request::QueueGet);
         }
+    }
+
+    fn show_preferences(&mut self) {
+        self.select_destination(Destination::Preferences);
+    }
+
+    fn open_preferences(
+        &mut self,
+        _: &OpenPreferences,
+        _: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.show_preferences();
+        cx.notify();
+    }
+
+    fn choose_theme_preference(
+        &mut self,
+        preference: ThemePreference,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Err(error) = theme::choose_preference(preference, window.appearance(), cx) {
+            self.toast = Some(format!("Couldn't save appearance preference: {error}"));
+        }
+        cx.notify();
     }
 
     fn select_destination(&mut self, destination: Destination) {
@@ -1611,6 +1643,8 @@ impl DesktopApp {
             content.child(self.history_pane(cx))
         } else if self.selected_destination == Destination::Playlists {
             content.child(self.playlists_pane(cx))
+        } else if self.selected_destination == Destination::Preferences {
+            content.child(self.preferences_pane(cx))
         } else {
             content.child(self.content_pane(state, cx))
         }
@@ -1625,6 +1659,7 @@ impl DesktopApp {
             .text_color(rgb(cx.desktop_theme().text_primary))
             .flex()
             .flex_row()
+            .on_action(cx.listener(Self::open_preferences))
             .child(self.sidebar(cx))
             .child(content);
 
@@ -1696,6 +1731,54 @@ impl DesktopApp {
         }
 
         nav
+    }
+
+    fn preferences_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+        let selected = theme::preference(cx);
+        let family = theme::ThemeFamily::CATPPUCCIN;
+        let mut choices = div().mt_7().flex().gap_4();
+        for preference in ThemePreference::ALL {
+            let palette = match preference {
+                ThemePreference::System => *cx.desktop_theme(),
+                ThemePreference::Light => family.light,
+                ThemePreference::Dark => family.dark,
+            };
+            choices = choices.child(theme_preference_card(
+                preference,
+                preference == selected,
+                palette,
+                cx,
+            ));
+        }
+
+        div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .child(div().text_3xl().child("Preferences"))
+            .child(
+                div()
+                    .mt_2()
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
+                    .child("A small, system-native set of desktop preferences."),
+            )
+            .child(
+                div()
+                    .mt_10()
+                    .text_size(px(10.))
+                    .text_color(rgb(cx.desktop_theme().accent))
+                    .child("APPEARANCE"),
+            )
+            .child(div().mt_2().text_lg().child("Color mode"))
+            .child(
+                div()
+                    .mt_1()
+                    .text_sm()
+                    .text_color(rgb(cx.desktop_theme().text_muted))
+                    .child("Catppuccin Latte for light mode and Mocha for dark mode."),
+            )
+            .child(choices)
     }
 
     fn content_pane(
@@ -2983,6 +3066,80 @@ fn image_format(bytes: &[u8]) -> Option<ImageFormat> {
     } else {
         None
     }
+}
+
+fn theme_preference_card(
+    preference: ThemePreference,
+    selected: bool,
+    palette: theme::Palette,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
+    let subtitle = match preference {
+        ThemePreference::System => "Follow macOS",
+        ThemePreference::Light => "Catppuccin Latte",
+        ThemePreference::Dark => "Catppuccin Mocha",
+    };
+    let mut swatches = div().mt_5().flex().gap_2();
+    for color in [
+        palette.bg_root,
+        palette.bg_elevated,
+        palette.text_primary,
+        palette.accent,
+        palette.error,
+    ] {
+        swatches = swatches.child(
+            div()
+                .size(px(22.))
+                .rounded_full()
+                .border_1()
+                .border_color(rgb(palette.border_strong))
+                .bg(rgb(color)),
+        );
+    }
+
+    div()
+        .id(SharedString::from(format!(
+            "theme-{}",
+            preference.label().to_ascii_lowercase()
+        )))
+        .w(px(210.))
+        .min_h(px(150.))
+        .p_5()
+        .rounded_xl()
+        .border_1()
+        .border_color(rgb(cx.desktop_theme().border))
+        .bg(rgb(cx.desktop_theme().bg_surface))
+        .cursor_pointer()
+        .when(selected, |card| {
+            card.border_2().border_color(rgb(cx.desktop_theme().accent))
+        })
+        .hover(|style| style.bg(rgb(cx.desktop_theme().bg_elevated)))
+        .on_click(cx.listener(move |app, _, window, cx| {
+            app.choose_theme_preference(preference, window, cx);
+        }))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(div().text_lg().child(preference.label()))
+                .when(selected, |row| {
+                    row.child(
+                        div()
+                            .text_size(px(9.))
+                            .text_color(rgb(cx.desktop_theme().accent))
+                            .child("SELECTED"),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .mt_2()
+                .text_xs()
+                .text_color(rgb(cx.desktop_theme().text_muted))
+                .child(subtitle),
+        )
+        .child(swatches)
 }
 
 fn nav_item(
@@ -5164,6 +5321,15 @@ mod tests {
         app.selected_destination = Destination::Albums;
 
         assert_eq!(app.selected_destination, Destination::Albums);
+    }
+
+    #[test]
+    fn preferences_opens_without_becoming_sidebar_destination() {
+        let mut app = DesktopApp::new();
+        app.show_preferences();
+
+        assert_eq!(app.selected_destination, Destination::Preferences);
+        assert!(!Destination::ALL.contains(&Destination::Preferences));
     }
 
     #[test]

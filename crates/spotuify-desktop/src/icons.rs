@@ -42,6 +42,7 @@ phosphor_icons! {
     Notifications => "icons/phosphor/regular/bell.svg",
     Devices => "icons/phosphor/regular/devices.svg",
     Lyrics => "icons/phosphor/regular/quotes.svg",
+    Preferences => "icons/phosphor/regular/gear.svg",
     Queue => "icons/phosphor/regular/queue.svg",
     Volume => "icons/phosphor/regular/speaker-high.svg",
     Previous => "icons/phosphor/bold/skip-back.svg",

@@ -6,13 +6,40 @@
 
 use gpui::{App, BorrowAppContext, Global, ReadGlobal, WindowAppearance};
 
-/// Explicit variants are reserved for the future theme preference control.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ThemePreference {
     System,
     Light,
     Dark,
+}
+
+impl ThemePreference {
+    pub(crate) const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::System => "System",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+        }
+    }
+
+    const fn persisted(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "system" => Some(Self::System),
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,62 +77,81 @@ pub(crate) struct ThemeFamily {
     pub dark: Palette,
 }
 
+#[derive(Clone, Copy)]
+struct ThemeColors {
+    base: u32,
+    mantle: u32,
+    crust: u32,
+    surface_0: u32,
+    surface_1: u32,
+    text: u32,
+    subtext_1: u32,
+    subtext_0: u32,
+    accent: u32,
+    error: u32,
+}
+
+impl ThemeColors {
+    const fn palette(self) -> Palette {
+        Palette {
+            bg_root: self.base,
+            bg_surface: self.mantle,
+            bg_elevated: self.surface_0,
+            bg_sidebar: self.mantle,
+            border: self.surface_0,
+            border_strong: self.surface_1,
+            text_primary: self.text,
+            text_secondary: self.subtext_1,
+            text_muted: self.subtext_0,
+            accent: self.accent,
+            accent_hover: self.accent,
+            accent_subtle: self.surface_0,
+            nav_active: self.surface_0,
+            nav_hover: self.crust,
+            queue_current: self.surface_0,
+            queue_idle: self.mantle,
+            button_primary: self.accent,
+            button_primary_text: self.crust,
+            button_secondary: self.surface_0,
+            button_secondary_hover: self.surface_1,
+            slider_track: self.surface_1,
+            slider_fill: self.accent,
+            error: self.error,
+            error_surface: self.surface_0,
+            error_border: self.surface_1,
+        }
+    }
+}
+
 impl ThemeFamily {
-    pub const SPOTUIFY: Self = Self {
-        light: Palette {
-            bg_root: 0xf7f2ed,
-            bg_surface: 0xfffaf6,
-            bg_elevated: 0xeee5de,
-            bg_sidebar: 0xf0e7e0,
-            border: 0xddd0c6,
-            border_strong: 0xc7b5a8,
-            text_primary: 0x241d19,
-            text_secondary: 0x5f5149,
-            text_muted: 0x786961,
-            accent: 0xb85f2e,
-            accent_hover: 0x99491f,
-            accent_subtle: 0xf2d9c7,
-            nav_active: 0xefd7c8,
-            nav_hover: 0xf4e5da,
-            queue_current: 0xefd7c8,
-            queue_idle: 0xeee5de,
-            button_primary: 0xb85f2e,
-            button_primary_text: 0xffffff,
-            button_secondary: 0xeadfd7,
-            button_secondary_hover: 0xdecec3,
-            slider_track: 0xd7c8be,
-            slider_fill: 0xb85f2e,
-            error: 0xa33b3b,
-            error_surface: 0xf8dddd,
-            error_border: 0xdbaaaa,
-        },
-        dark: Palette {
-            bg_root: 0x141211,
-            bg_surface: 0x1c1816,
-            bg_elevated: 0x27201d,
-            bg_sidebar: 0x201a17,
-            border: 0x3a302b,
-            border_strong: 0x51443c,
-            text_primary: 0xf5eee8,
-            text_secondary: 0xd0c1b7,
-            text_muted: 0xa99a90,
-            accent: 0xe3a06f,
-            accent_hover: 0xf0b886,
-            accent_subtle: 0x4a3024,
-            nav_active: 0x3a2922,
-            nav_hover: 0x2d221e,
-            queue_current: 0x3a2922,
-            queue_idle: 0x27201d,
-            button_primary: 0xe3a06f,
-            button_primary_text: 0x211812,
-            button_secondary: 0x332923,
-            button_secondary_hover: 0x44352d,
-            slider_track: 0x443831,
-            slider_fill: 0xe3a06f,
-            error: 0xe88989,
-            error_surface: 0x3b2222,
-            error_border: 0x6a3d36,
-        },
+    /// Catppuccin Latte + Mocha, reduced to ten semantic source colors each.
+    pub const CATPPUCCIN: Self = Self {
+        light: ThemeColors {
+            base: 0xeff1f5,
+            mantle: 0xe6e9ef,
+            crust: 0xdce0e8,
+            surface_0: 0xccd0da,
+            surface_1: 0xbcc0cc,
+            text: 0x4c4f69,
+            subtext_1: 0x5c5f77,
+            subtext_0: 0x6c6f85,
+            accent: 0xfe640b,
+            error: 0xd20f39,
+        }
+        .palette(),
+        dark: ThemeColors {
+            base: 0x1e1e2e,
+            mantle: 0x181825,
+            crust: 0x11111b,
+            surface_0: 0x313244,
+            surface_1: 0x45475a,
+            text: 0xcdd6f4,
+            subtext_1: 0xbac2de,
+            subtext_0: 0xa6adc8,
+            accent: 0xfab387,
+            error: 0xf38ba8,
+        }
+        .palette(),
     };
 }
 
@@ -119,8 +165,8 @@ impl Global for DesktopTheme {}
 
 impl DesktopTheme {
     pub(crate) fn new(appearance: WindowAppearance) -> Self {
-        let family = ThemeFamily::SPOTUIFY;
-        let preference = ThemePreference::System;
+        let family = ThemeFamily::CATPPUCCIN;
+        let preference = load_preference();
         let active = resolve_palette(preference, family, appearance);
         Self {
             preference,
@@ -133,7 +179,10 @@ impl DesktopTheme {
         self.active = resolve_palette(self.preference, self.family, appearance);
     }
 
-    #[allow(dead_code)]
+    pub(crate) fn preference(&self) -> ThemePreference {
+        self.preference
+    }
+
     pub(crate) fn set_preference(
         &mut self,
         preference: ThemePreference,
@@ -169,6 +218,38 @@ pub(crate) fn sync_system_appearance(appearance: WindowAppearance, cx: &mut impl
     cx.update_global::<DesktopTheme, _>(|theme, _| theme.sync_appearance(appearance));
 }
 
+pub(crate) fn preference(cx: &App) -> ThemePreference {
+    DesktopTheme::global(cx).preference()
+}
+
+pub(crate) fn choose_preference(
+    preference: ThemePreference,
+    appearance: WindowAppearance,
+    cx: &mut impl BorrowAppContext,
+) -> std::io::Result<()> {
+    cx.update_global::<DesktopTheme, _>(|theme, _| theme.set_preference(preference, appearance));
+    persist_preference(preference)
+}
+
+fn preference_path() -> std::path::PathBuf {
+    spotuify_protocol::paths::config_dir().join("desktop-theme")
+}
+
+fn load_preference() -> ThemePreference {
+    std::fs::read_to_string(preference_path())
+        .ok()
+        .and_then(|value| ThemePreference::parse(&value))
+        .unwrap_or(ThemePreference::System)
+}
+
+fn persist_preference(preference: ThemePreference) -> std::io::Result<()> {
+    let path = preference_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, format!("{}\n", preference.persisted()))
+}
+
 fn resolve_palette(
     preference: ThemePreference,
     family: ThemeFamily,
@@ -198,18 +279,18 @@ mod tests {
         assert_eq!(
             resolve_palette(
                 ThemePreference::System,
-                ThemeFamily::SPOTUIFY,
+                ThemeFamily::CATPPUCCIN,
                 WindowAppearance::Light,
             ),
-            ThemeFamily::SPOTUIFY.light
+            ThemeFamily::CATPPUCCIN.light
         );
         assert_eq!(
             resolve_palette(
                 ThemePreference::System,
-                ThemeFamily::SPOTUIFY,
+                ThemeFamily::CATPPUCCIN,
                 WindowAppearance::Dark,
             ),
-            ThemeFamily::SPOTUIFY.dark
+            ThemeFamily::CATPPUCCIN.dark
         );
     }
 
@@ -218,18 +299,18 @@ mod tests {
         assert_eq!(
             resolve_palette(
                 ThemePreference::Dark,
-                ThemeFamily::SPOTUIFY,
+                ThemeFamily::CATPPUCCIN,
                 WindowAppearance::Light,
             ),
-            ThemeFamily::SPOTUIFY.dark
+            ThemeFamily::CATPPUCCIN.dark
         );
         assert_eq!(
             resolve_palette(
                 ThemePreference::Light,
-                ThemeFamily::SPOTUIFY,
+                ThemeFamily::CATPPUCCIN,
                 WindowAppearance::Dark,
             ),
-            ThemeFamily::SPOTUIFY.light
+            ThemeFamily::CATPPUCCIN.light
         );
     }
 }
