@@ -4220,18 +4220,23 @@ mod tests {
             ..Queue::default()
         });
 
+        assert!(command_rx.try_recv().is_err());
+
+        app.playback = Some(Playback {
+            item: Some(queue_item(
+                "spotify:track:current",
+                "https://example.test/current.jpg",
+            )),
+            ..Playback::default()
+        });
+        app.request_artwork_for_current_track();
+        app.request_artwork_for_current_track();
+
         let mut urls = Vec::new();
         while let Ok(Request::Image { url }) = command_rx.try_recv() {
             urls.push(url);
         }
-        urls.sort();
-        assert_eq!(
-            urls,
-            vec![
-                "https://example.test/current.jpg".to_string(),
-                "https://example.test/first.jpg".to_string(),
-            ]
-        );
+        assert_eq!(urls, vec!["https://example.test/current.jpg".to_string()]);
     }
 
     #[test]
