@@ -39,6 +39,7 @@ struct MiniPlayerView: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("miniSize") private var sizeRaw = MiniSize.full.rawValue
 
     private var size: MiniSize { MiniSize(rawValue: sizeRaw) ?? .full }
@@ -56,10 +57,12 @@ struct MiniPlayerView: View {
         .tint(theme.accent)
         .background(FloatingWindowAccessor())
         .background(.ultraThinMaterial)
-        .task(id: "\(theme.adaptiveEnabled)#\(item?.imageURL ?? "")") { await theme.update(for: item?.imageURL) }
+        .task(id: "\(theme.adaptiveEnabled)#\(item?.imageURL ?? "")") {
+            await theme.update(for: item?.imageURL, reduceMotion: reduceMotion)
+        }
     }
 
-    private var width: CGFloat { size == .tiny ? 360 : 320 }
+    private var width: CGFloat { size == .tiny ? 280 : 320 }
     private var height: CGFloat? {
         switch size {
         case .full: 380
@@ -96,7 +99,10 @@ struct MiniPlayerView: View {
                 Text(item?.subtitle ?? "")
                     .font(.caption).foregroundStyle(theme.palette.secondary).lineLimit(1)
             }
-            SeekBar(progress: model.player.progressFraction) { model.seek(toFraction: $0) }
+            SeekBar(progress: model.player.progressFraction, durationMs: model.player.durationMs) {
+                model.seek(toFraction: $0)
+            }
+            .disabled(!model.canSeek)
             transport(size: 16)
         }
     }
@@ -121,20 +127,23 @@ struct MiniPlayerView: View {
             Spacer(minLength: 4)
             Button { model.togglePlayPause() } label: {
                 Image(systemName: model.player.isPlaying ? "pause.fill" : "play.fill")
-            }.buttonStyle(.plain)
-            Button { model.next() } label: { Image(systemName: "forward.fill") }.buttonStyle(.plain)
+            }.buttonStyle(.plain).disabled(!model.canTogglePlayPause)
+            Button { model.next() } label: { Image(systemName: "forward.fill") }
+                .buttonStyle(.plain).disabled(!model.canSkipNext)
             sizeButton
         }
     }
 
     private func transport(size iconSize: CGFloat) -> some View {
         HStack(spacing: 16) {
-            Button { model.previous() } label: { Image(systemName: "backward.fill") }.buttonStyle(.plain)
+            Button { model.previous() } label: { Image(systemName: "backward.fill") }
+                .buttonStyle(.plain).disabled(!model.canSkipPrevious)
             Button { model.togglePlayPause() } label: {
                 Image(systemName: model.player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: iconSize + 4))
-            }.buttonStyle(.plain)
-            Button { model.next() } label: { Image(systemName: "forward.fill") }.buttonStyle(.plain)
+            }.buttonStyle(.plain).disabled(!model.canTogglePlayPause)
+            Button { model.next() } label: { Image(systemName: "forward.fill") }
+                .buttonStyle(.plain).disabled(!model.canSkipNext)
         }
         .font(.system(size: iconSize))
     }

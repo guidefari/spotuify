@@ -149,14 +149,19 @@ struct CollectionHeader: View {
                 actionLabel("Play", systemImage: "play.fill", labeled: labeled)
             }
             .buttonStyle(.borderedProminent)
+            .disabled(uris.isEmpty || !model.canPlay(uri: uris[0]))
             Button { model.shufflePlay(uris: uris) } label: {
                 actionLabel("Shuffle", systemImage: "shuffle", labeled: labeled)
             }
             .buttonStyle(.bordered)
+            .disabled(
+                uris.isEmpty || !model.canPlay(uri: uris[0])
+                    || !uris.dropFirst().allSatisfy { model.canQueue(uri: $0) })
             Button { model.queueAll(uris: uris) } label: {
                 actionLabel("Queue All", systemImage: "text.append", labeled: labeled)
             }
             .buttonStyle(.bordered)
+            .disabled(uris.isEmpty || !uris.allSatisfy { model.canQueue(uri: $0) })
         }
     }
 
@@ -180,7 +185,8 @@ struct ArtworkTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            AsyncCoverImage(url: item.imageURL, cornerRadius: isCircle ? 200 : Theme.tileCornerRadius)
+            AsyncCoverImage(url: item.imageURL, cornerRadius: isCircle ? 0 : Theme.tileCornerRadius)
+                .circularArtwork(isCircle)
                 .aspectRatio(1, contentMode: .fit)
                 .shadow(color: .black.opacity(hovering ? 0.4 : 0.22),
                         radius: hovering ? 18 : 8, y: hovering ? 10 : 4)

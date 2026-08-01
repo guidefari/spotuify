@@ -10,7 +10,7 @@
 //! stacking them. macOS / Windows use notify-rust's native backend
 //! (NSUserNotification / WinRT toast).
 
-use spotuify_core::{MediaItem, Playback};
+use spotuify_core::{MediaItem, Playback, ResourceUri};
 use spotuify_protocol::DaemonEvent;
 
 use std::collections::HashSet;
@@ -172,15 +172,18 @@ impl NotificationsHandle {
                     )),
                 }
             }
-            DaemonEvent::AuthError { kind } if self.config.on_error => {
-                let key = format!("{kind:?}");
+            DaemonEvent::AuthError { kind, provider } if self.config.on_error => {
+                let key = format!("{provider:?}:{kind:?}");
                 if !self.notified_auth_errors.lock().insert(key) {
                     return None;
                 }
-                Some((
-                    "spotuify auth error".to_string(),
-                    format!("auth issue: {:?} — re-login required", kind),
-                ))
+                let body = match provider {
+                    Some(provider) => {
+                        format!("auth issue ({provider}): {kind:?} — re-login required")
+                    }
+                    None => format!("auth issue: {kind:?} — re-login required"),
+                };
+                Some(("spotuify auth error".to_string(), body))
             }
             // Listening reminder fired (Linux/Windows desktop path; on macOS the
             // GUI app posts the native alert). Gated by `enabled` in `handle`.
@@ -236,7 +239,7 @@ fn track_uri_from_event(action: &str, playback: Option<&Playback>) -> Option<Str
     action
         .rsplit_once(' ')
         .map(|(_, uri)| uri.to_string())
-        .filter(|uri| uri.starts_with("spotify:"))
+        .filter(|uri| ResourceUri::parse(uri).is_ok())
 }
 
 /// Expand `{track}`/`{artist}`/`{album}`/`{duration}`/`{progress}` from a

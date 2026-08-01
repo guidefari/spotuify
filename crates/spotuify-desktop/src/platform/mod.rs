@@ -153,8 +153,9 @@ fn spawn_search_debouncer(
                 .send(Request::SearchStream {
                     query: request.query,
                     scope: SearchScopeData::All,
-                    source: SearchSourceData::Spotify,
+                    source: SearchSourceData::legacy_default_remote(),
                     version: request.version,
+                    provider: None,
                 })
                 .is_err()
             {
@@ -270,7 +271,7 @@ async fn dispatch_transport_request(
     let is_saved_tracks = matches!(&command, Request::SavedTracks { .. });
     let is_library_list = matches!(&command, Request::LibraryList { .. });
     let is_followed_artists = matches!(&command, Request::FollowedArtists { .. });
-    let is_recently_played = matches!(&command, Request::RecentlyPlayed);
+    let is_recently_played = matches!(&command, Request::RecentlyPlayed { .. });
     let result = client.request(command).await;
     match result {
         Ok(Response::Ok { data }) => {

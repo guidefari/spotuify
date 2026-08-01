@@ -129,32 +129,40 @@ private struct PlaybackCommands: View {
     var body: some View {
         Button("Play / Pause") { model.togglePlayPause() }
             .keyboardShortcut(.space, modifiers: [])
+            .disabled(!model.canTogglePlayPause)
         Button("Next") { model.next() }
             .keyboardShortcut(.rightArrow, modifiers: .command)
+            .disabled(!model.canSkipNext)
         Button("Previous") { model.previous() }
             .keyboardShortcut(.leftArrow, modifiers: .command)
+            .disabled(!model.canSkipPrevious)
         Divider()
         Button("Volume Up") { model.setVolume(Int(model.player.volumePercent ?? 0) + 5) }
             .keyboardShortcut(.upArrow, modifiers: .command)
+            .disabled(!model.canSetVolume)
         Button("Volume Down") { model.setVolume(Int(model.player.volumePercent ?? 0) - 5) }
             .keyboardShortcut(.downArrow, modifiers: .command)
+            .disabled(!model.canSetVolume)
         Divider()
         Button("Toggle Shuffle") { model.toggleShuffle() }
             .keyboardShortcut("s", modifiers: [.command, .shift])
+            .disabled(!model.canSetShuffle)
         Button("Cycle Repeat") { model.cycleRepeat() }
             .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(!model.canSetRepeat)
     }
 }
 
-/// View navigation: ⌘1…⌘9, ⌘0 jump to each destination (mirrors the TUI's
-/// 1–9/0 and the sidebar order).
+/// View navigation: existing destinations keep ⌘1…⌘9, ⌘0; Notifications uses
+/// ⌘⇧0 because macOS only has ten numeric keys.
 private struct GoCommands: View {
     let navigator: Navigator
     var body: some View {
         ForEach(Array(Navigator.numbered.enumerated()), id: \.element.id) { index, dest in
             Button(dest.title) { navigator.selection = dest }
                 .keyboardShortcut(
-                    KeyEquivalent(Character("\((index + 1) % 10)")), modifiers: .command)
+                    KeyEquivalent(Character(index < 10 ? "\((index + 1) % 10)" : "0")),
+                    modifiers: index < 10 ? .command : [.command, .shift])
         }
     }
 }
@@ -191,6 +199,7 @@ private struct DesktopThemeModifier: ViewModifier {
     let theme: ArtworkTheme
     @AppStorage("desktopTheme") private var themeRaw = AppTheme.adaptive.rawValue
     @Environment(\.colorScheme) private var systemScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var appTheme: AppTheme { AppTheme(rawValue: themeRaw) ?? .adaptive }
 
@@ -213,7 +222,7 @@ private struct DesktopThemeModifier: ViewModifier {
         if !appTheme.isAdaptive {
             // Resolve `.system` against the live OS scheme; `.light`/`.dark` are
             // explicit. The artwork `.task` repopulates when adaptive re-enables.
-            theme.applyFixed(appTheme.preferredColorScheme ?? systemScheme)
+            theme.applyFixed(appTheme.preferredColorScheme ?? systemScheme, reduceMotion: reduceMotion)
         }
     }
 }

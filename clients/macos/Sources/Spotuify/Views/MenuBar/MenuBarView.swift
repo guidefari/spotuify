@@ -9,6 +9,7 @@ struct MenuBarView: View {
     @Environment(AppModel.self) private var model
     @Environment(ArtworkTheme.self) private var theme
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var item: MediaItem? { model.player.currentItem }
     private var palette: ArtworkPalette { theme.palette }
@@ -19,7 +20,9 @@ struct MenuBarView: View {
             controls
         }
         .frame(width: 320)
-        .task(id: "\(theme.adaptiveEnabled)#\(item?.imageURL ?? "")") { await theme.update(for: item?.imageURL) }
+        .task(id: "\(theme.adaptiveEnabled)#\(item?.imageURL ?? "")") {
+            await theme.update(for: item?.imageURL, reduceMotion: reduceMotion)
+        }
     }
 
     private var header: some View {
@@ -52,9 +55,11 @@ struct MenuBarView: View {
                 }
                 SeekBar(
                     progress: model.player.progressFraction,
+                    durationMs: model.player.durationMs,
                     onSeek: { model.seek(toFraction: $0) },
                     height: 3)
                 .tint(palette.accent)
+                .disabled(!model.canSeek)
             }
             .padding(.top, 20).padding(.bottom, 14).padding(.horizontal, 14)
         }
@@ -68,15 +73,20 @@ struct MenuBarView: View {
                 HStack(spacing: 18) {
                     TransportButton(systemName: "shuffle", size: 12) { model.toggleShuffle() }
                         .foregroundStyle(model.player.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                        .disabled(!model.canSetShuffle)
                     TransportButton(systemName: "backward.fill", size: 16) { model.previous() }
+                        .disabled(!model.canSkipPrevious)
                     TransportButton(
                         systemName: model.player.isPlaying ? "pause.fill" : "play.fill",
                         size: 18, prominent: true) { model.togglePlayPause() }
+                        .disabled(!model.canTogglePlayPause)
                     TransportButton(systemName: "forward.fill", size: 16) { model.next() }
+                        .disabled(!model.canSkipNext)
                     TransportButton(
                         systemName: model.player.repeatMode == .track ? "repeat.1" : "repeat",
                         size: 12) { model.cycleRepeat() }
                         .foregroundStyle(model.player.repeatMode == .off ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+                        .disabled(!model.canSetRepeat)
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 9)

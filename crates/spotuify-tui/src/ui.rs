@@ -6,21 +6,23 @@ use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, 
 use ratatui::Frame;
 use ratatui_image::StatefulImage;
 
-use crate::app::{App, ArtworkSubject, BannerState, FullscreenPanel, RightRailMode, Screen};
+use crate::app::{
+    App, ArtworkSubject, BannerState, FullscreenPanel, RightRailMode, Screen, ToastKind,
+};
 // top_hints is referenced via crate path inside render_hint_bar.
 use crate::now_playing::{NowPlayingView, PlaybackDisplayState};
 use crate::widgets::spectrum::SpectrumWidget;
-use spotuify_core::active_lyric_line_index;
-use spotuify_spotify::client::{MediaItem, MediaKind, Playlist};
+use spotuify_core::{active_lyric_line_index, MediaItem, MediaKind, Playlist, RepeatMode};
 
-use crate::widgets::style::{accent, accent_foreground};
-
-const BG: Color = Color::Rgb(8, 10, 12);
-const PANEL: Color = Color::Rgb(18, 22, 25);
-const MUTED: Color = Color::Rgb(118, 128, 135);
-const TEXT: Color = Color::Rgb(230, 238, 242);
-const WARN: Color = Color::Rgb(245, 185, 65);
-const RED: Color = Color::Rgb(245, 88, 88);
+use crate::widgets::style::{
+    accent, accent_foreground, progress_filled, BG, BORDER, BORDER_STRONG, CHIP_BG, CHIP_FG,
+    DANGER, KIND_ALBUM, KIND_ARTIST, KIND_PODCAST, PROGRESS_UNFILLED, SUCCESS, SURFACE, TEXT,
+    TEXT_MUTED, WARN,
+};
+use crate::widgets::terminal::{
+    banner_glyph, device_kind_glyph, speaker_glyph, speaker_glyph_width, spinner_frame, volume_bar,
+    BannerGlyph, SpeakerLevel,
+};
 pub const PLAYER_HEIGHT: u16 = 10;
 pub const STATUS_HEIGHT: u16 = 3;
 
@@ -64,10 +66,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     // exactly what they draw.
     app.hit_map.borrow_mut().clear();
     let area = frame.area();
-    frame.render_widget(
-        Block::default().style(Style::default().bg(app.palette.background)),
-        area,
-    );
+    frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
 
     let root = root_chrome_layout(area);
 
@@ -174,8 +173,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let albums_inner = pad_pane_top(albums_block.inner(albums_col));
     frame.render_widget(albums_block, albums_col);
     if view.loading_albums {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
@@ -184,7 +182,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 ),
                 Span::styled("Loading albums…", Style::default().fg(TEXT)),
             ]))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             albums_inner,
         );
     } else if view.visible_albums().is_empty() {
@@ -194,8 +192,8 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "No albums released by this artist."
         };
         frame.render_widget(
-            Paragraph::new(Span::styled(message, Style::default().fg(MUTED)))
-                .style(Style::default().bg(PANEL)),
+            Paragraph::new(Span::styled(message, Style::default().fg(TEXT_MUTED)))
+                .style(Style::default().bg(SURFACE)),
             albums_inner,
         );
     } else {
@@ -210,7 +208,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let mut current_group: Option<&str> = None;
         let mut started = false;
         for (idx, album) in visible.iter().enumerate() {
-            let group = album.album_group.as_deref();
+            let group = album.album_group.as_ref().map(|group| group.as_str());
             if !started || group != current_group {
                 let label = ARTIST_ALBUM_GROUPS
                     .iter()
@@ -242,7 +240,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 ]),
                 Line::from(vec![
                     Span::raw("    "),
-                    Span::styled(context_suffix(album), Style::default().fg(MUTED)),
+                    Span::styled(context_suffix(album), Style::default().fg(TEXT_MUTED)),
                 ]),
             ]));
         }
@@ -254,7 +252,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("▌")
-            .style(Style::default().bg(PANEL));
+            .style(Style::default().bg(SURFACE));
         let mut state = ListState::default();
         state.select(Some(selected_row));
         frame.render_stateful_widget(list, albums_inner, &mut state);
@@ -279,8 +277,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let tracks_inner = pad_pane_top(tracks_block.inner(tracks_col));
     frame.render_widget(tracks_block, tracks_col);
     if view.loading_tracks {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
@@ -289,16 +286,16 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 ),
                 Span::styled("Loading tracks…", Style::default().fg(TEXT)),
             ]))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             tracks_inner,
         );
     } else if view.album_tracks.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "No tracks for this album.",
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             ))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             tracks_inner,
         );
     } else {
@@ -313,12 +310,15 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     String::new()
                 };
                 ListItem::new(Line::from(vec![
-                    Span::styled(format!(" {:>2}. ", idx + 1), Style::default().fg(MUTED)),
+                    Span::styled(
+                        format!(" {:>2}. ", idx + 1),
+                        Style::default().fg(TEXT_MUTED),
+                    ),
                     Span::styled(
                         t.name.clone(),
                         Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(format!("  {duration}"), Style::default().fg(MUTED)),
+                    Span::styled(format!("  {duration}"), Style::default().fg(TEXT_MUTED)),
                 ]))
             })
             .collect();
@@ -330,7 +330,7 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("▌")
-            .style(Style::default().bg(PANEL));
+            .style(Style::default().bg(SURFACE));
         let mut state = ListState::default();
         state.select(if view.album_tracks.is_empty() {
             None
@@ -350,16 +350,16 @@ fn render_artist_view(frame: &mut Frame<'_>, area: Rect, app: &App) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 err.clone(),
-                Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
             )))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             err_area,
         );
     }
 }
 
 /// Render the interactive re-authentication modal. Visual treatment
-/// uses the GREEN border (action / opportunity) rather than the RED
+/// uses the adaptive accent border (action / opportunity) rather than DANGER
 /// of `render_confirm_modal` (danger) — re-login is recovery, not
 /// destruction.
 fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -373,7 +373,10 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(accent()).add_modifier(Modifier::BOLD))
         .title(Span::styled(
-            " 🔒  Spotify re-authentication ",
+            format!(
+                " {}  Provider re-authentication ",
+                banner_glyph(BannerGlyph::Lock)
+            ),
             Style::default()
                 .fg(accent_foreground())
                 .bg(accent())
@@ -385,12 +388,12 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
             vec![
                 Line::from(""),
                 Line::from(Span::styled(
-                    "Your Spotify session has expired.",
+                    "Your provider session has expired.",
                     Style::default().fg(TEXT),
                 )),
                 Line::from(Span::styled(
                     "Press Enter to open your browser and re-authenticate.",
-                    Style::default().fg(MUTED),
+                    Style::default().fg(TEXT_MUTED),
                 )),
                 Line::from(""),
             ],
@@ -402,16 +405,10 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ]),
         ),
         LoginPhase::InProgress => {
-            use spotuify_spotify::auth::LoginProgress;
-            let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-                [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
-            // Render the latest progress event inside the modal —
-            // the auth code path emits these events into the
-            // LoginModal instead of `println!`, so the alt-screen
-            // buffer stays clean even when the browser fails to
-            // launch and the URL needs to be visible to the user.
-            let body_lines: Vec<Line<'_>> = match &modal.last_progress {
-                Some(LoginProgress::OpeningBrowser { .. }) | None => vec![
+            use spotuify_protocol::AuthSessionState;
+            let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
+            let body_lines: Vec<Line<'_>> = match modal.session.as_ref().map(|s| &s.state) {
+                Some(AuthSessionState::Starting) | None => vec![
                     Line::from(""),
                     Line::from(vec![
                         Span::styled(
@@ -425,48 +422,64 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     ]),
                     Line::from(Span::styled(
                         "This window will update automatically.",
-                        Style::default().fg(MUTED),
+                        Style::default().fg(TEXT_MUTED),
                     )),
                     Line::from(""),
                 ],
-                Some(LoginProgress::BrowserLaunchFailed {
-                    auth_url, error, ..
-                }) => vec![
+                Some(
+                    AuthSessionState::AwaitingUser {
+                        authorization_url,
+                        browser_error,
+                        ..
+                    }
+                    | AuthSessionState::Waiting {
+                        authorization_url,
+                        browser_error,
+                        ..
+                    },
+                ) => {
+                    let status = browser_error.as_ref().map_or_else(
+                        || "Finish sign-in in your browser.".to_string(),
+                        |error| format!("Couldn't open the browser automatically ({error})."),
+                    );
+                    vec![
+                        Line::from(""),
+                        Line::from(vec![
+                            Span::styled(
+                                format!(" {spinner} "),
+                                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(status, Style::default().fg(TEXT)),
+                        ]),
+                        Line::from(Span::styled(
+                            "Authorization URL:",
+                            Style::default().fg(TEXT_MUTED),
+                        )),
+                        Line::from(Span::styled(
+                            authorization_url.clone(),
+                            Style::default().fg(accent()),
+                        )),
+                        Line::from(""),
+                    ]
+                }
+                Some(AuthSessionState::Authorized) => vec![
                     Line::from(""),
                     Line::from(Span::styled(
-                        format!("Couldn't open the browser automatically ({error})."),
-                        Style::default().fg(WARN).add_modifier(Modifier::BOLD),
-                    )),
-                    Line::from(Span::styled(
-                        "Open this URL in any browser to continue:",
-                        Style::default().fg(TEXT),
-                    )),
-                    Line::from(Span::styled(
-                        auth_url.clone(),
-                        Style::default().fg(accent()),
-                    )),
-                    Line::from(""),
-                ],
-                Some(LoginProgress::WaitingForCallback) => vec![
-                    Line::from(""),
-                    Line::from(vec![
-                        Span::styled(
-                            format!(" {spinner} "),
-                            Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled("Waiting for the OAuth callback…", Style::default().fg(TEXT)),
-                    ]),
-                    Line::from(Span::styled(
-                        "Finish the sign-in in your browser; this window will close itself.",
-                        Style::default().fg(MUTED),
-                    )),
-                    Line::from(""),
-                ],
-                Some(LoginProgress::Saved) => vec![
-                    Line::from(""),
-                    Line::from(Span::styled(
-                        "✓  Spotify auth saved.",
+                        "✓  Provider auth saved.",
                         Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(""),
+                ],
+                Some(AuthSessionState::Failed { message }) => vec![
+                    Line::from(""),
+                    Line::from(Span::styled(message.clone(), Style::default().fg(WARN))),
+                    Line::from(""),
+                ],
+                Some(AuthSessionState::Cancelled) => vec![
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        "Authentication cancelled.",
+                        Style::default().fg(TEXT_MUTED),
                     )),
                     Line::from(""),
                 ],
@@ -476,18 +489,36 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
-                        "Esc dismiss (browser stays open)",
-                        Style::default().fg(MUTED),
+                        "Esc · cancel authentication",
+                        Style::default().fg(TEXT_MUTED),
                     ),
                 ]),
             )
         }
+        LoginPhase::Cancelling => (
+            vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Cancelling — waiting for the daemon's final auth state.",
+                    Style::default().fg(TEXT),
+                )),
+                Line::from(Span::styled(
+                    "If credential commit already started, it will finish safely.",
+                    Style::default().fg(TEXT_MUTED),
+                )),
+                Line::from(""),
+            ],
+            Line::from(Span::styled(
+                "  Please wait…",
+                Style::default().fg(TEXT_MUTED),
+            )),
+        ),
         LoginPhase::Failed(message) => (
             vec![
                 Line::from(""),
                 Line::from(Span::styled(
                     "Login failed:",
-                    Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                    Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(message.clone(), Style::default().fg(TEXT))),
                 Line::from(""),
@@ -508,7 +539,7 @@ fn render_login_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(lines)
             .block(block)
             .wrap(Wrap { trim: false })
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
         area,
     );
 }
@@ -540,10 +571,10 @@ fn notification_state_span(state: spotuify_core::NotificationState) -> Span<'sta
     use spotuify_core::NotificationState as S;
     let (text, color) = match state {
         S::Unseen => ("● new", accent()),
-        S::Seen => ("seen", MUTED),
-        S::Snoozed => ("snoozed", RED),
-        S::Dismissed => ("dismissed", MUTED),
-        S::Done => ("done", MUTED),
+        S::Seen => ("seen", TEXT_MUTED),
+        S::Snoozed => ("snoozed", DANGER),
+        S::Dismissed => ("dismissed", TEXT_MUTED),
+        S::Done => ("done", TEXT_MUTED),
     };
     Span::styled(text, Style::default().fg(color))
 }
@@ -577,9 +608,9 @@ fn render_notifications(frame: &mut Frame<'_>, app: &App, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  No reminders have fired yet.",
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             )))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             inbox_inner,
         );
     } else {
@@ -600,10 +631,13 @@ fn render_notifications(frame: &mut Frame<'_>, app: &App, area: Rect) {
                         Span::raw("  "),
                         Span::styled(
                             n.message.clone().unwrap_or_else(|| n.subtitle.clone()),
-                            Style::default().fg(MUTED),
+                            Style::default().fg(TEXT_MUTED),
                         ),
-                        Span::styled("  ·  ", Style::default().fg(MUTED)),
-                        Span::styled(fmt_reminder_when(n.due_at_ms), Style::default().fg(MUTED)),
+                        Span::styled("  ·  ", Style::default().fg(TEXT_MUTED)),
+                        Span::styled(
+                            fmt_reminder_when(n.due_at_ms),
+                            Style::default().fg(TEXT_MUTED),
+                        ),
                     ]),
                 ])
             })
@@ -616,7 +650,7 @@ fn render_notifications(frame: &mut Frame<'_>, app: &App, area: Rect) {
             List::new(items)
                 .highlight_style(highlight)
                 .highlight_symbol("▌")
-                .style(Style::default().bg(PANEL)),
+                .style(Style::default().bg(SURFACE)),
             inbox_inner,
             &mut state,
         );
@@ -632,9 +666,9 @@ fn render_notifications(frame: &mut Frame<'_>, app: &App, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  Nothing scheduled. Press R on a track/album/playlist to add one.",
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             )))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             sched_inner,
         );
     } else {
@@ -646,7 +680,7 @@ fn render_notifications(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     Span::raw("  "),
                     Span::styled(
                         format!("next {}", fmt_reminder_when(r.next_due_at_ms)),
-                        Style::default().fg(MUTED),
+                        Style::default().fg(TEXT_MUTED),
                     ),
                 ];
                 if r.recurrence.is_recurring() {
@@ -672,7 +706,7 @@ fn render_notifications(frame: &mut Frame<'_>, app: &App, area: Rect) {
             List::new(items)
                 .highlight_style(highlight)
                 .highlight_symbol("▌")
-                .style(Style::default().bg(PANEL)),
+                .style(Style::default().bg(SURFACE)),
             sched_inner,
             &mut state,
         );
@@ -730,14 +764,14 @@ fn render_reminder_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("Repeat: ", Style::default().fg(MUTED)),
+            Span::styled("Repeat: ", Style::default().fg(TEXT_MUTED)),
             Span::styled(
                 picker.recurrence.label(),
                 Style::default().fg(accent()).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("   (Tab to cycle)", Style::default().fg(MUTED)),
+            Span::styled("   (Tab to cycle)", Style::default().fg(TEXT_MUTED)),
         ]))
-        .style(Style::default().bg(PANEL)),
+        .style(Style::default().bg(SURFACE)),
         body[1],
     );
 
@@ -748,9 +782,9 @@ fn render_reminder_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::raw("  "),
             button_chip("Tab repeat", ButtonRole::Cancel),
             Span::raw("  "),
-            Span::styled("Esc cancel", Style::default().fg(MUTED)),
+            Span::styled("Esc cancel", Style::default().fg(TEXT_MUTED)),
         ]))
-        .style(Style::default().bg(PANEL)),
+        .style(Style::default().bg(SURFACE)),
         body[2],
     );
 }
@@ -763,10 +797,13 @@ fn render_confirm_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let area = centered_rect(60, 30, area);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(RED).add_modifier(Modifier::BOLD))
+        .border_style(Style::default().fg(DANGER).add_modifier(Modifier::BOLD))
         .title(Span::styled(
             format!(" ⚠  {} ", modal.title),
-            Style::default().fg(BG).bg(RED).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(BG)
+                .bg(DANGER)
+                .add_modifier(Modifier::BOLD),
         ));
     let lines = vec![
         Line::from(""),
@@ -778,7 +815,7 @@ fn render_confirm_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::raw("   "),
             button_chip("n · no", ButtonRole::Cancel),
             Span::raw("   "),
-            Span::styled("Esc cancel", Style::default().fg(MUTED)),
+            Span::styled("Esc cancel", Style::default().fg(TEXT_MUTED)),
         ]),
     ];
     frame.render_widget(Clear, area);
@@ -786,7 +823,7 @@ fn render_confirm_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(lines)
             .block(block)
             .wrap(Wrap { trim: false })
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
         area,
     );
 }
@@ -812,8 +849,7 @@ fn render_playlist_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .split(inner);
 
     let rows: Vec<ListItem<'_>> = if playlists.is_empty() {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         vec![
             ListItem::new(Line::from(vec![
                 Span::styled(
@@ -824,7 +860,7 @@ fn render_playlist_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ])),
             ListItem::new(Line::from(Span::styled(
                 "    Auto-syncs on first auth. Esc cancels.",
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             ))),
         ]
     } else {
@@ -838,7 +874,7 @@ fn render_playlist_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
                         Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                     )
                 } else {
-                    Span::styled("○", Style::default().fg(MUTED))
+                    Span::styled("○", Style::default().fg(TEXT_MUTED))
                 };
                 ListItem::new(vec![
                     Line::from(vec![
@@ -853,7 +889,7 @@ fn render_playlist_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
                         Span::raw("    "),
                         Span::styled(
                             format!("{} tracks · by {}", playlist.tracks_total, playlist.owner),
-                            Style::default().fg(MUTED),
+                            Style::default().fg(TEXT_MUTED),
                         ),
                     ]),
                 ])
@@ -883,9 +919,9 @@ fn render_playlist_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::raw("  "),
             button_chip("Enter add", ButtonRole::Affirm),
             Span::raw("  "),
-            Span::styled("Esc cancel", Style::default().fg(MUTED)),
+            Span::styled("Esc cancel", Style::default().fg(TEXT_MUTED)),
         ]))
-        .style(Style::default().bg(PANEL)),
+        .style(Style::default().bg(SURFACE)),
         body_rows[1],
     );
 }
@@ -915,7 +951,7 @@ fn render_audio_output_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .map(|name| {
             ListItem::new(Line::from(vec![
                 Span::styled(
-                    " 🔊  ",
+                    format!(" {}  ", speaker_glyph(SpeakerLevel::High)),
                     Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(name.clone(), Style::default().fg(TEXT)),
@@ -930,7 +966,7 @@ fn render_audio_output_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▌")
-        .style(Style::default().bg(PANEL));
+        .style(Style::default().bg(SURFACE));
     let mut state = ListState::default();
     state.select(Some(
         picker.selected.min(picker.outputs.len().saturating_sub(1)),
@@ -940,9 +976,9 @@ fn render_audio_output_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "↑/↓ select · Enter apply (restarts player) · Esc cancel",
-            Style::default().fg(MUTED),
+            Style::default().fg(TEXT_MUTED),
         )))
-        .style(Style::default().bg(PANEL)),
+        .style(Style::default().bg(SURFACE)),
         body_rows[1],
     );
 }
@@ -953,20 +989,61 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         return;
     };
     let area = centered_rect(60, 50, area);
-    let devices = app.filtered_devices();
-    let block = focused_card_block(&format!("Devices  ·  {} available", devices.len()));
+    let unavailable = app.devices_unavailable_reason();
+    let devices = if unavailable.is_none() {
+        app.filtered_devices()
+    } else {
+        Vec::new()
+    };
+    let title = if unavailable.is_some() {
+        "Devices  ·  unavailable".to_string()
+    } else if app.list_filter_query.is_empty() {
+        format!("Devices  ·  {} available", devices.len())
+    } else {
+        format!(
+            "Devices  ·  {} matching `{}`",
+            devices.len(),
+            app.list_filter_query
+        )
+    };
+    let block = focused_card_block(&title);
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
 
     let body_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(inner);
 
-    let rows: Vec<ListItem<'_>> = if devices.is_empty() {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+    if let Some(reason) = unavailable {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {reason}"),
+                Style::default().fg(TEXT_MUTED),
+            )))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(SURFACE)),
+            body_rows[0],
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " Esc close",
+                Style::default().fg(TEXT_MUTED),
+            )))
+            .style(Style::default().bg(SURFACE)),
+            body_rows[1],
+        );
+        return;
+    }
+
+    let rows: Vec<ListItem<'_>> = if devices.is_empty() && !app.list_filter_query.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            " No matching devices.",
+            Style::default().fg(TEXT_MUTED),
+        )))]
+    } else if devices.is_empty() {
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         vec![
             ListItem::new(Line::from(vec![
                 Span::styled(
@@ -976,15 +1053,15 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Span::styled("Loading devices…", Style::default().fg(TEXT)),
             ])),
             ListItem::new(Line::from(Span::styled(
-                "    Open Spotify on a phone/laptop/speaker to make it visible.",
-                Style::default().fg(MUTED),
+                "    Open your provider app on a phone/laptop/speaker to make it visible.",
+                Style::default().fg(TEXT_MUTED),
             ))),
         ]
     } else {
         devices
             .iter()
             .map(|device| {
-                let icon = device_kind_icon(&device.kind);
+                let icon = device_kind_glyph(&device.kind);
                 let mut header: Vec<Span<'_>> = vec![
                     Span::styled(
                         format!(" {icon}  "),
@@ -1006,7 +1083,7 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     header.push(Span::raw("  "));
                     header.push(Span::styled(
                         "restricted",
-                        Style::default().fg(RED).add_modifier(Modifier::BOLD),
+                        Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
                     ));
                 }
                 let volume = if device.supports_volume {
@@ -1016,9 +1093,9 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 };
                 let detail = Line::from(vec![
                     Span::raw("      "),
-                    Span::styled(device.kind.clone(), Style::default().fg(MUTED)),
-                    Span::styled("  ·  ", Style::default().fg(MUTED)),
-                    Span::styled(volume, Style::default().fg(MUTED)),
+                    Span::styled(device.kind.clone(), Style::default().fg(TEXT_MUTED)),
+                    Span::styled("  ·  ", Style::default().fg(TEXT_MUTED)),
+                    Span::styled(volume, Style::default().fg(TEXT_MUTED)),
                 ]);
                 ListItem::new(vec![Line::from(header), detail])
             })
@@ -1041,15 +1118,19 @@ fn render_device_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw(" "),
-            button_chip("Enter transfer", ButtonRole::Affirm),
-            Span::raw("  "),
-            Span::styled("j/k move", Style::default().fg(MUTED)),
-            Span::raw("  "),
-            Span::styled("Esc cancel", Style::default().fg(MUTED)),
-        ]))
-        .style(Style::default().bg(PANEL)),
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::raw(" "),
+                button_chip("Enter/x transfer", ButtonRole::Affirm),
+                Span::raw("  "),
+                Span::styled("+/- volume · j/k move", Style::default().fg(TEXT_MUTED)),
+            ]),
+            Line::from(Span::styled(
+                " Ctrl-f filter · u refresh · O audio output · Esc cancel",
+                Style::default().fg(TEXT_MUTED),
+            )),
+        ])
+        .style(Style::default().bg(SURFACE)),
         body_rows[1],
     );
 }
@@ -1066,6 +1147,7 @@ fn render_fullscreen_panel(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     match panel {
         FullscreenPanel::Queue => render_queue_fullscreen(frame, app, area),
         FullscreenPanel::Lyrics => render_lyrics(frame, app, area),
+        FullscreenPanel::Diagnostics => render_diagnostics(frame, app, area),
     }
 }
 
@@ -1090,6 +1172,38 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(20), Constraint::Min(8)])
         .split(hero_inner);
+
+    if let Some(reason) = app.queue_unavailable_reason() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    reason.clone(),
+                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    "Queue content is unavailable for the selected provider.",
+                    Style::default().fg(accent()),
+                )),
+            ])
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(SURFACE)),
+            hero_cols[1],
+        );
+
+        let block = panel_block(" Up Next ");
+        let inner = block.inner(rows[1]);
+        frame.render_widget(block, rows[1]);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                reason,
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(SURFACE)),
+            inner,
+        );
+        return;
+    }
 
     // Phase 6 — derive the canonical view ONCE so the hero title and
     // gauge are guaranteed to refer to the same track. Pre-Phase-6 this
@@ -1148,22 +1262,22 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 ),
                 Span::raw(" "),
                 Span::styled(item.subtitle.clone(), Style::default().fg(TEXT)),
-                Span::styled(context_suffix(item), Style::default().fg(MUTED)),
+                Span::styled(context_suffix(item), Style::default().fg(TEXT_MUTED)),
             ]))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             right_rows[2],
         );
         let progress = progress_ratio(view.progress_ms, view.duration_ms);
         frame.render_widget(
             Gauge::default()
-                .gauge_style(Style::default().fg(accent()).bg(Color::Rgb(38, 45, 49)))
+                .gauge_style(Style::default().fg(progress_filled()).bg(PROGRESS_UNFILLED))
                 .ratio(progress)
                 .label(format!(
                     "{} / {}",
                     fmt_ms(view.progress_ms),
                     fmt_ms(view.duration_ms)
                 ))
-                .style(Style::default().bg(PANEL)),
+                .style(Style::default().bg(SURFACE)),
             right_rows[4],
         );
         render_current_cover_or_gradient(
@@ -1186,7 +1300,8 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     Style::default().fg(accent()),
                 )),
             ])
-            .style(Style::default().bg(PANEL)),
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(SURFACE)),
             hero_cols[1],
         );
     }
@@ -1204,7 +1319,7 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
-                    "No active Spotify session.",
+                    "No active playback session.",
                     Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(
@@ -1212,7 +1327,8 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     Style::default().fg(accent()),
                 )),
             ])
-            .style(Style::default().bg(PANEL)),
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(SURFACE)),
             inner,
         );
         return;
@@ -1221,10 +1337,10 @@ fn render_queue_fullscreen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         frame,
         area_title(" Up Next ", queue_items.len()),
         queue_items,
-        usize::MAX,
+        app.selected,
         app,
         rows[1],
-        false,
+        true,
     );
 }
 
@@ -1234,7 +1350,7 @@ fn render_now_playing(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             " spotuify ",
             Style::default()
                 .fg(app.palette.foreground)
-                .bg(app.palette.accent)
+                .bg(app.palette.brand)
                 .add_modifier(Modifier::BOLD),
         )]))
         .borders(Borders::ALL)
@@ -1400,7 +1516,7 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
             let title = if app.queue.session_active {
                 "Ready when you are"
             } else {
-                "No active Spotify session"
+                "No active playback session"
             };
             let hint = if app.queue.session_active {
                 app.spotifyd_status
@@ -1416,12 +1532,12 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 )),
                 Line::from(Span::styled(hint, Style::default().fg(accent()))),
                 Line::from(Span::styled(
-                    "Search, queue, playlists, and podcasts are available from the tabs below.",
-                    Style::default().fg(MUTED),
+                    "Use the tabs below to browse; Alt-q opens the queue from anywhere.",
+                    Style::default().fg(TEXT_MUTED),
                 )),
             ])
             .wrap(Wrap { trim: true })
-            .style(Style::default().bg(PANEL))
+            .style(Style::default().bg(SURFACE))
         } else {
             // Daemon hasn't told us what's currently playing yet. Show
             // a transient loading state so the user knows we're working,
@@ -1432,12 +1548,12 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(
-                    "Fetching current playback from Spotify.",
-                    Style::default().fg(MUTED),
+                    "Fetching current playback from the provider.",
+                    Style::default().fg(TEXT_MUTED),
                 )),
             ])
             .wrap(Wrap { trim: true })
-            .style(Style::default().bg(PANEL))
+            .style(Style::default().bg(SURFACE))
         };
         frame.render_widget(empty, area);
         return;
@@ -1479,7 +1595,7 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
             truncate(&item.name, title_width),
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
         )]))
-        .style(Style::default().bg(PANEL)),
+        .style(Style::default().bg(SURFACE)),
         rows[1],
     );
 
@@ -1493,10 +1609,10 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Span::raw(" "),
             Span::styled(
                 truncate(&item.subtitle, rows[2].width.saturating_sub(3) as usize),
-                Style::default().fg(Color::Rgb(185, 194, 199)),
+                Style::default().fg(TEXT_MUTED),
             ),
         ]))
-        .style(Style::default().bg(PANEL)),
+        .style(Style::default().bg(SURFACE)),
         rows[2],
     );
 
@@ -1513,18 +1629,24 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(state, Style::default().fg(accent())),
-            Span::styled(" on ", Style::default().fg(MUTED)),
+            Span::styled(" on ", Style::default().fg(TEXT_MUTED)),
             Span::styled(truncate(&device_name(app), 20), Style::default().fg(TEXT)),
         ]))
-        .style(Style::default().bg(PANEL)),
+        .style(Style::default().bg(SURFACE)),
         label_rect,
     );
     frame.render_widget(
         Gauge::default()
             .gauge_style(
                 Style::default()
-                    .fg(app.palette.accent)
-                    .bg(Color::Rgb(38, 45, 49)),
+                    .fg(
+                        if app.action_supported(crate::tui_actions::TuiAction::SeekForward) {
+                            progress_filled()
+                        } else {
+                            BORDER_STRONG
+                        },
+                    )
+                    .bg(PROGRESS_UNFILLED),
             )
             .ratio(progress)
             .label(format!(
@@ -1532,7 +1654,7 @@ fn render_track(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 fmt_ms(progress_ms),
                 fmt_ms(view.duration_ms)
             ))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
         gauge_rect,
     );
 }
@@ -1572,11 +1694,12 @@ pub(crate) fn transport_primary_ranges(compact: bool) -> [std::ops::Range<u16>; 
     ]
 }
 
-/// Column range of the volume bar on the transport's volume row
-/// (leading space + 2-col speaker glyph + 2-space gap before the bar).
+/// Column range of the volume bar on the transport's volume row.
+/// The speaker width follows the selected terminal glyph set.
 pub(crate) fn transport_volume_bar_range(compact: bool) -> std::ops::Range<u16> {
     let bar_width: u16 = if compact { 8 } else { 16 };
-    5..5 + bar_width
+    let start = 1 + speaker_glyph_width() + 2;
+    start..start + bar_width
 }
 
 fn active_singalong_lyric_line_index(
@@ -1649,7 +1772,7 @@ pub(crate) fn transport_toggle_ranges(
 }
 
 fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool) {
-    use crate::widgets::style::{state_chip, StateRole, CHIP_BG, CHIP_FG};
+    use crate::widgets::style::{state_chip, StateRole};
     // Phase 6 — canonical view: volume falls back to devices cache for
     // the same active-device id (never a different device), liked
     // resolves against the view's active item.
@@ -1666,10 +1789,14 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool)
     // and gaps to 2 so the row fits `TRANSPORT_COMPACT_WIDTH`.
     let chip_pad = if compact { " " } else { "   " };
     let chip_gap = if compact { "  " } else { "   " };
-    let big_chip = |glyph: &str, role: ButtonHeroRole| {
-        let (fg, bg) = match role {
-            ButtonHeroRole::Primary => (accent_foreground(), accent()),
-            ButtonHeroRole::Secondary => (CHIP_FG, CHIP_BG),
+    let big_chip = |glyph: &str, role: ButtonHeroRole, enabled: bool| {
+        let (fg, bg) = if !enabled {
+            (BORDER_STRONG, SURFACE)
+        } else {
+            match role {
+                ButtonHeroRole::Primary => (accent_foreground(), accent()),
+                ButtonHeroRole::Secondary => (CHIP_FG, CHIP_BG),
+            }
         };
         Span::styled(
             format!("{chip_pad}{glyph}{chip_pad}"),
@@ -1679,34 +1806,63 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool)
 
     let primary_row = Line::from(vec![
         Span::raw(" "),
-        big_chip("⏮", ButtonHeroRole::Secondary),
+        big_chip(
+            "⏮",
+            ButtonHeroRole::Secondary,
+            app.action_supported(crate::tui_actions::TuiAction::Previous),
+        ),
         Span::raw(chip_gap),
-        big_chip(play_glyph, ButtonHeroRole::Primary),
+        big_chip(
+            play_glyph,
+            ButtonHeroRole::Primary,
+            app.action_supported(crate::tui_actions::TuiAction::PlayPause),
+        ),
         Span::raw(chip_gap),
-        big_chip("⏭", ButtonHeroRole::Secondary),
+        big_chip(
+            "⏭",
+            ButtonHeroRole::Secondary,
+            app.action_supported(crate::tui_actions::TuiAction::Next),
+        ),
     ]);
 
     // Toggles: drop the small unicode glyphs (⇄ ↻ ♡) for plain word
     // labels — they render in the terminal's normal font weight and
     // are legible at any size. State communicates via chip colour:
-    // GREEN background when ON, dim CHIP_BG when OFF.
-    let toggle_chip = |label: &str, active: bool| {
-        if active {
+    // Adaptive accent background when ON, dim CHIP_BG when OFF.
+    let toggle_chip = |label: &str, active: bool, enabled: bool| {
+        if !enabled {
+            Span::styled(
+                format!(" {label} "),
+                Style::default().fg(BORDER_STRONG).bg(SURFACE),
+            )
+        } else if active {
             state_chip(label, StateRole::Active)
         } else {
             state_chip(label, StateRole::Idle)
         }
     };
     let (shuffle_label, repeat_label, like_label) = transport_toggle_labels(
-        app.playback.repeat.as_str(),
+        app.playback.repeat.label(),
         app.playback.shuffle,
         liked,
         compact,
     );
-    let repeat_on = matches!(app.playback.repeat.as_str(), "track" | "context" | "on");
-    let shuffle_chip = toggle_chip(shuffle_label, app.playback.shuffle);
-    let repeat_chip = toggle_chip(repeat_label, repeat_on);
-    let like_chip = toggle_chip(like_label, liked);
+    let repeat_on = !matches!(app.playback.repeat, RepeatMode::Off);
+    let shuffle_chip = toggle_chip(
+        shuffle_label,
+        app.playback.shuffle,
+        app.action_supported(crate::tui_actions::TuiAction::ToggleShuffle),
+    );
+    let repeat_chip = toggle_chip(
+        repeat_label,
+        repeat_on,
+        app.action_supported(crate::tui_actions::TuiAction::CycleRepeat),
+    );
+    let like_chip = toggle_chip(
+        like_label,
+        liked,
+        app.action_supported(crate::tui_actions::TuiAction::LikeSelection),
+    );
     let toggles_row = Line::from(vec![
         Span::raw(" "),
         shuffle_chip,
@@ -1717,23 +1873,40 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool)
     ]);
 
     // Volume row — bar + numeric.
-    let speaker_glyph = if volume == 0 {
-        "🔇"
+    let speaker = if volume == 0 {
+        SpeakerLevel::Muted
     } else if volume < 33 {
-        "🔈"
+        SpeakerLevel::Low
     } else if volume < 66 {
-        "🔉"
+        SpeakerLevel::Medium
     } else {
-        "🔊"
+        SpeakerLevel::High
     };
     let bar_width: usize = if compact { 8 } else { 16 };
-    let filled = ((volume as usize) * bar_width).div_ceil(100).min(bar_width);
-    let bar: String = "█".repeat(filled) + &"░".repeat(bar_width - filled);
+    let volume_color = if app.action_supported(crate::tui_actions::TuiAction::VolumeUp) {
+        accent()
+    } else {
+        BORDER_STRONG
+    };
+    let volume_text_color = if app.action_supported(crate::tui_actions::TuiAction::VolumeUp) {
+        TEXT_MUTED
+    } else {
+        BORDER_STRONG
+    };
     let volume_row = Line::from(vec![
         Span::raw(" "),
-        Span::styled(format!("{speaker_glyph}  "), Style::default().fg(MUTED)),
-        Span::styled(bar, Style::default().fg(accent())),
-        Span::styled(format!("  {volume:>3}"), Style::default().fg(MUTED)),
+        Span::styled(
+            format!("{}  ", speaker_glyph(speaker)),
+            Style::default().fg(volume_text_color),
+        ),
+        Span::styled(
+            volume_bar(volume, bar_width),
+            Style::default().fg(volume_color),
+        ),
+        Span::styled(
+            format!("  {volume:>3}"),
+            Style::default().fg(volume_text_color),
+        ),
     ]);
 
     let inner = area.inner(Margin {
@@ -1761,15 +1934,15 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool)
         ])
         .split(inner);
     frame.render_widget(
-        Paragraph::new(primary_row).style(Style::default().bg(PANEL)),
+        Paragraph::new(primary_row).style(Style::default().bg(SURFACE)),
         rows[1],
     );
     frame.render_widget(
-        Paragraph::new(toggles_row).style(Style::default().bg(PANEL)),
+        Paragraph::new(toggles_row).style(Style::default().bg(SURFACE)),
         rows[3],
     );
     frame.render_widget(
-        Paragraph::new(volume_row).style(Style::default().bg(PANEL)),
+        Paragraph::new(volume_row).style(Style::default().bg(SURFACE)),
         rows[5],
     );
     // Phase 7 — when the visualizer is enabled but has no active PCM
@@ -1781,9 +1954,11 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool)
         frame.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
                 hint,
-                Style::default().fg(MUTED).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(TEXT_MUTED)
+                    .add_modifier(Modifier::ITALIC),
             )]))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             rows[4],
         );
     }
@@ -1798,7 +1973,6 @@ fn render_transport(frame: &mut Frame<'_>, app: &App, area: Rect, compact: bool)
 /// 2. Backend-kind-aware fallback ("switch to embedded for sink tap" etc.)
 /// 3. Generic "no source" message
 fn viz_status_hint(app: &App) -> Option<String> {
-    use spotuify_core::BackendKind;
     use spotuify_protocol::{VizActiveSource, VizSourceKindData};
 
     if !app.viz_enabled {
@@ -1822,28 +1996,29 @@ fn viz_status_hint(app: &App) -> Option<String> {
         return Some(format!("viz: {hint}"));
     }
 
-    Some(match (app.viz_configured_source, app.viz_backend_kind) {
-        (VizSourceKindData::Sink, Some(BackendKind::Embedded)) => {
-            "viz: waiting for sink — embedded backend warming up".to_string()
-        }
-        (VizSourceKindData::Sink, _) => {
-            "viz: no sink — switch playback to the embedded backend".to_string()
-        }
-        (VizSourceKindData::Auto, Some(BackendKind::Embedded)) => {
-            "viz: warming up sink tap".to_string()
-        }
-        (VizSourceKindData::Auto, _) => {
-            "viz: no PCM source — switch to embedded or set viz.source = \"loopback\"".to_string()
-        }
-        (VizSourceKindData::Loopback, _) => {
-            "viz: loopback unavailable — install BlackHole (macOS) or check device".to_string()
-        }
-        (VizSourceKindData::None, _) => {
-            // User explicitly set source=none; visualizer-enabled with
-            // source-none is contradictory but accept it as "disabled".
-            return None;
-        }
-    })
+    Some(
+        match (app.viz_configured_source, app.viz_backend_kind.as_deref()) {
+            (VizSourceKindData::Sink, Some("embedded")) => {
+                "viz: waiting for sink — embedded backend warming up".to_string()
+            }
+            (VizSourceKindData::Sink, _) => {
+                "viz: no sink — switch playback to the embedded backend".to_string()
+            }
+            (VizSourceKindData::Auto, Some("embedded")) => "viz: warming up sink tap".to_string(),
+            (VizSourceKindData::Auto, _) => {
+                "viz: no PCM source — switch to embedded or set viz.source = \"loopback\""
+                    .to_string()
+            }
+            (VizSourceKindData::Loopback, _) => {
+                "viz: loopback unavailable — install BlackHole (macOS) or check device".to_string()
+            }
+            (VizSourceKindData::None, _) => {
+                // User explicitly set source=none; visualizer-enabled with
+                // source-none is contradictory but accept it as "disabled".
+                return None;
+            }
+        },
+    )
 }
 
 #[derive(Copy, Clone)]
@@ -1855,7 +2030,7 @@ enum ButtonHeroRole {
 fn render_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let outer = Block::default()
         .borders(Borders::LEFT | Borders::RIGHT)
-        .border_style(Style::default().fg(Color::Rgb(25, 31, 35)))
+        .border_style(Style::default().fg(BORDER))
         .style(Style::default().bg(BG));
     let inner = outer.inner(area).inner(Margin {
         horizontal: 1,
@@ -1879,7 +2054,7 @@ fn render_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let tabs_row = rows[1];
     // Tabs: each tab is `[N] Label`. The numeric prefix is a small
     // CHIP_BG chip so the keyboard shortcut reads as a button. The
-    // active tab gets the inverted GREEN treatment. Layout is computed
+    // active tab gets the inverted adaptive-accent treatment. Layout is computed
     // by `tab_strip_layout` (shared with mouse hit-testing) so narrow
     // terminals degrade to short labels / a window around the active
     // tab instead of silently clipping the right-hand tabs.
@@ -1887,7 +2062,12 @@ fn render_body(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         .iter()
         .position(|screen| *screen == app.screen)
         .unwrap_or(0);
-    let (tab_line, _) = tab_strip_layout(selected, tabs_row.width);
+    let unavailable = Screen::ALL
+        .iter()
+        .enumerate()
+        .filter_map(|(index, screen)| (!app.screen_supported(*screen)).then_some(index))
+        .collect::<Vec<_>>();
+    let (tab_line, _) = tab_strip_layout_with_unavailable(selected, tabs_row.width, &unavailable);
     frame.render_widget(
         Paragraph::new(tab_line).style(Style::default().bg(BG)),
         tabs_row,
@@ -1921,7 +2101,14 @@ pub(crate) fn tab_strip_layout(
     selected: usize,
     width: u16,
 ) -> (Line<'static>, Vec<(usize, std::ops::Range<u16>)>) {
-    use crate::widgets::style::{CHIP_BG, CHIP_FG, DIM_BORDER};
+    tab_strip_layout_with_unavailable(selected, width, &[])
+}
+
+fn tab_strip_layout_with_unavailable(
+    selected: usize,
+    width: u16,
+    unavailable: &[usize],
+) -> (Line<'static>, Vec<(usize, std::ops::Range<u16>)>) {
     let screens = Screen::ALL;
     let n = screens.len();
 
@@ -1977,7 +2164,7 @@ pub(crate) fn tab_strip_layout(
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut ranges: Vec<(usize, std::ops::Range<u16>)> = Vec::new();
     let mut x: u16 = 0;
-    let marker_style = Style::default().fg(MUTED).bg(BG);
+    let marker_style = Style::default().fg(TEXT_MUTED).bg(BG);
     if left_marker {
         spans.push(Span::styled("‹ ", marker_style));
         x += 2;
@@ -1986,12 +2173,15 @@ pub(crate) fn tab_strip_layout(
         if index > start {
             spans.push(Span::styled(
                 divider.to_string(),
-                Style::default().fg(DIM_BORDER).bg(BG),
+                Style::default().fg(BORDER_STRONG).bg(BG),
             ));
             x += divider.chars().count() as u16;
         }
         let is_active = index == selected;
-        let key_chip_style = if is_active {
+        let is_unavailable = unavailable.contains(&index);
+        let key_chip_style = if is_unavailable {
+            Style::default().fg(BORDER_STRONG).bg(BG)
+        } else if is_active {
             Style::default()
                 .fg(accent())
                 .bg(BG)
@@ -2002,10 +2192,12 @@ pub(crate) fn tab_strip_layout(
                 .bg(CHIP_BG)
                 .add_modifier(Modifier::BOLD)
         };
-        let label_style = if is_active {
+        let label_style = if is_unavailable {
+            Style::default().fg(BORDER_STRONG)
+        } else if is_active {
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(MUTED)
+            Style::default().fg(TEXT_MUTED)
         };
         let label = if short && !is_active {
             screen.short_label()
@@ -2033,11 +2225,8 @@ fn render_screen(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         Screen::Search => render_search(frame, app, area),
         Screen::Library => render_library(frame, app, area),
         Screen::Playlists => render_playlists(frame, app, area),
-        Screen::Queue => render_queue(frame, app, area),
+        Screen::Podcasts => render_podcasts(frame, app, area),
         Screen::History => render_history(frame, app, area),
-        Screen::Devices => render_devices(frame, app, area),
-        Screen::Diagnostics => render_diagnostics(frame, app, area),
-        Screen::Lyrics => render_lyrics(frame, app, area),
         Screen::Notifications => render_notifications(frame, app, area),
     }
 }
@@ -2061,9 +2250,9 @@ fn render_history(frame: &mut Frame<'_>, app: &App, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  Loading history…",
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             )))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             inner,
         );
         return;
@@ -2072,9 +2261,9 @@ fn render_history(frame: &mut Frame<'_>, app: &App, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 format!("  {err}"),
-                Style::default().fg(RED),
+                Style::default().fg(DANGER),
             )))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             inner,
         );
         return;
@@ -2083,9 +2272,9 @@ fn render_history(frame: &mut Frame<'_>, app: &App, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  No listening history yet. Tracks you play show up here.",
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             )))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             inner,
         );
         return;
@@ -2104,7 +2293,7 @@ fn render_history(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled(track.subtitle.clone(), Style::default().fg(MUTED)),
+                Span::styled(track.subtitle.clone(), Style::default().fg(TEXT_MUTED)),
             ]);
             if i == 0 {
                 let label = session
@@ -2179,6 +2368,22 @@ fn render_right_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn render_queue_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
     use crate::widgets::style::{card_block, section_chip, state_chip, StateRole};
 
+    if let Some(reason) = app.queue_unavailable_reason() {
+        let block = card_block("Queue  ·  Q hide  ·  unavailable");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {reason}"),
+                Style::default().fg(TEXT_MUTED),
+            )))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(SURFACE)),
+            inner,
+        );
+        return;
+    }
+
     let view = NowPlayingView::derive(&app.playback, &app.queue, &app.devices);
 
     let session_active = app.queue.session_active;
@@ -2227,7 +2432,9 @@ fn render_queue_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
             now_row.push(Span::raw("  "));
             now_row.push(Span::styled(
                 "(queue ahead)",
-                Style::default().fg(MUTED).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(TEXT_MUTED)
+                    .add_modifier(Modifier::ITALIC),
             ));
         }
         lines.push(Line::from(now_row));
@@ -2240,20 +2447,20 @@ fn render_queue_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ]));
         lines.push(Line::from(vec![
             Span::raw(" "),
-            Span::styled(item.subtitle.clone(), Style::default().fg(MUTED)),
+            Span::styled(item.subtitle.clone(), Style::default().fg(TEXT_MUTED)),
         ]));
         lines.push(Line::from(""));
     }
     lines.push(Line::from(vec![section_chip("Up Next")]));
     if !session_active {
         lines.push(Line::from(Span::styled(
-            " no active Spotify session",
-            Style::default().fg(MUTED),
+            " no active playback session",
+            Style::default().fg(TEXT_MUTED),
         )));
     } else if queue_items.is_empty() {
         lines.push(Line::from(Span::styled(
             " queue is empty — press `e` on any track or album to enqueue",
-            Style::default().fg(MUTED),
+            Style::default().fg(TEXT_MUTED),
         )));
     } else {
         lines.extend(
@@ -2263,7 +2470,10 @@ fn render_queue_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .enumerate()
                 .map(|(index, item)| {
                     Line::from(vec![
-                        Span::styled(format!(" {:>2}. ", index + 1), Style::default().fg(MUTED)),
+                        Span::styled(
+                            format!(" {:>2}. ", index + 1),
+                            Style::default().fg(TEXT_MUTED),
+                        ),
                         Span::styled(
                             item.name.clone(),
                             Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
@@ -2274,14 +2484,14 @@ fn render_queue_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
         if queue_items.len() > 12 {
             lines.push(Line::from(Span::styled(
                 format!(" + {} more", queue_items.len() - 12),
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             )));
         }
     }
     frame.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: true })
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
         inner,
     );
 }
@@ -2355,23 +2565,14 @@ fn render_hints_rail(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: true })
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
         inner,
     );
 }
 
 fn render_player_page(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let items = app.visible_items();
     if !app.player_large {
-        render_media_list(
-            frame,
-            area_title(" Home ", items.len()),
-            &items,
-            app.selected,
-            app,
-            area,
-            true,
-        );
+        render_home_queue_panel(frame, app, area);
         return;
     }
 
@@ -2385,198 +2586,55 @@ fn render_player_page(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         area
     };
-    render_home_body(frame, app, &items, home_area);
-}
-
-fn render_home_body(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], area: Rect) {
-    if area.width >= 112 && area.height >= 10 {
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Ratio(2, 3), Constraint::Ratio(1, 3)])
-            .split(area);
-        render_home_feed(frame, app, items, columns[0]);
-        render_home_queue_panel(frame, app, columns[1]);
-    } else {
-        let queue_height = area.height.clamp(5, 9);
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(5), Constraint::Length(queue_height)])
-            .split(area);
-        render_home_feed(frame, app, items, rows[0]);
-        render_home_queue_panel(frame, app, rows[1]);
-    }
-}
-
-fn render_home_feed(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], area: Rect) {
-    use crate::widgets::style::{card_block, focused_card_block};
-
-    if items.is_empty() {
-        let block = card_block("Home");
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "Fetching saved songs and podcasts...",
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(Span::styled(
-                    "Your Home feed fills from the local library and recent plays.",
-                    Style::default().fg(MUTED),
-                )),
-            ])
-            .wrap(Wrap { trim: true })
-            .style(Style::default().bg(PANEL)),
-            inner,
-        );
-        return;
-    }
-
-    // Split with the FULL-list index carried along: clicks in either
-    // column must resolve to the index `app.selected` actually uses.
-    let mut music = Vec::new();
-    let mut music_idx = Vec::new();
-    let mut podcasts = Vec::new();
-    let mut podcast_idx = Vec::new();
-    for (i, item) in items.iter().enumerate() {
-        if matches!(item.kind, MediaKind::Show | MediaKind::Episode) {
-            podcasts.push(item.clone());
-            podcast_idx.push(i);
-        } else {
-            music.push(item.clone());
-            music_idx.push(i);
-        }
-    }
-    let selected_uri = items.get(app.selected).map(|item| item.uri.as_str());
-    let music_focused = selected_uri.is_some_and(|uri| music.iter().any(|item| item.uri == uri));
-    let podcast_focused =
-        selected_uri.is_some_and(|uri| podcasts.iter().any(|item| item.uri == uri));
-
-    if area.width >= 76 && !podcasts.is_empty() {
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Ratio(3, 5), Constraint::Ratio(2, 5)])
-            .split(area);
-        render_home_section(
-            frame,
-            &format!("Home · Liked Songs  {}", music.len()),
-            &music,
-            selected_uri,
-            music_focused || !podcast_focused,
-            app,
-            columns[0],
-            &music_idx,
-        );
-        render_home_section(
-            frame,
-            &format!("Podcasts  {}", podcasts.len()),
-            &podcasts,
-            selected_uri,
-            podcast_focused,
-            app,
-            columns[1],
-            &podcast_idx,
-        );
-    } else {
-        let block = if music_focused || podcasts.is_empty() {
-            focused_card_block(&format!("Home  {}", items.len()))
-        } else {
-            card_block(&format!("Home  {}", items.len()))
-        };
-        let inner = pad_pane_top(block.inner(area));
-        frame.render_widget(block, area);
-        render_media_rows(frame, app, items, app.selected, inner, None, None);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_home_section(
-    frame: &mut Frame<'_>,
-    title: &str,
-    items: &[MediaItem],
-    selected_uri: Option<&str>,
-    focused: bool,
-    app: &App,
-    area: Rect,
-    hit_remap: &[usize],
-) {
-    use crate::widgets::style::{card_block, focused_card_block};
-
-    let block = if focused {
-        focused_card_block(title)
-    } else {
-        card_block(title)
-    };
-    let inner = pad_pane_top(block.inner(area));
-    frame.render_widget(block, area);
-    if items.is_empty() {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "Saved music appears here.",
-                Style::default().fg(MUTED),
-            )))
-            .style(Style::default().bg(PANEL)),
-            inner,
-        );
-        return;
-    }
-    let selected = selected_uri
-        .and_then(|uri| items.iter().position(|item| item.uri == uri))
-        .unwrap_or(usize::MAX);
-    render_media_rows(frame, app, items, selected, inner, None, Some(hit_remap));
+    render_home_queue_panel(frame, app, home_area);
 }
 
 fn render_home_queue_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    use crate::widgets::style::{card_block, section_chip};
+    if let Some(reason) = app.queue_unavailable_reason() {
+        use crate::widgets::style::card_block;
+        let block = card_block("Queue · Up Next · unavailable");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                reason,
+                Style::default().fg(TEXT_MUTED),
+            )))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().bg(SURFACE)),
+            inner,
+        );
+        return;
+    }
 
     let queue_items: &[MediaItem] = if app.queue.session_active {
         &app.queue.items
     } else {
         &[]
     };
-    let block = card_block(&format!("Queue · Up Next  {}", queue_items.len()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let mut lines = vec![Line::from(vec![section_chip("Up Next")])];
     if !app.queue.session_active {
-        lines.push(Line::from(Span::styled(
-            " no active Spotify session",
-            Style::default().fg(MUTED),
-        )));
-    } else if queue_items.is_empty() {
-        lines.push(Line::from(Span::styled(
-            " queue is empty",
-            Style::default().fg(MUTED),
-        )));
-    } else {
-        lines.extend(
-            queue_items
-                .iter()
-                .take(10)
-                .enumerate()
-                .map(|(index, item)| {
-                    Line::from(vec![
-                        Span::styled(format!(" {:>2}. ", index + 1), Style::default().fg(MUTED)),
-                        Span::styled(
-                            truncate(&item.name, area.width.saturating_sub(6) as usize),
-                            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                        ),
-                    ])
-                }),
+        use crate::widgets::style::card_block;
+        let block = card_block("Queue · Up Next");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "No active playback session. Start playback from Search or Library.",
+                Style::default().fg(TEXT_MUTED),
+            )))
+            .style(Style::default().bg(SURFACE)),
+            inner,
         );
-        if queue_items.len() > 10 {
-            lines.push(Line::from(Span::styled(
-                format!(" + {} more", queue_items.len() - 10),
-                Style::default().fg(MUTED),
-            )));
-        }
+        return;
     }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: true })
-            .style(Style::default().bg(PANEL)),
-        inner,
+    render_media_list(
+        frame,
+        area_title(" Queue · Up Next ", queue_items.len()),
+        queue_items,
+        app.selected,
+        app,
+        area,
+        true,
     );
 }
 
@@ -2594,7 +2652,7 @@ fn render_spectrum(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(
         SpectrumWidget::new(&app.spectrum_bands)
             .color_scheme(&app.viz_color_scheme)
-            .accent(app.palette.accent),
+            .accent(app.palette.brand),
         inner,
     );
 }
@@ -2675,31 +2733,30 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 )),
                 Line::from(Span::styled(
                     item.subtitle.clone(),
-                    Style::default().fg(MUTED),
+                    Style::default().fg(TEXT_MUTED),
                 )),
                 Line::from(Span::styled(
                     context_suffix(item),
-                    Style::default().fg(MUTED),
+                    Style::default().fg(TEXT_MUTED),
                 )),
             ])
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             header_columns[2],
         );
     } else {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "No active track.",
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             )))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             rows[1],
         );
     }
 
     // Body: synced lyrics with active-line emphasis, or empty state.
     let Some(lyrics) = &app.lyrics else {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         let lines = if app.lyrics_loading {
             vec![
                 Line::from(vec![
@@ -2710,8 +2767,8 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     Span::styled("Fetching synced lyrics…", Style::default().fg(TEXT)),
                 ]),
                 Line::from(Span::styled(
-                    "Spotify provider first, LRCLIB fallback.",
-                    Style::default().fg(MUTED),
+                    "Configured provider first, LRCLIB fallback.",
+                    Style::default().fg(TEXT_MUTED),
                 )),
             ]
         } else if let Some(err) = &app.lyrics_error {
@@ -2719,7 +2776,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Line::from(Span::styled(err.clone(), Style::default().fg(WARN))),
                 Line::from(Span::styled(
                     "Press u to retry.",
-                    Style::default().fg(MUTED),
+                    Style::default().fg(TEXT_MUTED),
                 )),
             ]
         } else {
@@ -2730,14 +2787,14 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 )),
                 Line::from(Span::styled(
                     "(some tracks are instrumental, or the provider doesn't have them.)",
-                    Style::default().fg(MUTED),
+                    Style::default().fg(TEXT_MUTED),
                 )),
             ]
         };
         frame.render_widget(
             Paragraph::new(lines)
                 .wrap(Wrap { trim: true })
-                .style(Style::default().bg(PANEL)),
+                .style(Style::default().bg(SURFACE)),
             rows[2],
         );
         return;
@@ -2784,14 +2841,14 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
             let style = if Some(index) == active {
                 Style::default()
                     .fg(TEXT)
-                    .bg(crate::widgets::style::CHIP_BG)
+                    .bg(CHIP_BG)
                     .add_modifier(Modifier::BOLD)
             } else if distance == 1 {
                 Style::default().fg(TEXT)
             } else if distance == 2 {
-                Style::default().fg(MUTED)
+                Style::default().fg(TEXT_MUTED)
             } else {
-                Style::default().fg(crate::widgets::style::DIM_BORDER)
+                Style::default().fg(BORDER_STRONG)
             };
             Line::from(Span::styled(line.text.clone(), style))
         })
@@ -2800,7 +2857,7 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Paragraph::new(body)
             .wrap(Wrap { trim: false })
             .scroll((scroll_rows, 0))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
         rows[2],
     );
 
@@ -2817,14 +2874,14 @@ fn render_lyrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     lyrics.lines.len(),
                     app.lyrics_offset_ms
                 ),
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             ),
         ]
     } else {
-        vec![Span::styled("No provider", Style::default().fg(MUTED))]
+        vec![Span::styled("No provider", Style::default().fg(TEXT_MUTED))]
     };
     frame.render_widget(
-        Paragraph::new(Line::from(footer)).style(Style::default().bg(PANEL)),
+        Paragraph::new(Line::from(footer)).style(Style::default().bg(SURFACE)),
         rows[3],
     );
 }
@@ -2851,15 +2908,15 @@ fn render_search(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         format!("/ search  ·  S sort: {sort_label}  ·  T type: {filter_label}")
     };
     let input_style = if app.search_input_active {
-        Style::default().fg(TEXT).bg(Color::Rgb(24, 34, 29))
+        Style::default().fg(TEXT).bg(SURFACE)
     } else {
-        Style::default().fg(MUTED).bg(PANEL)
+        Style::default().fg(TEXT_MUTED).bg(SURFACE)
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("/ ", Style::default().fg(accent())),
             Span::styled(&app.search_query, Style::default().fg(TEXT)),
-            Span::styled(format!("  {prompt}"), Style::default().fg(MUTED)),
+            Span::styled(format!("  {prompt}"), Style::default().fg(TEXT_MUTED)),
         ]))
         .block(panel_block(" Search "))
         .style(input_style),
@@ -2882,7 +2939,7 @@ fn render_search(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 ((inner.height as usize) / 2).min(5),
                 inner.width,
             ))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             inner,
         );
     } else if items.is_empty() {
@@ -3009,7 +3066,7 @@ fn render_search_groups(frame: &mut Frame<'_>, app: &App, items: &[MediaItem], a
                         Style::default().fg(WARN).add_modifier(Modifier::BOLD),
                     ))
                 } else if pane.exhausted && !group_items.is_empty() {
-                    Some(Span::styled("— end —", Style::default().fg(MUTED)))
+                    Some(Span::styled("— end —", Style::default().fg(TEXT_MUTED)))
                 } else {
                     None
                 }
@@ -3084,10 +3141,10 @@ fn render_media_rows(
     if items.is_empty() {
         let placeholder = match footer {
             Some(span) => span,
-            None => Span::styled("no results", Style::default().fg(MUTED)),
+            None => Span::styled("no results", Style::default().fg(TEXT_MUTED)),
         };
         frame.render_widget(
-            Paragraph::new(placeholder).style(Style::default().bg(PANEL)),
+            Paragraph::new(placeholder).style(Style::default().bg(SURFACE)),
             area,
         );
         return;
@@ -3157,15 +3214,12 @@ fn render_media_rows(
         let truncated_subtitle = truncate(&item.subtitle, subtitle_budget);
         lines.push(Line::from(vec![
             Span::raw("   "),
-            Span::styled(
-                truncated_subtitle,
-                Style::default().fg(Color::Rgb(178, 188, 193)),
-            ),
-            Span::styled(suffix, Style::default().fg(MUTED)),
+            Span::styled(truncated_subtitle, Style::default().fg(TEXT_MUTED)),
+            Span::styled(suffix, Style::default().fg(TEXT_MUTED)),
         ]));
     }
     frame.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(PANEL)),
+        Paragraph::new(lines).style(Style::default().bg(SURFACE)),
         rows_area,
     );
     register_row_hits(
@@ -3178,14 +3232,14 @@ fn render_media_rows(
     );
     if let (Some(footer_rect), Some(footer_span)) = (footer_area, footer) {
         frame.render_widget(
-            Paragraph::new(footer_span).style(Style::default().bg(PANEL)),
+            Paragraph::new(footer_span).style(Style::default().bg(SURFACE)),
             footer_rect,
         );
     }
 }
 
 fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    use crate::widgets::style::{card_block, focused_card_block};
+    use crate::widgets::style::card_block;
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -3200,85 +3254,118 @@ fn render_library(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         let block = card_block("Library");
         let inner = block.inner(rows[1]);
         frame.render_widget(block, rows[1]);
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
-                    Span::styled(format!(" {spinner} "), Style::default().fg(accent()).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        format!(" {spinner} "),
+                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(
                         "Fetching your library…",
                         Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
                     ),
                 ]),
                 Line::from(Span::styled(
-                    "The daemon syncs this in the background; tracks, albums, and podcasts appear as they arrive.",
-                    Style::default().fg(MUTED),
+                    "The daemon syncs tracks, albums, and artists in the background.",
+                    Style::default().fg(TEXT_MUTED),
                 )),
             ])
             .wrap(Wrap { trim: true })
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             inner,
         );
         return;
     }
 
-    // Split into Music (Track + Album + Artist) and Podcasts (Show +
-    // Episode) so the user can find their subscribed shows without
-    // hunting through 5,000 saved tracks. Full-list indices ride along
-    // so clicks in either column select what the keyboard would.
-    let mut music = Vec::new();
-    let mut music_idx = Vec::new();
-    let mut podcasts = Vec::new();
-    let mut podcast_idx = Vec::new();
-    for (i, item) in items.iter().enumerate() {
-        if matches!(item.kind, MediaKind::Show | MediaKind::Episode) {
-            podcasts.push(item.clone());
-            podcast_idx.push(i);
-        } else {
-            music.push(item.clone());
-            music_idx.push(i);
-        }
-    }
-    let global_uri = items.get(app.selected).map(|i| i.uri.clone());
-    let music_focused = global_uri
-        .as_ref()
-        .is_some_and(|u| music.iter().any(|i| &i.uri == u));
-    let podcasts_focused = !music_focused;
-
     let artwork = app.selected_artwork_subject();
     let (list_area, preview_area) = split_art_preview_area(rows[1], artwork.as_ref());
-
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(2, 3), Constraint::Ratio(1, 3)])
-        .split(list_area);
-
+    let indices = (0..items.len()).collect::<Vec<_>>();
     render_library_section(
         frame,
-        &format!("Music  {}", music.len()),
-        &music,
-        global_uri.as_deref(),
-        music_focused,
+        &format!("Music  {}", items.len()),
+        &items,
+        items.get(app.selected).map(|item| item.uri.as_str()),
+        true,
         app,
-        columns[0],
-        &music_idx,
-    );
-    render_library_section(
-        frame,
-        &format!("Podcasts  {}", podcasts.len()),
-        &podcasts,
-        global_uri.as_deref(),
-        podcasts_focused,
-        app,
-        columns[1],
-        &podcast_idx,
+        list_area,
+        &indices,
     );
     if let (Some(subject), Some(preview_area)) = (artwork.as_ref(), preview_area) {
         render_artwork_preview(frame, app, subject, preview_area);
     }
-    let _ = card_block;
-    let _ = focused_card_block;
+}
+
+fn render_podcasts(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    use crate::widgets::style::card_block;
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+    render_filter_bar(frame, app, " Podcast Filter ", rows[0]);
+    let items = app.visible_items();
+
+    if let Some(name) = app.selected_podcast_show_name.as_deref() {
+        let block = card_block(&format!("{name} · Episodes · press b to go back"));
+        let inner = block.inner(rows[1]);
+        frame.render_widget(block, rows[1]);
+        if items.is_empty() {
+            let message = app
+                .podcasts_error
+                .as_deref()
+                .unwrap_or(if app.podcasts_loading {
+                    "Loading episodes…"
+                } else {
+                    "No episodes available."
+                });
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    message.to_string(),
+                    Style::default().fg(TEXT_MUTED),
+                )))
+                .style(Style::default().bg(SURFACE)),
+                inner,
+            );
+            return;
+        }
+        let list = List::new(
+            items
+                .iter()
+                .map(|item| media_item(item, app.marked_uris.contains(&item.uri)))
+                .collect::<Vec<_>>(),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(accent_foreground())
+                .bg(accent())
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▌")
+        .style(Style::default().bg(SURFACE));
+        let mut state = ListState::default();
+        state.select((app.selected < items.len()).then_some(app.selected));
+        frame.render_stateful_widget(list, inner, &mut state);
+        register_row_hits(app, inner, state.offset(), items.len(), 2, Some);
+        return;
+    }
+
+    let artwork = app.selected_artwork_subject();
+    let (list_area, preview_area) = split_art_preview_area(rows[1], artwork.as_ref());
+    let indices = (0..items.len()).collect::<Vec<_>>();
+    render_library_section(
+        frame,
+        &format!("Podcasts  {} · Enter open", items.len()),
+        &items,
+        items.get(app.selected).map(|item| item.uri.as_str()),
+        true,
+        app,
+        list_area,
+        &indices,
+    );
+    if let (Some(subject), Some(preview_area)) = (artwork.as_ref(), preview_area) {
+        render_artwork_preview(frame, app, subject, preview_area);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3305,12 +3392,14 @@ fn render_library_section(
             Paragraph::new(Line::from(Span::styled(
                 if title.starts_with("Podcasts") {
                     "No subscribed podcasts."
+                } else if title.starts_with("Episodes") {
+                    "No episodes available."
                 } else {
                     "No saved music yet."
                 },
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             )))
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
             inner,
         );
         return;
@@ -3328,7 +3417,7 @@ fn render_library_section(
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▌")
-        .style(Style::default().bg(PANEL));
+        .style(Style::default().bg(SURFACE));
     let mut state = ListState::default();
     state.select(local_selected);
     frame.render_stateful_widget(list, inner, &mut state);
@@ -3337,174 +3426,6 @@ fn render_library_section(
     register_row_hits(app, inner, state.offset(), items.len(), 2, |i| {
         hit_remap.get(i).copied()
     });
-}
-
-fn render_queue(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    use crate::widgets::style::{card_block, section_chip, state_chip, StateRole};
-
-    // Phase 6 — derive once; the "Now Playing" card and the "Up Next"
-    // highlight read from the same active URI so a queue-poll snapshot
-    // can't paint queue's currently_playing as "Now" while highlighting
-    // a different track as the active row in "Up Next".
-    let view = NowPlayingView::derive(&app.playback, &app.queue, &app.devices);
-
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(5), // Now-playing card
-            Constraint::Length(3), // filter bar
-            Constraint::Min(1),    // upcoming list
-        ])
-        .split(area);
-
-    // Now-playing card.
-    let now_block = card_block("Now Playing");
-    let now_inner = now_block.inner(rows[0]);
-    frame.render_widget(now_block, rows[0]);
-    if let Some(item) = view.item {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(vec![
-                    Span::styled(
-                        kind_icon(&item.kind),
-                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(
-                        item.name.clone(),
-                        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  "),
-                    state_chip(
-                        if view.is_playing { "playing" } else { "paused" },
-                        if view.is_playing {
-                            StateRole::Active
-                        } else {
-                            StateRole::Idle
-                        },
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::raw("   "),
-                    Span::styled(
-                        item.subtitle.clone(),
-                        Style::default().fg(Color::Rgb(178, 188, 193)),
-                    ),
-                    Span::styled(context_suffix(item), Style::default().fg(MUTED)),
-                ]),
-            ])
-            .style(Style::default().bg(PANEL)),
-            now_inner,
-        );
-    } else {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "Nothing playing right now.",
-                    Style::default().fg(MUTED),
-                )),
-                Line::from(Span::styled(
-                    "Press / to search and Enter to start playback.",
-                    Style::default().fg(accent()),
-                )),
-            ])
-            .style(Style::default().bg(PANEL)),
-            now_inner,
-        );
-    }
-
-    render_filter_bar(frame, app, " Queue Filter ", rows[1]);
-
-    // Upcoming list with section chip and counts. Duplicate queue rows
-    // are meaningful: Spotify lets the same track appear more than once.
-    let items = app.visible_items();
-    let up_block = card_block(&format!("Up Next  {}", items.len()));
-    let up_inner = up_block.inner(rows[2]);
-    frame.render_widget(up_block, rows[2]);
-    if items.is_empty() {
-        let _ = section_chip; // explicitly unused in empty branch
-                              // First seconds after launch: no queue snapshot has arrived
-                              // yet. Show skeleton rows, not "No active session" — loading
-                              // and empty used to be indistinguishable.
-        if app.queue_updated_at.is_none() {
-            let mut lines = vec![Line::from(Span::styled(
-                "Loading queue…",
-                Style::default().fg(MUTED),
-            ))];
-            lines.extend(crate::widgets::skeleton::skeleton_rows(
-                ((up_inner.height as usize).saturating_sub(1) / 2).min(4),
-                up_inner.width,
-            ));
-            frame.render_widget(
-                Paragraph::new(lines).style(Style::default().bg(PANEL)),
-                up_inner,
-            );
-            return;
-        }
-        let empty_lines = if !app.queue.session_active {
-            vec![
-                Line::from(Span::styled(
-                    "No active Spotify session.",
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(Span::styled(
-                    "Start playback from Search or Library to load a live queue.",
-                    Style::default().fg(accent()),
-                )),
-            ]
-        } else {
-            vec![
-                Line::from(Span::styled(
-                    "Queue is empty.",
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(Span::styled(
-                    "Press `e` on any track or album to enqueue it.",
-                    Style::default().fg(accent()),
-                )),
-            ]
-        };
-        frame.render_widget(
-            Paragraph::new(empty_lines).style(Style::default().bg(PANEL)),
-            up_inner,
-        );
-        return;
-    }
-    // Phase 6 — highlight the row that matches the canonical view's
-    // active URI; falls back to `None` when no live playback exists so
-    // no row is highlighted as "now playing" when nothing actually is.
-    let now_playing_uri = view.active_uri;
-    let list = List::new(
-        items
-            .iter()
-            .map(|item| {
-                media_item_with(
-                    item,
-                    app.marked_uris.contains(&item.uri),
-                    now_playing_uri == Some(item.uri.as_str()),
-                    app.palette.now_playing_rail,
-                )
-            })
-            .collect::<Vec<_>>(),
-    )
-    .highlight_style(
-        // Match the player/search/library lists: GREEN_SOFT so the
-        // selected row doesn't read like a second seeker bar.
-        Style::default()
-            .fg(TEXT)
-            .bg(app.palette.soft_accent)
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("▌")
-    .style(Style::default().bg(PANEL));
-    let mut state = ListState::default();
-    state.select(if app.selected >= items.len() {
-        None
-    } else {
-        Some(app.selected)
-    });
-    frame.render_stateful_widget(list, up_inner, &mut state);
-    register_row_hits(app, up_inner, state.offset(), items.len(), 2, Some);
 }
 
 fn render_playlists(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -3524,17 +3445,17 @@ fn render_playlists(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         frame.render_widget(block, rows[1]);
         let items = app.visible_items();
         if items.is_empty() {
-            let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-                [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+            let message = if app.is_liked_songs_open() {
+                "No liked songs yet."
+            } else {
+                "Loading tracks…"
+            };
             frame.render_widget(
-                Paragraph::new(vec![Line::from(vec![
-                    Span::styled(
-                        format!(" {spinner} "),
-                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Loading tracks…", Style::default().fg(TEXT)),
-                ])])
-                .style(Style::default().bg(PANEL)),
+                Paragraph::new(Line::from(Span::styled(
+                    message,
+                    Style::default().fg(TEXT_MUTED),
+                )))
+                .style(Style::default().bg(SURFACE)),
                 inner,
             );
             return;
@@ -3552,7 +3473,7 @@ fn render_playlists(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▌")
-        .style(Style::default().bg(PANEL));
+        .style(Style::default().bg(SURFACE));
         let mut state = ListState::default();
         state.select(if app.selected >= items.len() {
             None
@@ -3572,179 +3493,11 @@ fn render_playlists(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     }
 }
 
-fn render_devices(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    use crate::widgets::style::{card_block, state_chip, StateRole};
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1)])
-        .split(area);
-    render_filter_bar(frame, app, " Device Filter ", chunks[0]);
-    let devices = app.filtered_devices();
-    let block = card_block(&format!(
-        "Devices  {}  ·  Enter/x transfer · O audio output",
-        devices.len()
-    ));
-    let inner = block.inner(chunks[1]);
-    frame.render_widget(block, chunks[1]);
-
-    if devices.is_empty() {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "No visible devices",
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(Span::styled(
-                    "Open Spotify on a phone/laptop/speaker to make it visible. Press u to refresh.",
-                    Style::default().fg(accent()),
-                )),
-            ])
-            .wrap(Wrap { trim: true })
-            .style(Style::default().bg(PANEL)),
-            inner,
-        );
-        return;
-    }
-
-    // Table layout: spread columns across the full width with a
-    // spacer row between devices so the list breathes. Each device
-    // takes 2 rows (content + blank gap) so the GREEN selection
-    // highlight reads as a single chunky row rather than crawling
-    // up tight rows.
-    let table_rows: Vec<ratatui::widgets::Row<'_>> = devices
-        .iter()
-        .flat_map(|device| {
-            let icon = device_kind_icon(&device.kind);
-            let state_role = if device.is_restricted {
-                StateRole::Error
-            } else if device.is_active {
-                StateRole::Active
-            } else {
-                StateRole::Idle
-            };
-            let state_label = if device.is_restricted {
-                "restricted"
-            } else if device.is_active {
-                "playing"
-            } else {
-                "idle"
-            };
-            let volume_cell: Vec<Span<'_>> = if device.supports_volume {
-                let v = device.volume_percent.unwrap_or(0) as usize;
-                let width = 16;
-                let filled = (v * width).div_ceil(100).min(width);
-                let bar: String = "█".repeat(filled) + &"░".repeat(width - filled);
-                let pct = device.volume_percent.unwrap_or(0);
-                vec![
-                    Span::styled("🔊  ", Style::default().fg(MUTED)),
-                    Span::styled(bar, Style::default().fg(accent())),
-                    Span::styled(format!("  {pct:>3}"), Style::default().fg(MUTED)),
-                ]
-            } else {
-                vec![Span::styled(
-                    "🔊  fixed".to_string(),
-                    Style::default().fg(MUTED),
-                )]
-            };
-            let row = ratatui::widgets::Row::new(vec![
-                ratatui::widgets::Cell::from(Line::from(Span::styled(
-                    format!(" {icon} "),
-                    Style::default()
-                        .fg(crate::widgets::style::ACCENT)
-                        .add_modifier(Modifier::BOLD),
-                ))),
-                ratatui::widgets::Cell::from(Line::from(vec![Span::styled(
-                    device.name.clone(),
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                )])),
-                ratatui::widgets::Cell::from(Line::from(Span::styled(
-                    device.kind.clone(),
-                    Style::default().fg(MUTED),
-                ))),
-                ratatui::widgets::Cell::from(Line::from(state_chip(state_label, state_role))),
-                ratatui::widgets::Cell::from(Line::from(volume_cell)),
-            ]);
-            // Trailing spacer row gives vertical breathing room.
-            [row, ratatui::widgets::Row::new(Vec::<&str>::new())]
-        })
-        .collect();
-    let table = ratatui::widgets::Table::new(
-        table_rows,
-        [
-            Constraint::Length(5),
-            Constraint::Min(20),
-            Constraint::Length(14),
-            Constraint::Length(14),
-            Constraint::Length(28),
-        ],
-    )
-    .row_highlight_style(
-        Style::default()
-            .fg(accent_foreground())
-            .bg(accent())
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("▌ ")
-    .style(Style::default().bg(PANEL));
-    let mut state = ratatui::widgets::TableState::default();
-    // Each device occupies two rows (content + spacer); selecting
-    // index N maps to row 2*N so the highlight lands on the content.
-    state.select(if devices.is_empty() {
-        None
-    } else {
-        Some(app.selected.min(devices.len() - 1) * 2)
-    });
-    frame.render_stateful_widget(table, inner, &mut state);
-    // Hit map: device index = table row / 2 — the old 1-row mapping
-    // selected device 2k for a click on device k (and Enter then
-    // transferred playback to the wrong device).
-    let table_offset = state.offset();
-    {
-        let mut map = app.hit_map.borrow_mut();
-        for (index, _) in devices.iter().enumerate() {
-            let table_row = index * 2;
-            if table_row + 1 < table_offset {
-                continue;
-            }
-            let offset_rows = (table_row.saturating_sub(table_offset)) as u16;
-            if offset_rows >= inner.height {
-                break;
-            }
-            let height = 2u16.min(inner.height - offset_rows);
-            map.push(
-                Rect::new(inner.x, inner.y + offset_rows, inner.width, height),
-                crate::hit::HitTarget::Row { index },
-            );
-        }
-    }
-}
-
-fn device_kind_icon(kind: &str) -> &'static str {
-    let k = kind.to_ascii_lowercase();
-    if k.contains("smartphone") || k.contains("phone") || k.contains("tablet") {
-        "📱"
-    } else if k.contains("computer") || k.contains("laptop") {
-        "🖥"
-    } else if k.contains("tv") {
-        "📺"
-    } else if k.contains("speaker") {
-        "🔊"
-    } else if k.contains("car") {
-        "🚗"
-    } else if k.contains("game") || k.contains("console") {
-        "🎮"
-    } else if k.contains("cast") {
-        "📡"
-    } else {
-        "🎧"
-    }
-}
-
 fn render_filter_bar(frame: &mut Frame<'_>, app: &App, title: &str, area: Rect) {
     let style = if app.list_filter_active {
-        Style::default().fg(TEXT).bg(Color::Rgb(24, 34, 29))
+        Style::default().fg(TEXT).bg(SURFACE)
     } else {
-        Style::default().fg(MUTED).bg(PANEL)
+        Style::default().fg(TEXT_MUTED).bg(SURFACE)
     };
     let prompt = if app.list_filter_active {
         "type to filter current list"
@@ -3755,7 +3508,7 @@ fn render_filter_bar(frame: &mut Frame<'_>, app: &App, title: &str, area: Rect) 
         Paragraph::new(Line::from(vec![
             Span::styled("filter ", Style::default().fg(accent())),
             Span::styled(&app.list_filter_query, Style::default().fg(TEXT)),
-            Span::styled(format!("  {prompt}"), Style::default().fg(MUTED)),
+            Span::styled(format!("  {prompt}"), Style::default().fg(TEXT_MUTED)),
         ]))
         .block(panel_block(title))
         .style(style),
@@ -3791,7 +3544,7 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ]));
         left.push(Line::from(""));
         left.push(Line::from(vec![
-            Span::styled("Daemon   ", Style::default().fg(MUTED)),
+            Span::styled("Daemon   ", Style::default().fg(TEXT_MUTED)),
             Span::styled(
                 format!(
                     "pid {:?}, uptime {:?}s",
@@ -3801,11 +3554,11 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ),
         ]));
         left.push(Line::from(vec![
-            Span::styled("Auth     ", Style::default().fg(MUTED)),
+            Span::styled("Auth     ", Style::default().fg(TEXT_MUTED)),
             Span::styled(&report.keychain_token.message, Style::default().fg(TEXT)),
         ]));
         left.push(Line::from(vec![
-            Span::styled("Logs     ", Style::default().fg(MUTED)),
+            Span::styled("Logs     ", Style::default().fg(TEXT_MUTED)),
             Span::styled(&report.logs_path, Style::default().fg(TEXT)),
         ]));
         left.push(Line::from(""));
@@ -3835,8 +3588,7 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
             }));
         }
     } else {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         left.push(Line::from(vec![
             Span::styled(
                 format!(" {spinner} "),
@@ -3849,13 +3601,13 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ]));
         left.push(Line::from(Span::styled(
             "Auto-fetching the daemon report, cache stats, and recent logs.",
-            Style::default().fg(MUTED),
+            Style::default().fg(TEXT_MUTED),
         )));
     }
     frame.render_widget(
         Paragraph::new(left)
             .wrap(Wrap { trim: true })
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
         left_inner,
     );
 
@@ -3903,8 +3655,11 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
         vec![
             section_chip("Recent Logs"),
             Span::raw(" "),
-            Span::styled(format!("({})", log_lines.len()), Style::default().fg(MUTED)),
-            Span::styled("  ·  Ctrl-f filter", Style::default().fg(MUTED)),
+            Span::styled(
+                format!("({})", log_lines.len()),
+                Style::default().fg(TEXT_MUTED),
+            ),
+            Span::styled("  ·  Ctrl-f filter", Style::default().fg(TEXT_MUTED)),
         ]
     } else {
         vec![
@@ -3923,7 +3678,7 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
             } else {
                 "  no matching logs"
             },
-            Style::default().fg(MUTED),
+            Style::default().fg(TEXT_MUTED),
         )));
     } else {
         let visible_count = 12usize;
@@ -3940,12 +3695,12 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
     right.push(Line::from(""));
     right.push(Line::from(vec![
         section_chip("Operations"),
-        Span::styled("  ·  u to undo selected", Style::default().fg(MUTED)),
+        Span::styled("  ·  u to undo selected", Style::default().fg(TEXT_MUTED)),
     ]));
     if app.operations.is_empty() {
         right.push(Line::from(Span::styled(
             "  no recorded operations yet",
-            Style::default().fg(MUTED),
+            Style::default().fg(TEXT_MUTED),
         )));
     } else {
         for (i, op) in app.operations.iter().take(20).enumerate() {
@@ -3978,7 +3733,7 @@ fn render_diagnostics(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(right)
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(TEXT).bg(PANEL)),
+            .style(Style::default().fg(TEXT).bg(SURFACE)),
         right_inner,
     );
 }
@@ -4064,7 +3819,7 @@ fn render_command_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Style::default().fg(accent()).add_modifier(Modifier::BOLD),
             ),
         ]))
-        .style(Style::default().bg(PANEL)),
+        .style(Style::default().bg(SURFACE)),
         rows[0],
     );
 
@@ -4100,7 +3855,7 @@ fn render_command_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("▌")
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
         rows[1],
         &mut state,
     );
@@ -4111,11 +3866,11 @@ fn render_command_palette(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::raw(" "),
             button_chip("Enter run", ButtonRole::Affirm),
             Span::raw("  "),
-            Span::styled("↑/↓ move", Style::default().fg(MUTED)),
+            Span::styled("↑/↓ move", Style::default().fg(TEXT_MUTED)),
             Span::raw("  "),
-            Span::styled("Esc close", Style::default().fg(MUTED)),
+            Span::styled("Esc close", Style::default().fg(TEXT_MUTED)),
         ]))
-        .style(Style::default().bg(PANEL)),
+        .style(Style::default().bg(SURFACE)),
         rows[2],
     );
 }
@@ -4149,37 +3904,37 @@ fn render_error_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
         && (upper.contains("/TRACKS") || upper.contains("FORBIDDEN"));
     let (icon, title_chip_bg, hint) = if is_auth {
         (
-            "🔒",
-            RED,
-            "Your Spotify token is missing a permission. Quit, run `spotuify logout && spotuify login`, then restart.",
+            banner_glyph(BannerGlyph::Lock),
+            DANGER,
+            "Your provider token is missing a permission. Quit, run `spotuify logout && spotuify login`, then restart.",
         )
     } else if is_curated_playlist {
         (
-            "🔒",
+            banner_glyph(BannerGlyph::Lock),
             WARN,
-            "Spotify-curated playlists (Daily Mix, Discover Weekly, Made For You, etc.) no longer expose their tracks to third-party apps. Your own playlists still work.",
+            "This provider-managed playlist does not expose its tracks to third-party apps. Your own playlists may still work.",
         )
     } else if upper.contains("403") || upper.contains("FORBIDDEN") {
         (
-            "🔒",
+            banner_glyph(BannerGlyph::Lock),
             WARN,
-            "Spotify refused this request. Common causes: Premium-only feature, restricted content, no active playback device. Try again with playback active.",
+            "The provider refused this request. Common causes: plan restrictions, restricted content, or no active playback device.",
         )
     } else if upper.contains("411") {
         (
             "⚡",
-            RED,
-            "Spotify edge rejected the body. This is an internal bug — please file an issue.",
+            DANGER,
+            "The provider rejected the request body. This is an internal bug — please file an issue.",
         )
     } else if upper.contains("5") && upper.contains("API") {
         (
             "✖",
-            RED,
-            "Spotify server error. Retry; if it persists check status.spotify.com.",
+            DANGER,
+            "Provider server error. Retry; if it persists check the provider status page.",
         )
     } else if upper.contains("NETWORK") || upper.contains("TIMED OUT") || upper.contains("DNS") {
         (
-            "📡",
+            device_kind_glyph("cast"),
             WARN,
             "Network blip. The daemon will keep retrying in the background.",
         )
@@ -4222,14 +3977,17 @@ fn render_error_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
         )))
         .wrap(Wrap { trim: true })
-        .style(Style::default().bg(PANEL)),
+        .style(Style::default().bg(SURFACE)),
         rows[1],
     );
 
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(MUTED))))
-            .wrap(Wrap { trim: true })
-            .style(Style::default().bg(PANEL)),
+        Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::default().fg(TEXT_MUTED),
+        )))
+        .wrap(Wrap { trim: true })
+        .style(Style::default().bg(SURFACE)),
         rows[2],
     );
 
@@ -4237,9 +3995,9 @@ fn render_error_modal(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(Line::from(vec![
             button_chip("Esc dismiss", ButtonRole::Cancel),
             Span::raw("   "),
-            Span::styled("? help", Style::default().fg(MUTED)),
+            Span::styled("? help", Style::default().fg(TEXT_MUTED)),
         ]))
-        .style(Style::default().bg(PANEL)),
+        .style(Style::default().bg(SURFACE)),
         rows[3],
     );
 }
@@ -4259,7 +4017,7 @@ fn render_media_list(
             Paragraph::new(message)
                 .block(panel_block(&title))
                 .wrap(Wrap { trim: true })
-                .style(Style::default().fg(MUTED).bg(PANEL)),
+                .style(Style::default().fg(TEXT_MUTED).bg(SURFACE)),
             area,
         );
         return;
@@ -4279,7 +4037,7 @@ fn render_media_list(
     let list = List::new(rows)
         .block(panel_block(&title))
         .highlight_style(
-            // GREEN_SOFT keeps the family but stops the selection
+            // The soft accent keeps the family but stops the selection
             // chip from looking like a second seeker bar.
             Style::default()
                 .fg(TEXT)
@@ -4287,7 +4045,7 @@ fn render_media_list(
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol(" ")
-        .style(Style::default().bg(PANEL));
+        .style(Style::default().bg(SURFACE));
     let mut state = ListState::default();
     state.select(if items.is_empty() || selected >= items.len() {
         None
@@ -4310,66 +4068,59 @@ fn render_playlist_list(
     area: Rect,
 ) {
     use crate::widgets::style::card_block;
-    if playlists.is_empty() {
-        let block = card_block("Playlists");
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(vec![
-                    Span::styled(
-                        " ⠋ ",
-                        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        "Fetching playlists…",
-                        Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-                Line::from(Span::styled(
-                    "Auto-refreshes on auth; stays cached after the first sync.",
-                    Style::default().fg(MUTED),
-                )),
-            ])
-            .wrap(Wrap { trim: true })
-            .style(Style::default().bg(PANEL)),
-            inner,
-        );
-        return;
-    }
+    let liked_count = app.liked_songs_items().len();
+    let total = playlists.len() + 1;
     // Tabular layout so the right side of the screen isn't dead space.
     // Columns: art marker · name · owner · track count. A blank spacer
     // row between playlists gives the same breathing room the devices
     // table uses without making every row a 2-line stack.
-    let table_rows: Vec<ratatui::widgets::Row<'_>> = playlists
-        .iter()
-        .flat_map(|playlist| {
-            let marker = if playlist.image_url.is_some() {
-                Span::styled(
-                    " ▣ ",
-                    Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-                )
-            } else {
-                Span::styled(" ▢ ", Style::default().fg(MUTED))
-            };
-            let row = ratatui::widgets::Row::new(vec![
-                ratatui::widgets::Cell::from(Line::from(marker)),
-                ratatui::widgets::Cell::from(Line::from(Span::styled(
-                    playlist.name.clone(),
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                ))),
-                ratatui::widgets::Cell::from(Line::from(Span::styled(
-                    playlist.owner.clone(),
-                    Style::default().fg(MUTED),
-                ))),
-                ratatui::widgets::Cell::from(Line::from(Span::styled(
-                    format!("{} tracks", playlist.tracks_total),
-                    Style::default().fg(MUTED),
-                ))),
-            ]);
-            [row, ratatui::widgets::Row::new(Vec::<&str>::new())]
-        })
-        .collect();
+    let mut table_rows: Vec<ratatui::widgets::Row<'_>> = vec![
+        ratatui::widgets::Row::new(vec![
+            ratatui::widgets::Cell::from(Line::from(Span::styled(
+                " ♥ ",
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+            ))),
+            ratatui::widgets::Cell::from(Line::from(Span::styled(
+                "Liked Songs",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            ))),
+            ratatui::widgets::Cell::from(Line::from(Span::styled(
+                "Your Library",
+                Style::default().fg(TEXT_MUTED),
+            ))),
+            ratatui::widgets::Cell::from(Line::from(Span::styled(
+                format!("{liked_count} tracks"),
+                Style::default().fg(TEXT_MUTED),
+            ))),
+        ]),
+        ratatui::widgets::Row::new(Vec::<&str>::new()),
+    ];
+    table_rows.extend(playlists.iter().flat_map(|playlist| {
+        let marker = if playlist.image_url.is_some() {
+            Span::styled(
+                " ▣ ",
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(" ▢ ", Style::default().fg(TEXT_MUTED))
+        };
+        let row = ratatui::widgets::Row::new(vec![
+            ratatui::widgets::Cell::from(Line::from(marker)),
+            ratatui::widgets::Cell::from(Line::from(Span::styled(
+                playlist.name.clone(),
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            ))),
+            ratatui::widgets::Cell::from(Line::from(Span::styled(
+                playlist.owner.clone(),
+                Style::default().fg(TEXT_MUTED),
+            ))),
+            ratatui::widgets::Cell::from(Line::from(Span::styled(
+                format!("{} tracks", playlist.tracks_total),
+                Style::default().fg(TEXT_MUTED),
+            ))),
+        ]);
+        [row, ratatui::widgets::Row::new(Vec::<&str>::new())]
+    }));
     let table = ratatui::widgets::Table::new(
         table_rows,
         [
@@ -4381,7 +4132,7 @@ fn render_playlist_list(
     )
     .block(card_block(&format!(
         "Playlists  {}  ·  Enter open · e enqueue · a add",
-        playlists.len()
+        total
     )))
     .row_highlight_style(
         Style::default()
@@ -4389,16 +4140,12 @@ fn render_playlist_list(
             .bg(accent())
             .add_modifier(Modifier::BOLD),
     )
-    .style(Style::default().bg(PANEL));
+    .style(Style::default().bg(SURFACE));
     let mut state = ratatui::widgets::TableState::default();
     // Each playlist occupies two table rows (content + spacer). The
     // selection state must point at the content row so the highlight
     // lands on the right line.
-    state.select(if playlists.is_empty() {
-        None
-    } else {
-        Some(selected.min(playlists.len() - 1) * 2)
-    });
+    state.select(Some(selected.min(total - 1) * 2));
     frame.render_stateful_widget(table, area, &mut state);
     // Hit map: each playlist spans its content row + spacer row; the
     // table's offset is in TABLE rows (2 per playlist).
@@ -4406,7 +4153,7 @@ fn render_playlist_list(
     let table_offset = state.offset();
     {
         let mut map = app.hit_map.borrow_mut();
-        for (index, _) in playlists.iter().enumerate() {
+        for index in 0..total {
             let table_row = index * 2;
             if table_row + 1 < table_offset {
                 continue;
@@ -4484,7 +4231,7 @@ fn render_artwork_preview(
 
     let text_width = rows[1].width.saturating_sub(2) as usize;
     let status = if subject.image_url.is_some() {
-        "cover from Spotify"
+        "cover from provider"
     } else {
         "generated fallback"
     };
@@ -4496,36 +4243,35 @@ fn render_artwork_preview(
             )),
             Line::from(Span::styled(
                 truncate(&subject.subtitle, text_width),
-                Style::default().fg(Color::Rgb(178, 188, 193)),
+                Style::default().fg(TEXT_MUTED),
             )),
             Line::from(Span::styled(
                 truncate(&subject.detail, text_width),
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             )),
             Line::from(Span::styled(status, Style::default().fg(accent()))),
         ])
         .wrap(Wrap { trim: true })
-        .style(Style::default().bg(PANEL)),
+        .style(Style::default().bg(SURFACE)),
         rows[1],
     );
 }
 
 fn empty_media_state(app: &App) -> Vec<Line<'static>> {
-    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+    let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
     let spinner_owned = spinner.to_string();
     match app.screen {
         Screen::Search if app.is_searching => vec![
             Line::from(vec![
                 Span::styled(format!(" {spinner_owned} "), Style::default().fg(accent()).add_modifier(Modifier::BOLD)),
                 Span::styled(
-                    "Searching Spotify and local cache…",
+                    "Searching provider and local cache…",
                     Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
                 ),
             ]),
             Line::from(Span::styled(
                 "Local matches surface first; remote results stream in.",
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             )),
         ],
         Screen::Search => vec![
@@ -4539,7 +4285,7 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
             )),
             Line::from(Span::styled(
                 "Once results land: g t/r/b/p/s/e jumps to Tracks/Artists/Albums/Playlists/Shows/Episodes.",
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             )),
         ],
         Screen::Library => vec![
@@ -4552,32 +4298,18 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
             ]),
             Line::from(Span::styled(
                 "It refreshes automatically and stays cached.",
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             )),
         ],
-        Screen::Queue => vec![
-            if !app.queue.session_active {
-                Line::from(Span::styled(
-                    "No active Spotify session.",
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                ))
-            } else {
-                Line::from(Span::styled(
-                    "Queue is empty.",
-                    Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-                ))
-            },
-            if !app.queue.session_active {
-                Line::from(Span::styled(
-                    "Start playback from Search or Library to load a live queue.",
-                    Style::default().fg(accent()),
-                ))
-            } else {
-                Line::from(Span::styled(
-                    "Press `e` on any track or album to enqueue.",
-                    Style::default().fg(accent()),
-                ))
-            },
+        Screen::Podcasts => vec![
+            Line::from(Span::styled(
+                "No followed podcasts yet.",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "Follow a show in your provider, then refresh.",
+                Style::default().fg(accent()),
+            )),
         ],
         Screen::Playlists if app.selected_playlist_id.is_some() => vec![
             Line::from(vec![
@@ -4589,36 +4321,12 @@ fn empty_media_state(app: &App) -> Vec<Line<'static>> {
             ]),
             Line::from(Span::styled(
                 "Press b to go back.",
-                Style::default().fg(MUTED),
-            )),
-        ],
-        Screen::Player if !app.queue.session_active => vec![
-            Line::from(Span::styled(
-                "Fetching your Home feed.",
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                "Saved songs, albums, podcasts, and recent plays appear here.",
-                Style::default().fg(accent()),
-            )),
-            Line::from(Span::styled(
-                "Use Search while the cache warms up.",
-                Style::default().fg(MUTED),
-            )),
-        ],
-        Screen::Player => vec![
-            Line::from(Span::styled(
-                "Home feed is empty.",
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                "Use Search or Library to start something.",
-                Style::default().fg(accent()),
+                Style::default().fg(TEXT_MUTED),
             )),
         ],
         _ => vec![Line::from(Span::styled(
             "Nothing here yet.",
-            Style::default().fg(MUTED),
+            Style::default().fg(TEXT_MUTED),
         ))],
     }
 }
@@ -4630,7 +4338,7 @@ fn render_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // matter what else is happening above.
     let block = Block::default()
         .borders(Borders::TOP)
-        .border_style(Style::default().fg(crate::widgets::style::DIM_BORDER));
+        .border_style(Style::default().fg(BORDER_STRONG));
     let inner = block.inner(area);
     frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
     frame.render_widget(block, area);
@@ -4656,11 +4364,16 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if let Some(banner) = &active_banner {
         let (text, color) = banner_message(banner);
         let (icon, role) = match banner {
-            BannerState::Auth { .. } => ("🔒", StateRole::Error),
-            BannerState::RateLimited { .. } => ("⏱", StateRole::Warn),
-            BannerState::Compat { .. } | BannerState::Deprecated { .. } => ("ⓘ", StateRole::Warn),
-            BannerState::UpdateAvailable => ("⟳", StateRole::Warn),
-            BannerState::UpgradeAvailable { .. } => ("⤓", StateRole::Warn),
+            BannerState::Auth { .. } => (banner_glyph(BannerGlyph::Lock), StateRole::Error),
+            BannerState::RateLimited { .. } => (banner_glyph(BannerGlyph::Timer), StateRole::Warn),
+            BannerState::Compat { .. } | BannerState::Deprecated { .. } => {
+                (banner_glyph(BannerGlyph::Info), StateRole::Warn)
+            }
+            BannerState::UpdateAvailable => (banner_glyph(BannerGlyph::Restart), StateRole::Warn),
+            BannerState::UpgradeAvailable { .. } => {
+                (banner_glyph(BannerGlyph::Download), StateRole::Warn)
+            }
+            BannerState::AuthMigration { .. } => (banner_glyph(BannerGlyph::Key), StateRole::Warn),
         };
         // Build a single line: severity chip · message · action chip
         // (when the banner names a recovery key).
@@ -4680,12 +4393,12 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ) {
             spans.push(Span::raw("  "));
             spans.push(key_chip("R"));
-            spans.push(Span::styled(" re-auth", Style::default().fg(MUTED)));
+            spans.push(Span::styled(" re-auth", Style::default().fg(TEXT_MUTED)));
         }
         if matches!(banner, BannerState::UpdateAvailable) {
             spans.push(Span::raw("  "));
             spans.push(key_chip("R"));
-            spans.push(Span::styled(" restart", Style::default().fg(MUTED)));
+            spans.push(Span::styled(" restart", Style::default().fg(TEXT_MUTED)));
         }
         frame.render_widget(
             Paragraph::new(Line::from(spans)).style(Style::default().bg(BG)),
@@ -4694,8 +4407,7 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
     if !app.pending_receipts.is_empty() {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         let first = &app.pending_receipts[0].action;
         let len = app.pending_receipts.len();
         frame.render_widget(
@@ -4715,17 +4427,22 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
     if let Some(toast) = &app.toast {
+        let (glyph, color) = match toast.kind {
+            ToastKind::Success => (" ✓ ", SUCCESS),
+            ToastKind::Error => (" ✗ ", DANGER),
+            ToastKind::Info => (" • ", WARN),
+        };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
-                    " ✓ ",
+                    glyph,
                     Style::default()
-                        .fg(accent_foreground())
-                        .bg(accent())
+                        .fg(BG)
+                        .bg(color)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
-                Span::styled(toast.clone(), Style::default().fg(accent())),
+                Span::styled(toast.message.clone(), Style::default().fg(color)),
             ]))
             .style(Style::default().bg(BG)),
             area,
@@ -4733,8 +4450,7 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
     if app.is_syncing {
-        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            [(app.last_progress_tick.elapsed().as_millis() / 80 % 10) as usize];
+        let spinner = spinner_frame(app.last_progress_tick.elapsed().as_millis() / 80);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
@@ -4745,7 +4461,7 @@ fn render_ephemeral_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    "Syncing Spotify… Ctrl+C quits",
+                    "Syncing provider… Ctrl+C quits",
                     Style::default().fg(accent()),
                 ),
             ]))
@@ -4765,7 +4481,9 @@ fn render_hint_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // Filter out actions that don't apply to the focused item's kind
     // — e.g. queue/like/add-to-playlist don't work on an Artist URI.
     let focused_kind = current_focused_kind(app);
-    hints.retain(|hint| action_applies_to_kind(hint.id, focused_kind.as_ref()));
+    hints.retain(|hint| {
+        app.action_supported(hint.id) && action_applies_to_kind(hint.id, focused_kind.as_ref())
+    });
     if hints.is_empty() {
         return;
     }
@@ -4801,16 +4519,13 @@ fn render_hint_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
     spans.push(Span::raw(" "));
     for (idx, hint) in fitted.into_iter().enumerate() {
         if idx > 0 {
-            spans.push(Span::styled(
-                " · ",
-                Style::default().fg(crate::widgets::style::DIM_BORDER),
-            ));
+            spans.push(Span::styled(" · ", Style::default().fg(BORDER_STRONG)));
         }
         spans.push(crate::widgets::style::key_chip(hint.shortcut));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
             hint.label.to_string(),
-            Style::default().fg(MUTED),
+            Style::default().fg(TEXT_MUTED),
         ));
     }
     frame.render_widget(
@@ -4856,19 +4571,19 @@ fn action_applies_to_kind(action: crate::tui_actions::TuiAction, kind: Option<&M
 pub(crate) fn auth_banner_message(kind: spotuify_protocol::AuthErrorKind) -> String {
     use spotuify_protocol::AuthErrorKind;
     match kind {
-        AuthErrorKind::NotLoggedIn => "No Spotify login found. Press Enter to log in.".to_string(),
+        AuthErrorKind::NotLoggedIn => "No provider login found. Press Enter to log in.".to_string(),
         AuthErrorKind::ScopeReauthRequired => {
-            "Spotify permissions out of date. Quit, run `spotuify logout && spotuify login`, then restart."
+            "Provider permissions out of date. Quit, run `spotuify logout && spotuify login`, then restart."
                 .to_string()
         }
         AuthErrorKind::ExpiredRefresh => {
-            "Spotify refresh token expired. Run `spotuify login`.".to_string()
+            "Provider refresh token expired. Run `spotuify login`.".to_string()
         }
         AuthErrorKind::InvalidGrant => {
-            "Spotify auth rejected. Run `spotuify logout && spotuify login`.".to_string()
+            "Provider auth rejected. Run `spotuify logout && spotuify login`.".to_string()
         }
         AuthErrorKind::Forbidden => {
-            "Spotify denied the request (forbidden). Run `spotuify login` to refresh permissions."
+            "The provider denied the request (forbidden). Run `spotuify login` to refresh permissions."
                 .to_string()
         }
     }
@@ -4883,13 +4598,13 @@ fn banner_message(banner: &BannerState) -> (String, Color) {
             format!("rate limited on {scope}; retrying in {retry_after_secs}s"),
             WARN,
         ),
-        BannerState::Auth { kind } => (auth_banner_message(*kind), RED),
+        BannerState::Auth { kind } => (auth_banner_message(*kind), DANGER),
         BannerState::Deprecated { endpoint } => (
-            format!("Spotify removed {endpoint}; using fallback where possible"),
+            format!("Provider removed {endpoint}; using fallback where possible"),
             WARN,
         ),
         BannerState::Compat { endpoint } => (
-            format!("Spotify changed {endpoint}; local compatibility applied"),
+            format!("Provider changed {endpoint}; local compatibility applied"),
             WARN,
         ),
         BannerState::UpdateAvailable => (
@@ -4903,6 +4618,14 @@ fn banner_message(banner: &BannerState) -> (String, Color) {
             format!("spotuify {latest_version} available · {action}"),
             accent(),
         ),
+        BannerState::AuthMigration { can_login_dev_app } => {
+            let message = if *can_login_dev_app {
+                "First-party auth is rate-limited by the provider — run `spotuify login --dev-app` to switch"
+            } else {
+                "First-party auth is rate-limited by the provider — run `spotuify onboard` to switch"
+            };
+            (message.to_string(), WARN)
+        }
     }
 }
 
@@ -4925,7 +4648,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(vec![
             Line::from(Span::styled(
                 "Type to filter shortcuts and FAQs:",
-                Style::default().fg(MUTED),
+                Style::default().fg(TEXT_MUTED),
             )),
             Line::from(vec![
                 Span::styled(
@@ -4943,7 +4666,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 ),
             ]),
         ])
-        .style(Style::default().bg(PANEL)),
+        .style(Style::default().bg(SURFACE)),
         rows[0],
     );
 
@@ -4958,9 +4681,9 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "Mark with m, then press e to append",
         ),
         ("replace vs append", "Enter replaces the queue, e appends"),
-        ("no active device", "Press 6 for Devices, Enter to transfer"),
+        ("no active device", "Press D, choose a device, then Enter"),
         (
-            "re-authorize Spotify",
+            "re-authorize provider",
             "spotuify logout && spotuify login, then restart",
         ),
     ];
@@ -4991,7 +4714,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ]));
             left_lines.push(Line::from(vec![
                 Span::raw("   "),
-                Span::styled(ans.to_string(), Style::default().fg(MUTED)),
+                Span::styled(ans.to_string(), Style::default().fg(TEXT_MUTED)),
             ]));
             left_lines.push(Line::from(""));
         }
@@ -4999,7 +4722,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(left_lines)
             .wrap(Wrap { trim: true })
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
         body_cols[0],
     );
 
@@ -5015,7 +4738,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
             if let Some(cli) = action.cli {
                 right_lines.push(Line::from(vec![
                     Span::raw("    "),
-                    Span::styled(format!("CLI: {cli}"), Style::default().fg(MUTED)),
+                    Span::styled(format!("CLI: {cli}"), Style::default().fg(TEXT_MUTED)),
                 ]));
             }
         }
@@ -5023,7 +4746,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(right_lines)
             .wrap(Wrap { trim: true })
-            .style(Style::default().bg(PANEL)),
+            .style(Style::default().bg(SURFACE)),
         body_cols[1],
     );
 }
@@ -5095,16 +4818,7 @@ fn media_item_with(
     } else {
         Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
     };
-    // Tint the row's panel background slightly when it's the
-    // now-playing track. A full saturated background would clash
-    // with the selection highlight; this near-black-but-greener
-    // variant just hints at it being "the live one".
-    let row_bg = if now_playing {
-        Color::Rgb(28, 40, 33)
-    } else {
-        PANEL
-    };
-    let row_style = Style::default().bg(row_bg);
+    let row_style = Style::default().bg(SURFACE);
     ListItem::new(vec![
         Line::from(vec![
             rail.clone(),
@@ -5119,17 +4833,14 @@ fn media_item_with(
             ),
             Span::raw("  "),
             Span::styled(item.name.clone(), name_style),
-            Span::styled(duration, Style::default().fg(MUTED)),
+            Span::styled(duration, Style::default().fg(TEXT_MUTED)),
         ])
         .style(row_style),
         Line::from(vec![
             rail,
             Span::raw("      "),
-            Span::styled(
-                item.subtitle.clone(),
-                Style::default().fg(Color::Rgb(178, 188, 193)),
-            ),
-            Span::styled(context_suffix(item), Style::default().fg(MUTED)),
+            Span::styled(item.subtitle.clone(), Style::default().fg(TEXT_MUTED)),
+            Span::styled(context_suffix(item), Style::default().fg(TEXT_MUTED)),
         ])
         .style(row_style),
     ])
@@ -5141,15 +4852,15 @@ fn media_item_with(
 
 fn panel_block(title: &str) -> Block<'_> {
     // Legacy block; new screens should use `widgets::style::card_block`
-    // (which adds the ACCENT title chip). This helper now reuses the
-    // shared DIM_BORDER palette so the two block styles read as one
+    // (which adds the adaptive accent title chip). This helper reuses the
+    // shared BORDER_STRONG palette so the two block styles read as one
     // family instead of competing.
     Block::default()
         .title(title)
         .borders(Borders::ALL)
         .border_set(symbols::border::ROUNDED)
-        .border_style(Style::default().fg(crate::widgets::style::DIM_BORDER))
-        .style(Style::default().bg(PANEL))
+        .border_style(Style::default().fg(BORDER_STRONG))
+        .style(Style::default().bg(SURFACE))
 }
 
 // `key_style`, `toggle_style`, and `hint_text` were removed: every
@@ -5171,10 +4882,10 @@ pub fn kind_icon(kind: &MediaKind) -> &'static str {
 fn kind_color(kind: &MediaKind) -> Color {
     match kind {
         MediaKind::Track => accent(),
-        MediaKind::Episode => Color::Rgb(180, 128, 255),
-        MediaKind::Show => Color::Rgb(180, 128, 255),
-        MediaKind::Album => Color::Rgb(91, 179, 255),
-        MediaKind::Artist => Color::Rgb(255, 177, 66),
+        MediaKind::Episode => KIND_PODCAST,
+        MediaKind::Show => KIND_PODCAST,
+        MediaKind::Album => KIND_ALBUM,
+        MediaKind::Artist => KIND_ARTIST,
         MediaKind::Playlist => WARN,
     }
 }
@@ -5263,10 +4974,13 @@ fn truncate(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui_actions::CommandPalette;
+    use crate::tui_actions::TuiAction;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    use ratatui_image::picker::Picker;
+    use spotuify_core::{
+        Device, Playback, ProviderCaps, ProviderCatalog, ProviderDescriptor, ProviderId, Queue,
+        TransportCaps, UriScheme,
+    };
     use std::collections::HashSet;
 
     #[test]
@@ -5344,7 +5058,6 @@ mod tests {
         assert_eq!(wrapped_row_count("01234567890", 10), 2); // one over → 2 rows
         assert_eq!(wrapped_row_count("anything", 0), 1); // zero width guard
     }
-    use std::time::Instant;
 
     #[test]
     fn scope_reauth_banner_message_names_the_logout_login_recovery_path() {
@@ -5420,114 +5133,185 @@ mod tests {
     }
 
     fn test_app() -> App {
-        App {
-            playback: spotuify_spotify::client::Playback::default(),
-            queue: spotuify_spotify::client::Queue::default(),
-            devices: Vec::new(),
-            playlists: Vec::new(),
-            inaccessible_playlist_ids: std::collections::HashSet::new(),
-            last_played: None,
-            recent_items: Vec::new(),
-            library_items: Vec::new(),
-            playlist_tracks: Vec::new(),
-            search_results: Vec::new(),
-            search_version: 0,
-            search_panes: std::collections::HashMap::new(),
-            search_user_steered: false,
-            is_searching: false,
-            action_in_flight: false,
-            screen: Screen::Search,
-            search_query: String::new(),
-            search_input_active: false,
-            list_filter_query: String::new(),
-            list_filter_active: false,
-            selected: 0,
-            playlist_selected: 0,
-            selected_playlist_id: None,
-            selected_playlist_name: None,
-            toast: None,
-            notifications: Vec::new(),
-            reminders: Vec::new(),
-            history_sessions: Vec::new(),
-            history_loading: false,
-            history_error: None,
-            search_sort: spotuify_protocol::SearchSortData::Relevance,
-            search_kind_filter: None,
-            error: None,
-            last_progress_tick: Instant::now(),
-            awaiting_track_change_until: None,
-            current_art_url: None,
-            cover: None,
-            palette: crate::widgets::style::UiPalette::default(),
-            selected_art_url: None,
-            selected_art_cover: None,
-            playback_updated_at: None,
-            queue_updated_at: None,
-            devices_updated_at: None,
-            playback_known: true,
-            started_at: Instant::now(),
-            auth_revoked_observed: false,
-            pending_auth_modal_until: None,
-            picker: Picker::halfblocks(),
-            spotifyd_status: None,
-            is_syncing: false,
-            last_sync: None,
-            last_library_sync: None,
-            show_help: false,
-            help_query: String::new(),
-            command_palette: CommandPalette::default(),
-            marked_uris: HashSet::new(),
-            mark_anchor: None,
-            player_large: true,
-            right_rail: RightRailMode::Hidden,
-            fullscreen_panel: None,
-            viz_enabled: false,
-            viz_configured_source: spotuify_protocol::VizSourceKindData::Auto,
-            viz_active_source: spotuify_protocol::VizActiveSource::None,
-            spectrum_bands: [0.0; 12],
-            spectrum_peak: 0.0,
-            viz_color_scheme: "spotify-green".to_string(),
-            viz_last_frame_at: None,
-            viz_hint: None,
-            viz_backend_kind: None,
-            diagnostics_report: None,
-            cache_status: None,
-            diagnostics_logs: Vec::new(),
-            lyrics: None,
-            lyrics_track_uri: None,
-            lyrics_failed_track_uri: None,
-            lyrics_offset_ms: 0,
-            lyrics_loading: false,
-            lyrics_error: None,
-            confirm_modal: None,
-            playlist_picker: None,
-            device_picker: None,
-            audio_output_picker: None,
-            reminder_picker: None,
-            login_modal: None,
-            operations: Vec::new(),
-            operations_cursor: 0,
-            pending_receipts: Vec::new(),
-            banner: None,
-            binary_fingerprint: None,
-            update_available: false,
-            artist_view: None,
-            refresh_requested: false,
-            pending_g: false,
-            hit_map: std::cell::RefCell::new(crate::hit::HitMap::default()),
+        App::test_fixture(Screen::Search)
+    }
+
+    fn transportless_provider_catalog() -> ProviderCatalog {
+        let id = ProviderId::new("fake").expect("valid fake provider id");
+        ProviderCatalog {
+            default_provider: Some(id.clone()),
+            providers: vec![ProviderDescriptor {
+                id,
+                uri_scheme: UriScheme::Fake,
+                display_name: "Fake".to_string(),
+                capabilities: ProviderCaps::default(),
+                is_default: true,
+            }],
         }
+    }
+
+    fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area();
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn normalized_terminal_text(terminal: &Terminal<TestBackend>) -> String {
+        terminal_text(terminal)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn stale_device() -> Device {
+        Device {
+            id: Some("stale-device".to_string()),
+            name: "Stale Speaker".to_string(),
+            kind: "Speaker".to_string(),
+            is_active: true,
+            is_restricted: false,
+            supports_volume: true,
+            volume_percent: Some(42),
+        }
+    }
+
+    fn install_stale_active_queue(app: &mut App) {
+        let current = item("fake:track:stale-current", "Stale Current Track");
+        app.playback.item = Some(current.clone());
+        app.playback.is_playing = true;
+        app.queue = Queue {
+            currently_playing: Some(current),
+            items: vec![item("fake:track:stale-next", "Stale Next Track")],
+            session_active: true,
+            ..Queue::default()
+        };
+    }
+
+    #[test]
+    fn transportless_device_picker_ignores_stale_devices_and_filter_and_wraps_reason() {
+        let mut app = test_app();
+        app.provider_catalog = Some(transportless_provider_catalog());
+        app.devices = vec![stale_device()];
+        app.list_filter_query = "Stale".to_string();
+        app.device_picker = Some(crate::app::DevicePickerModal { selected: 0 });
+        let mut terminal = Terminal::new(TestBackend::new(64, 24)).expect("terminal");
+
+        terminal
+            .draw(|frame| render_device_picker(frame, frame.area(), &app))
+            .expect("draw");
+        let rendered = normalized_terminal_text(&terminal);
+
+        assert!(rendered.contains("Fake does not support playback devices."));
+        assert!(!rendered.contains("Loading devices"));
+        assert!(!rendered.contains("No matching devices"));
+        assert!(!rendered.contains("Stale Speaker"));
+        assert!(rendered.contains("Esc close"));
+    }
+
+    #[test]
+    fn device_picker_keeps_loading_state_for_legacy_and_supported_catalogs() {
+        for provider_catalog in [None, {
+            let mut catalog = transportless_provider_catalog();
+            catalog.providers[0].capabilities.transport = Some(TransportCaps {
+                devices: true,
+                ..TransportCaps::default()
+            });
+            Some(catalog)
+        }] {
+            let mut app = test_app();
+            app.provider_catalog = provider_catalog;
+            app.device_picker = Some(crate::app::DevicePickerModal { selected: 0 });
+            let mut terminal = Terminal::new(TestBackend::new(100, 32)).expect("terminal");
+
+            terminal
+                .draw(|frame| render_device_picker(frame, frame.area(), &app))
+                .expect("draw");
+            let rendered = normalized_terminal_text(&terminal);
+
+            assert!(rendered.contains("Loading devices"));
+            assert!(!rendered.contains("does not support playback devices"));
+        }
+    }
+
+    #[test]
+    fn transportless_queue_fullscreen_ignores_stale_active_queue_and_wraps_reason() {
+        let mut app = test_app();
+        let mut catalog = transportless_provider_catalog();
+        catalog.providers[0].display_name = "A Very Long Fake Provider".to_string();
+        app.provider_catalog = Some(catalog);
+        install_stale_active_queue(&mut app);
+        let mut terminal = Terminal::new(TestBackend::new(72, 28)).expect("terminal");
+
+        terminal
+            .draw(|frame| render_queue_fullscreen(frame, &mut app, frame.area()))
+            .expect("draw");
+        let rendered = normalized_terminal_text(&terminal);
+
+        assert!(rendered.contains("A Very Long Fake Provider does not support playback queues."));
+        assert!(!rendered.contains("Queue is unavailable until playback is active."));
+        assert!(!rendered.contains("Stale Current Track"));
+        assert!(!rendered.contains("Stale Next Track"));
+    }
+
+    #[test]
+    fn transportless_queue_rail_ignores_stale_active_queue() {
+        let mut app = test_app();
+        app.provider_catalog = Some(transportless_provider_catalog());
+        install_stale_active_queue(&mut app);
+        let mut terminal = Terminal::new(TestBackend::new(38, 12)).expect("terminal");
+
+        terminal
+            .draw(|frame| render_queue_rail(frame, &app, frame.area()))
+            .expect("draw");
+        let rendered = normalized_terminal_text(&terminal);
+
+        assert!(rendered.contains("Fake does not support playback"));
+        assert!(rendered.contains("queues."));
+        assert!(!rendered.contains("Stale Current Track"));
+        assert!(!rendered.contains("Stale Next Track"));
+    }
+
+    #[test]
+    fn player_home_reaches_transportless_reason_while_actions_stay_gated() {
+        let mut app = test_app();
+        app.screen = Screen::Player;
+        app.provider_catalog = Some(transportless_provider_catalog());
+        install_stale_active_queue(&mut app);
+        app.playback = Playback::default();
+
+        assert!(!app.action_supported(TuiAction::OpenQueue));
+        assert!(!app.action_supported(TuiAction::ToggleQueueRail));
+        assert!(!app.action_supported(TuiAction::OpenDevicePicker));
+
+        let rendered = render_lines(&mut app, 80, 28)
+            .join("\n")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(rendered.contains("Fake does not support playback queues."));
+        assert!(!rendered.contains("Stale Current Track"));
+        assert!(!rendered.contains("Stale Next Track"));
+        assert!(!rendered.contains("Start playback from Search or Library"));
     }
 
     #[test]
     fn now_playing_chrome_uses_dynamic_palette_roles() {
         let mut app = test_app();
         app.palette = crate::widgets::style::UiPalette {
-            accent: Color::Rgb(200, 40, 30),
-            brand: Color::Rgb(200, 40, 30),
-            soft_accent: Color::Rgb(120, 45, 45),
-            background: Color::Rgb(35, 22, 22),
-            foreground: Color::Rgb(250, 250, 250),
-            now_playing_rail: Color::Rgb(220, 120, 110),
+            accent: Color::Indexed(160),
+            brand: Color::Indexed(160),
+            soft_accent: Color::Indexed(52),
+            background: Color::Indexed(17),
+            foreground: Color::Indexed(231),
+            now_playing_rail: Color::Indexed(209),
         };
         let mut terminal = Terminal::new(TestBackend::new(90, PLAYER_HEIGHT)).expect("terminal");
         terminal
@@ -5539,12 +5323,11 @@ mod tests {
         for y in 0..area.height {
             for x in 0..area.width {
                 let cell = &buf[(x, y)];
-                saw_title_chip |=
-                    cell.bg == Color::Rgb(200, 40, 30) && cell.fg == Color::Rgb(250, 250, 250);
+                saw_title_chip |= cell.bg == Color::Indexed(160) && cell.fg == Color::Indexed(231);
             }
         }
         assert!(saw_title_chip);
-        assert_eq!(buf[(0, 0)].fg, Color::Rgb(220, 120, 110));
+        assert_eq!(buf[(0, 0)].fg, Color::Indexed(209));
     }
 
     fn item(uri: &str, name: &str) -> MediaItem {
@@ -5553,7 +5336,11 @@ mod tests {
 
     fn item_kind(uri: &str, name: &str, kind: MediaKind) -> MediaItem {
         MediaItem {
-            id: Some(uri.rsplit(':').next().unwrap_or(uri).to_string()),
+            id: Some(
+                spotuify_core::ResourceUri::parse(uri)
+                    .map(|resource| resource.bare_id().to_string())
+                    .unwrap_or_else(|_| uri.to_string()),
+            ),
             uri: uri.to_string(),
             name: name.to_string(),
             subtitle: "Artist".to_string(),
@@ -5749,7 +5536,7 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 41,
                 image_url: Some("x".to_string()),
-                snapshot_id: None,
+                version_token: None,
             },
             Playlist {
                 id: "p2".to_string(),
@@ -5757,7 +5544,7 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 12,
                 image_url: None,
-                snapshot_id: None,
+                version_token: None,
             },
         ];
         app.playlist_picker = Some(crate::app::PlaylistPickerModal {
@@ -5800,7 +5587,7 @@ mod tests {
     #[test]
     fn snapshot_13_lyrics() {
         let mut app = test_app();
-        app.screen = Screen::Lyrics;
+        app.fullscreen_panel = Some(FullscreenPanel::Lyrics);
         app.playback.item = Some(item("spotify:track:doves", "Doves in the Wind"));
         if let Some(ref mut t) = app.playback.item {
             t.subtitle = "SZA · Kendrick Lamar".to_string();
@@ -5860,7 +5647,7 @@ mod tests {
     #[test]
     fn snapshot_12_diagnostics() {
         let mut app = test_app();
-        app.screen = Screen::Diagnostics;
+        app.fullscreen_panel = Some(FullscreenPanel::Diagnostics);
         app.diagnostics_logs = vec![
             "2026-05-15T12:00:00Z INFO  daemon: started".to_string(),
             "2026-05-15T12:00:01Z DEBUG spotify: token refreshed".to_string(),
@@ -5881,9 +5668,8 @@ mod tests {
     #[test]
     fn snapshot_11_devices() {
         let mut app = test_app();
-        app.screen = Screen::Devices;
         app.devices = vec![
-            spotuify_spotify::client::Device {
+            Device {
                 id: Some("a".into()),
                 name: "iPhone — Bhekani".to_string(),
                 kind: "Smartphone".to_string(),
@@ -5892,7 +5678,7 @@ mod tests {
                 supports_volume: true,
                 volume_percent: Some(45),
             },
-            spotuify_spotify::client::Device {
+            Device {
                 id: Some("b".into()),
                 name: "Living Room".to_string(),
                 kind: "Speaker".to_string(),
@@ -5901,7 +5687,7 @@ mod tests {
                 supports_volume: true,
                 volume_percent: Some(72),
             },
-            spotuify_spotify::client::Device {
+            Device {
                 id: Some("c".into()),
                 name: "Studio Mac".to_string(),
                 kind: "Computer".to_string(),
@@ -5910,7 +5696,7 @@ mod tests {
                 supports_volume: false,
                 volume_percent: None,
             },
-            spotuify_spotify::client::Device {
+            Device {
                 id: Some("d".into()),
                 name: "Old AirPlay".to_string(),
                 kind: "CastAudio".to_string(),
@@ -5920,21 +5706,26 @@ mod tests {
                 volume_percent: None,
             },
         ];
-        app.selected = 1;
+        app.device_picker = Some(crate::app::DevicePickerModal { selected: 1 });
         let lines = render_lines(&mut app, 140, 32);
         let body_start = 4;
         let body_end = lines.len() - (PLAYER_HEIGHT as usize + STATUS_HEIGHT as usize);
         let body = &lines[body_start..body_end];
+        let full_output = lines.join("\n");
+        let output = body.join("\n");
+        assert!(full_output.contains("● active"), "{full_output}");
+        assert!(full_output.contains("vol 72%"), "{full_output}");
+        assert!(full_output.contains("Ctrl-f filter"), "{full_output}");
+        assert!(full_output.contains("O audio output"), "{full_output}");
         println!(
-            "\n--- 11-devices — kind icons + state chips + volume bar ---\n{}\n--- end ---\n",
-            body.join("\n")
+            "\n--- 11-devices — picker state + volume/actions parity ---\n{output}\n--- end ---\n"
         );
     }
 
     #[test]
     fn snapshot_10_queue() {
         let mut app = test_app();
-        app.screen = Screen::Queue;
+        app.fullscreen_panel = Some(FullscreenPanel::Queue);
         app.playback.item = Some(item("spotify:track:now", "Have You Ever Loved Somebody"));
         app.playback.is_playing = true;
         if let Some(ref mut t) = app.playback.item {
@@ -5965,7 +5756,7 @@ mod tests {
                 MediaKind::Track,
             ),
         ];
-        // Queue screen reads visible_items(), which only exposes live
+        // Queue overlay reads visible_items(), which only exposes live
         // queue rows when Spotify reports an active session.
         app.selected = 1;
         let lines = render_lines(&mut app, 140, 32);
@@ -5989,7 +5780,7 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 41,
                 image_url: Some("x".to_string()),
-                snapshot_id: None,
+                version_token: None,
             },
             Playlist {
                 id: "p2".to_string(),
@@ -5997,7 +5788,7 @@ mod tests {
                 owner: "anita".to_string(),
                 tracks_total: 12,
                 image_url: None,
-                snapshot_id: None,
+                version_token: None,
             },
             Playlist {
                 id: "p3".to_string(),
@@ -6005,10 +5796,10 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 27,
                 image_url: Some("x".to_string()),
-                snapshot_id: None,
+                version_token: None,
             },
         ];
-        app.playlist_selected = 1;
+        app.playlist_selected = 2;
         let lines = render_lines(&mut app, 140, 32);
         let body_start = 4;
         let body_end = lines.len() - (PLAYER_HEIGHT as usize + STATUS_HEIGHT as usize);
@@ -6019,6 +5810,7 @@ mod tests {
         );
         let rendered = body.join("\n");
         assert!(rendered.contains("Artwork"));
+        assert!(rendered.contains("Liked Songs"));
         assert!(rendered.contains("Coding"));
         assert!(rendered.contains("generated fallback"));
     }
@@ -6100,7 +5892,7 @@ mod tests {
 
         assert!(rendered.contains("Artwork"));
         assert!(rendered.contains("Forever, for Always"));
-        assert!(rendered.contains("cover from Spotify"));
+        assert!(rendered.contains("cover from provider"));
     }
 
     fn item_kind_full(
@@ -6184,8 +5976,8 @@ mod tests {
         app.playback.item = Some(item("spotify:track:doves", "Doves in the Wind"));
         app.playback.is_playing = true;
         app.playback.shuffle = true;
-        app.playback.repeat = "context".to_string();
-        app.playback.device = Some(spotuify_spotify::client::Device {
+        app.playback.repeat = RepeatMode::Context;
+        app.playback.device = Some(Device {
             id: Some("d1".to_string()),
             name: "Living Room".to_string(),
             kind: "Speaker".to_string(),
@@ -6214,13 +6006,13 @@ mod tests {
             body.join("\n")
         );
         assert!(
-            body.iter().any(|l| l.contains("Up Next")),
-            "queue card should be in the body"
+            body.iter().any(|l| l.contains("Sweet Thing")),
+            "queue rows should be in the body"
         );
     }
 
     #[test]
-    fn player_body_renders_actionable_home_feed_and_queue_panel() {
+    fn player_body_renders_queue_without_library_or_podcast_feeds() {
         let mut app = test_app();
         app.screen = Screen::Player;
         app.player_large = true;
@@ -6242,14 +6034,15 @@ mod tests {
         let body = lines[body_start..body_end].join("\n");
         let joined = lines.join("\n");
 
-        assert!(joined.contains("Home"), "home title missing: {joined}");
+        assert!(joined.contains("Home"), "home tab missing: {joined}");
         assert!(
-            body.contains("First Saved Track"),
-            "saved track missing: {body}"
+            !body.contains("First Saved Track"),
+            "saved feed leaked: {body}"
         );
+        assert!(!body.contains("Saved Show"), "podcast feed leaked: {body}");
         assert!(
-            body.contains("Saved Show") || body.contains("Saved Episode"),
-            "podcast item missing: {body}"
+            !body.contains("Saved Episode"),
+            "episode feed leaked: {body}"
         );
         assert!(
             body.contains("Next Queue Track"),
@@ -6264,8 +6057,8 @@ mod tests {
         app.playback.item = Some(item("spotify:track:now", "Doves in the Wind"));
         app.playback.is_playing = true;
         app.playback.shuffle = true;
-        app.playback.repeat = "context".to_string();
-        app.playback.device = Some(spotuify_spotify::client::Device {
+        app.playback.repeat = RepeatMode::Context;
+        app.playback.device = Some(Device {
             id: Some("d1".to_string()),
             name: "Living Room".to_string(),
             kind: "Speaker".to_string(),
@@ -6307,7 +6100,7 @@ mod tests {
         let lines_no_toast = render_lines(&mut app, 140, 32);
         let bottom_no_toast = &lines_no_toast[lines_no_toast.len() - 4..];
 
-        app.toast = Some("Liked Wonderwall".to_string());
+        app.toast = Some(crate::app::Toast::success("Liked Wonderwall"));
         let lines_toast = render_lines(&mut app, 140, 32);
         let bottom_toast = &lines_toast[lines_toast.len() - 4..];
 
@@ -6330,6 +6123,46 @@ mod tests {
             bottom_toast.iter().any(|l| l.contains('·')),
             "hint row missing when toast is visible"
         );
+    }
+
+    #[test]
+    fn failed_toast_uses_error_glyph_and_danger_color() {
+        let mut app = test_app();
+        app.toast = Some(crate::app::Toast::error("Failed: rate limited"));
+        let backend = TestBackend::new(100, 32);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+
+        let error_cell = buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "✗")
+            .expect("failed toast should render an error glyph");
+        assert_eq!(error_cell.bg, DANGER);
+        assert!(buffer.content().iter().all(|cell| cell.symbol() != "✓"));
+    }
+
+    #[test]
+    fn successful_toast_uses_success_glyph_and_color() {
+        let mut app = test_app();
+        app.toast = Some(crate::app::Toast::success("Liked Wonderwall"));
+        let backend = TestBackend::new(100, 32);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+
+        let success_cell = buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "✓")
+            .expect("successful toast should render a success glyph");
+        assert_eq!(success_cell.bg, SUCCESS);
+        assert!(buffer.content().iter().all(|cell| cell.symbol() != "✗"));
     }
 
     #[test]
@@ -6379,7 +6212,7 @@ mod tests {
         assert!(!library.contains("Run spotuify sync library"));
         assert!(!library.contains("Press u to force"));
 
-        app.screen = Screen::Diagnostics;
+        app.fullscreen_panel = Some(FullscreenPanel::Diagnostics);
         let diagnostics = render_lines(&mut app, 120, 32).join("\n");
         assert!(diagnostics.contains("Loading doctor"));
         assert!(!diagnostics.contains("Press u to fetch"));
@@ -6401,9 +6234,9 @@ mod tests {
     }
 
     #[test]
-    fn queue_screen_preserves_duplicate_queue_rows() {
+    fn queue_overlay_preserves_duplicate_queue_rows() {
         let mut app = test_app();
-        app.screen = Screen::Queue;
+        app.fullscreen_panel = Some(FullscreenPanel::Queue);
         app.queue.session_active = true;
         app.queue.items = vec![
             item("spotify:track:same", "Same Up"),
@@ -6415,7 +6248,7 @@ mod tests {
         assert_eq!(
             output.matches("Same Up").count(),
             2,
-            "queue screen should render one row per queued occurrence: {output}"
+            "queue overlay should render one row per queued occurrence: {output}"
         );
     }
 
@@ -6450,7 +6283,7 @@ mod tests {
         let output = render_lines(&mut app, 120, 32).join("\n");
 
         assert!(output.contains("Queue Fullscreen"));
-        assert!(output.contains("No active Spotify session."));
+        assert!(output.contains("No active playback session."));
         assert!(!output.contains("First Up"));
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import os
 
 /// Speaks the daemon IPC protocol over a single Unix socket.
 ///
@@ -22,6 +23,8 @@ public actor DaemonConnection {
     private var socket: IPCSocket?
     private var nextID: UInt64 = 1
     private var pending: [UInt64: CheckedContinuation<ResponseData, Error>] = [:]
+    private var mutationRetryCache = MutationRetryCache()
+    private let logger = Logger(subsystem: "com.bhekanik.spotuify", category: "ipc")
 
     public nonisolated let events: AsyncStream<DaemonEvent>
     private let eventContinuation: AsyncStream<DaemonEvent>.Continuation
@@ -109,12 +112,53 @@ public actor DaemonConnection {
     @discardableResult
     public func request(
         _ request: DaemonRequest,
-        timeout: Duration = .seconds(30)
+        timeout: Duration = .seconds(40)
+    ) async throws -> ResponseData {
+        let attempt = try mutationRetryCache.attempt(for: request)
+        do {
+            let response = try await self.request(attempt.prepared, timeout: timeout)
+            mutationRetryCache.finish(attempt, uncertainOutcome: false)
+            return response
+        } catch {
+            mutationRetryCache.finish(
+                attempt,
+                disposition: Self.mutationAttemptDisposition(after: error))
+            throw error
+        }
+    }
+
+    /// Only a lost transport response leaves the daemon's write outcome
+    /// unknowable. Local setup/encoding failures prove the request was not
+    /// sent; daemon errors prove it received and rejected the request.
+    static func shouldRetainMutationAttempt(after error: Error) -> Bool {
+        mutationAttemptDisposition(after: error) == .uncertain
+    }
+
+    static func mutationAttemptDisposition(after error: Error) -> MutationAttemptDisposition {
+        if error is DaemonError {
+            return .definitive
+        }
+        guard let connectionError = error as? DaemonConnectionError else { return .notSent }
+        switch connectionError {
+        case .timeout, .disconnected:
+            return .uncertain
+        case .socketPathTooLong, .connectFailed, .notConnected, .unexpectedResponse:
+            return .notSent
+        }
+    }
+
+    /// Send a prepared request. Retain and reuse `prepared` to retry a timed
+    /// out mutation with the same daemon deduplication key; this method does
+    /// not retry automatically.
+    @discardableResult
+    public func request(
+        _ prepared: PreparedDaemonRequest,
+        timeout: Duration = .seconds(40)
     ) async throws -> ResponseData {
         guard let socket else { throw DaemonConnectionError.notConnected }
         let id = nextID
         nextID &+= 1
-        let payload = try Wire.encodeOutbound(OutboundMessage(id: id, request: request))
+        let payload = try Wire.encodeOutbound(OutboundMessage(id: id, prepared: prepared))
         let frame = FrameEncoder.encode(payload)
 
         let timeoutTask = Task { [weak self] in
@@ -149,7 +193,13 @@ public actor DaemonConnection {
     }
 
     private func ingest(_ frame: Data) {
-        guard let message = try? Wire.decodeMessage(frame) else { return }
+        let message: IpcMessage
+        do {
+            message = try Wire.decodeMessage(frame)
+        } catch {
+            handleUndecodableFrame(frame, error: error)
+            return
+        }
         switch message.payload {
         case .response(let response):
             guard let cont = pending.removeValue(forKey: message.id) else { return }
@@ -163,6 +213,28 @@ public actor DaemonConnection {
             eventContinuation.yield(event)
         case .other:
             break
+        }
+    }
+
+    /// A frame that fails to decode must not silently strand a pending request
+    /// until its timeout. Recover the correlation id from the envelope; if it
+    /// names a pending response, fail that continuation now. Log every dropped
+    /// frame (responses and events) so silent state-stops are diagnosable.
+    private func handleUndecodableFrame(_ frame: Data, error: Error) {
+        let description = String(describing: error)
+        guard let envelope = try? Wire.decodeFrameEnvelope(frame) else {
+            logger.error("dropped undecodable IPC frame: \(description, privacy: .public)")
+            return
+        }
+        if envelope.type == "Response", let cont = pending.removeValue(forKey: envelope.id) {
+            logger.error(
+                "request \(envelope.id) failed: undecodable response: \(description, privacy: .public)")
+            cont.resume(throwing: DaemonConnectionError.unexpectedResponse(
+                "response payload failed to decode"))
+        } else {
+            let kind = envelope.type ?? "unknown"
+            logger.error(
+                "dropped undecodable \(kind, privacy: .public) frame id=\(envelope.id): \(description, privacy: .public)")
         }
     }
 

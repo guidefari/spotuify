@@ -3,7 +3,10 @@
 //! MCP tool catalogue + bridge + confirmation tests.
 
 use serde_json::json;
-use spotuify_mcp::bridge::{translate, BridgeError, TranslatedCall};
+use spotuify_mcp::bridge::{
+    translate, translate_playlist_preview_with_catalog, translate_with_catalog,
+    translate_with_default_provider, BridgeError, TranslatedCall,
+};
 use spotuify_mcp::confirm::{decide, Authorized, ConfirmDecision};
 use spotuify_mcp::tools::{ToolCatalogue, ToolKind};
 
@@ -147,8 +150,9 @@ fn playlist_resolve_tracks_accepts_plan_for_daemon_search_resolution() {
     .unwrap();
 
     match call {
-        TranslatedCall::PlaylistResolveTracks { plan } => {
+        TranslatedCall::PlaylistResolveTracks { plan, provider } => {
             assert_eq!(plan.candidate_searches, vec!["one", "two"]);
+            assert_eq!(provider, None);
         }
         other => panic!("expected PlaylistResolveTracks, got {other:?}"),
     }
@@ -214,10 +218,12 @@ fn playlist_create_translates_with_uris_array() {
             name,
             description,
             uris,
+            provider,
         }) => {
             assert_eq!(name, "Focus");
             assert_eq!(description.as_deref(), Some("deep work"));
             assert_eq!(uris.len(), 2);
+            assert_eq!(provider, None);
         }
         other => panic!("expected PlaylistCreate, got {other:?}"),
     }
@@ -230,6 +236,151 @@ fn playlist_create_with_missing_name_errors() {
         BridgeError::MissingArg { arg, .. } => assert_eq!(arg, "name"),
         other => panic!("expected MissingArg name, got {other:?}"),
     }
+}
+
+#[test]
+fn playlist_create_allows_empty_or_episode_seeds() {
+    // Absent or empty `uris` creates an empty playlist; episodes are accepted
+    // (aligned with playlist_add's Track+Episode kinds).
+    for args in [
+        json!({"name": "Focus"}),
+        json!({"name": "Focus", "uris": []}),
+        json!({"name": "Focus", "uris": ["spotify:episode:one"]}),
+        json!({"name": "Focus", "uris": ["spotify:track:one", "spotify:episode:one"]}),
+    ] {
+        let call = translate("playlist_create", &args)
+            .expect("valid create seeds must translate to a daemon request");
+        assert!(matches!(
+            call,
+            TranslatedCall::Request(spotuify_protocol::Request::PlaylistCreate { .. })
+        ));
+    }
+}
+
+#[test]
+fn playlist_create_rejects_malformed_uri_seeds() {
+    for args in [
+        json!({"name": "Focus", "uris": "spotify:track:one"}),
+        json!({"name": "Focus", "uris": ["spotify:track:one", 7]}),
+        json!({"name": "Focus", "uris": ["not-a-resource-uri"]}),
+        json!({"name": "Focus", "uris": ["spotify:album:one"]}),
+    ] {
+        let error = translate("playlist_create", &args)
+            .expect_err("malformed create URI arrays must not produce a daemon request");
+        assert!(
+            matches!(
+                &error,
+                BridgeError::BadArgType { arg, .. }
+                    | BridgeError::InvalidArg { arg, .. }
+                    if arg == "uris"
+            ),
+            "unexpected playlist_create error: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn playlist_create_rejects_a_non_string_description() {
+    let error = translate(
+        "playlist_create",
+        &json!({
+            "name": "Focus",
+            "description": 7,
+            "uris": ["spotify:track:one"]
+        }),
+    )
+    .expect_err("malformed description must not produce a daemon request");
+    assert!(matches!(
+        error,
+        BridgeError::BadArgType { ref arg, .. } if arg == "description"
+    ));
+}
+
+#[test]
+fn playlist_create_dry_run_translates_only_to_wire_safe_preview_request() {
+    let call = translate(
+        "playlist_create",
+        &json!({
+            "name": "Focus",
+            "description": "deep work",
+            "uris": ["spotify:track:one"],
+            "dry_run": true,
+        }),
+    )
+    .unwrap();
+    let TranslatedCall::Request(request) = call else {
+        panic!("expected daemon preview request")
+    };
+    assert!(matches!(
+        &request,
+        spotuify_protocol::Request::PlaylistCreatePreview {
+            name,
+            description,
+            uris,
+            provider: None,
+        } if name == "Focus"
+            && description.as_deref() == Some("deep work")
+            && uris.len() == 1
+            && uris[0] == "spotify:track:one"
+    ));
+    assert!(!request.requires_mutation_id());
+    assert_eq!(request.kind_label(), "playlist-create-preview");
+
+    let error = translate(
+        "playlist_create",
+        &json!({
+            "name": "Focus",
+            "uris": ["spotify:track:one"],
+            "dry_run": "true",
+        }),
+    )
+    .expect_err("malformed dry_run must not produce a daemon request");
+    assert!(matches!(
+        error,
+        BridgeError::BadArgType { ref arg, .. } if arg == "dry_run"
+    ));
+}
+
+#[test]
+fn unconfirmed_playlist_tools_force_read_only_preview_requests() {
+    for (tool, args, expected_kind) in [
+        (
+            "playlist_create",
+            json!({"name": "Focus", "uris": ["spotify:track:one"]}),
+            "playlist-create-preview",
+        ),
+        (
+            "playlist_add",
+            json!({
+                "playlist": "spotify:playlist:focus",
+                "uris": ["spotify:track:one"]
+            }),
+            "playlist-items-preview",
+        ),
+        (
+            "playlist_remove",
+            json!({
+                "playlist": "spotify:playlist:focus",
+                "uris": ["spotify:track:one"],
+                "dry_run": false
+            }),
+            "playlist-items-preview",
+        ),
+    ] {
+        let request = translate_playlist_preview_with_catalog(tool, &args, None)
+            .unwrap()
+            .expect("playlist mutation must have a daemon preview command");
+        assert_eq!(request.kind_label(), expected_kind);
+        assert!(!request.requires_mutation_id());
+    }
+
+    assert!(translate_playlist_preview_with_catalog(
+        "playlist_unfollow",
+        &json!({"playlist": "spotify:playlist:focus"}),
+        None,
+    )
+    .unwrap()
+    .is_none());
 }
 
 #[test]
@@ -247,11 +398,139 @@ fn playlist_remove_routes_to_typed_daemon_request() {
         TranslatedCall::Request(spotuify_protocol::Request::PlaylistRemoveItems {
             playlist,
             uris,
+            provider,
         }) => {
             assert_eq!(playlist, "Focus");
             assert_eq!(uris, vec!["spotify:track:one", "spotify:track:two"]);
+            assert_eq!(provider, None);
         }
         other => panic!("expected PlaylistRemoveItems, got {other:?}"),
+    }
+}
+
+#[test]
+fn playlist_tools_preserve_explicit_provider_scope() {
+    let call = translate(
+        "playlist_remove",
+        &json!({
+            "playlist": "music:playlist:focus",
+            "uris": ["music:track:one"],
+            "provider": "music"
+        }),
+    )
+    .unwrap();
+    assert!(matches!(
+        call,
+        TranslatedCall::Request(spotuify_protocol::Request::PlaylistRemoveItems {
+            provider: Some(provider),
+            ..
+        }) if provider.as_str() == "music"
+    ));
+}
+
+#[test]
+fn playlist_item_tools_reject_invalid_uri_arrays_before_translation() {
+    for tool in ["playlist_add", "playlist_remove"] {
+        for uris in [
+            json!(["spotify:track:one", 7]),
+            json!(["spotify:track:one", null]),
+            json!(["not-a-resource-uri"]),
+            json!(["spotify:album:one"]),
+            json!([]),
+        ] {
+            let error = translate(
+                tool,
+                &json!({
+                    "playlist": "spotify:playlist:focus",
+                    "uris": uris,
+                }),
+            )
+            .expect_err("invalid URI arrays must not produce a daemon request");
+            assert!(
+                matches!(
+                    &error,
+                    BridgeError::BadArgType { arg, .. }
+                        | BridgeError::InvalidArg { arg, .. }
+                        if arg == "uris"
+                ),
+                "unexpected {tool} error: {error:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn playlist_item_dry_runs_translate_only_to_wire_safe_preview_requests() {
+    for (tool, action) in [
+        (
+            "playlist_add",
+            spotuify_protocol::PlaylistItemMutationAction::Add,
+        ),
+        (
+            "playlist_remove",
+            spotuify_protocol::PlaylistItemMutationAction::Remove,
+        ),
+    ] {
+        let call = translate(
+            tool,
+            &json!({
+                "playlist": "spotify:playlist:focus",
+                "uris": ["spotify:track:one"],
+                "dry_run": true,
+            }),
+        )
+        .unwrap();
+        let TranslatedCall::Request(request) = call else {
+            panic!("expected daemon preview request")
+        };
+        assert!(matches!(
+            &request,
+            spotuify_protocol::Request::PlaylistItemsPreview {
+                playlist,
+                uris,
+                action: actual,
+                provider: None,
+            } if playlist == "spotify:playlist:focus"
+                && uris.len() == 1
+                && uris[0] == "spotify:track:one"
+                && *actual == action
+        ));
+        assert!(!request.requires_mutation_id());
+        assert_eq!(request.kind_label(), "playlist-items-preview");
+
+        let live = translate(
+            tool,
+            &json!({
+                "playlist": "spotify:playlist:focus",
+                "uris": ["spotify:track:one"],
+                "dry_run": false,
+            }),
+        )
+        .unwrap();
+        assert!(matches!(
+            (action, live),
+            (
+                spotuify_protocol::PlaylistItemMutationAction::Add,
+                TranslatedCall::Request(spotuify_protocol::Request::PlaylistAddItems { .. })
+            ) | (
+                spotuify_protocol::PlaylistItemMutationAction::Remove,
+                TranslatedCall::Request(spotuify_protocol::Request::PlaylistRemoveItems { .. })
+            )
+        ));
+
+        let error = translate(
+            tool,
+            &json!({
+                "playlist": "spotify:playlist:focus",
+                "uris": ["spotify:track:one"],
+                "dry_run": "true",
+            }),
+        )
+        .expect_err("malformed dry_run must not produce a daemon request");
+        assert!(matches!(
+            error,
+            BridgeError::BadArgType { ref arg, .. } if arg == "dry_run"
+        ));
     }
 }
 
@@ -268,6 +547,140 @@ fn library_unsave_routes_to_unsave_request_not_save() {
 }
 
 #[test]
+fn related_artists_defers_free_form_resolution_and_rejects_wrong_canonical_kind() {
+    for artist in ["artist-1", "music:artist:artist-1"] {
+        let call = translate(
+            "related_artists",
+            &json!({"artist": artist, "provider": "music"}),
+        )
+        .unwrap();
+        assert!(matches!(
+            call,
+            TranslatedCall::RelatedArtists {
+                artist: routed,
+                provider: Some(provider),
+            } if routed == artist && provider.as_str() == "music"
+        ));
+    }
+
+    assert!(matches!(
+        translate(
+            "related_artists",
+            &json!({"artist": "music:track:track-1"}),
+        ),
+        Err(BridgeError::InvalidArg { arg, .. }) if arg == "artist"
+    ));
+}
+
+#[test]
+fn search_routes_explicit_provider_without_provider_named_source_variant() {
+    let call = translate(
+        "search",
+        &json!({"query": "x", "source": "remote", "provider": "music"}),
+    )
+    .unwrap();
+    assert!(matches!(
+        call,
+        TranslatedCall::Request(spotuify_protocol::Request::Search {
+            source: spotuify_protocol::SearchSourceData::Remote(source),
+            provider: Some(provider),
+            ..
+        }) if source.as_str() == "music" && provider.as_str() == "music"
+    ));
+
+    assert!(matches!(
+        translate(
+            "search",
+            &json!({"query": "x", "source": "music", "provider": "music"}),
+        ),
+        Err(BridgeError::InvalidArg { arg, .. }) if arg == "source"
+    ));
+}
+
+#[test]
+fn search_accepts_legacy_spotify_source_as_remote_alias() {
+    // `"spotify"` is the documented pre-abstraction source value; it must keep
+    // working (existing agent configs) as an alias for `"remote"`.
+    let call = translate("search", &json!({"query": "x", "source": "spotify"})).unwrap();
+    assert!(matches!(
+        call,
+        TranslatedCall::Request(spotuify_protocol::Request::Search {
+            source: spotuify_protocol::SearchSourceData::Remote(source),
+            ..
+        }) if source.as_str() == "spotify"
+    ));
+
+    // Truly unknown source values still hard-error.
+    assert!(matches!(
+        translate("search", &json!({"query": "x", "source": "bogus"})),
+        Err(BridgeError::InvalidArg { arg, .. }) if arg == "source"
+    ));
+}
+
+#[test]
+fn library_save_of_artist_routes_to_follow() {
+    let call = translate("library_save", &json!({"uri": "spotify:artist:abc"})).unwrap();
+    assert!(matches!(
+        call,
+        TranslatedCall::Request(spotuify_protocol::Request::ArtistFollow { artist })
+            if artist == "spotify:artist:abc"
+    ));
+
+    // Non-artist saves stay on the library-save path.
+    let call = translate("library_save", &json!({"uri": "spotify:track:abc"})).unwrap();
+    assert!(matches!(
+        call,
+        TranslatedCall::Request(spotuify_protocol::Request::LibrarySave {
+            uri: Some(uri),
+            current: false,
+        }) if uri == "spotify:track:abc"
+    ));
+}
+
+#[test]
+fn library_unsave_of_artist_routes_to_unfollow() {
+    let call = translate("library_unsave", &json!({"uri": "spotify:artist:abc"})).unwrap();
+    assert!(matches!(
+        call,
+        TranslatedCall::Request(spotuify_protocol::Request::ArtistUnfollow { artist })
+            if artist == "spotify:artist:abc"
+    ));
+}
+
+#[test]
+fn remote_search_uses_discovered_default_without_serializing_an_explicit_scope() {
+    let default = spotuify_core::ProviderId::new("music").unwrap();
+    let call = translate_with_default_provider(
+        "search",
+        &json!({"query": "x", "source": "remote"}),
+        Some(&default),
+    )
+    .unwrap();
+    assert!(matches!(
+        call,
+        TranslatedCall::Request(spotuify_protocol::Request::Search {
+            source: spotuify_protocol::SearchSourceData::Remote(source),
+            provider: None,
+            ..
+        }) if source == default
+    ));
+}
+
+#[test]
+fn omitted_search_source_uses_local_for_explicit_empty_catalog() {
+    let catalog = spotuify_core::ProviderCatalog::default();
+    let call = translate_with_catalog("search", &json!({"query": "x"}), Some(&catalog)).unwrap();
+    assert!(matches!(
+        call,
+        TranslatedCall::Request(spotuify_protocol::Request::Search {
+            source: spotuify_protocol::SearchSourceData::Local,
+            provider: None,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn pause_translates_to_playback_command_pause() {
     let call = translate("pause", &json!({})).unwrap();
     match call {
@@ -275,6 +688,42 @@ fn pause_translates_to_playback_command_pause() {
             assert!(matches!(command, spotuify_protocol::PlaybackCommand::Pause));
         }
         other => panic!("expected PlaybackCommand::Pause, got {other:?}"),
+    }
+}
+
+#[test]
+fn repeat_accepts_valid_modes() {
+    use spotuify_core::RepeatMode;
+    for (mode, expected) in [
+        ("off", RepeatMode::Off),
+        ("context", RepeatMode::Context),
+        ("track", RepeatMode::Track),
+    ] {
+        let call = translate("repeat", &json!({ "mode": mode })).unwrap();
+        match call {
+            TranslatedCall::Request(spotuify_protocol::Request::PlaybackCommand {
+                command: spotuify_protocol::PlaybackCommand::Repeat { state },
+            }) => assert_eq!(state, expected, "mode `{mode}`"),
+            other => panic!("expected PlaybackCommand::Repeat, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn repeat_rejects_junk_mode_instead_of_defaulting_to_off() {
+    // The lenient wire decode maps unknown strings to Off; the bridge must
+    // pre-validate so `repeat one` errors rather than silently disabling repeat.
+    let err = translate("repeat", &json!({ "mode": "one" })).unwrap_err();
+    match err {
+        BridgeError::InvalidArg { tool, arg, message } => {
+            assert_eq!(tool, "repeat");
+            assert_eq!(arg, "mode");
+            assert!(
+                message.contains("off") && message.contains("context") && message.contains("track"),
+                "error must name the valid modes, got: {message}"
+            );
+        }
+        other => panic!("expected InvalidArg, got {other:?}"),
     }
 }
 
@@ -435,6 +884,29 @@ fn analytics_rediscovery_defaults_gap_to_90() {
         panic!("expected AnalyticsRediscovery")
     };
     assert_eq!(gap_days, 90, "default gap is 90 days");
+}
+
+#[test]
+fn radio_dry_run_requires_a_boolean_at_the_bridge_boundary() {
+    for invalid in [json!("true"), json!(null), json!({ "value": true })] {
+        assert!(matches!(
+            translate(
+                "radio_start",
+                &json!({ "seed_uri": "music:track:one", "dry_run": invalid }),
+            ),
+            Err(BridgeError::BadArgType { arg, .. }) if arg == "dry_run"
+        ));
+    }
+
+    assert!(matches!(
+        translate(
+            "radio_start",
+            &json!({ "seed_uri": "music:track:one", "dry_run": true }),
+        ),
+        Ok(TranslatedCall::Request(
+            spotuify_protocol::Request::RadioStart { dry_run: true, .. }
+        ))
+    ));
 }
 
 #[test]

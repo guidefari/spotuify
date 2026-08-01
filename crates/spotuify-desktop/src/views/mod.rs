@@ -7,7 +7,8 @@ use gpui::{
     ScrollHandle, ShapedLine, SharedString, Style, TextRun, UTF16Selection, WeakEntity, Window,
 };
 use spotuify_core::{
-    active_lyric_line_index, Device, MediaItem, MediaKind, Playback, Playlist, Queue, SyncedLyrics,
+    active_lyric_line_index, Device, MediaItem, MediaKind, Playback, Playlist, Queue, RepeatMode,
+    SyncedLyrics,
 };
 use spotuify_launcher::SocketState;
 use spotuify_protocol::{
@@ -370,7 +371,7 @@ impl DesktopApp {
         self.playlists_requested = true;
         self.playlists_loading = true;
         self.playlists_error = None;
-        self.send_request(Request::PlaylistsList);
+        self.send_request(Request::PlaylistsList { provider: None });
     }
 
     fn refresh_playlists(&mut self) {
@@ -380,7 +381,7 @@ impl DesktopApp {
         self.playlists_requested = true;
         self.playlists_loading = true;
         self.playlists_error = None;
-        self.send_request(Request::PlaylistsList);
+        self.send_request(Request::PlaylistsList { provider: None });
     }
 
     pub(crate) fn fail_playlists(&mut self, message: String) {
@@ -398,6 +399,7 @@ impl DesktopApp {
         self.send_request(Request::PlaylistTracks {
             playlist: playlist.id,
             wait: false,
+            provider: None,
         });
     }
 
@@ -527,6 +529,7 @@ impl DesktopApp {
         self.send_request(Request::SavedTracks {
             limit: 50,
             offset: 0,
+            provider: None,
         });
     }
 
@@ -540,6 +543,7 @@ impl DesktopApp {
         self.send_request(Request::SavedTracks {
             limit: 50,
             offset: 0,
+            provider: None,
         });
     }
 
@@ -550,7 +554,10 @@ impl DesktopApp {
         self.albums_requested = true;
         self.albums_loading = true;
         self.albums_error = None;
-        self.send_request(Request::LibraryList { limit: 100 });
+        self.send_request(Request::LibraryList {
+            limit: 100,
+            provider: None,
+        });
     }
 
     fn refresh_albums(&mut self) {
@@ -560,7 +567,10 @@ impl DesktopApp {
         self.albums_requested = true;
         self.albums_loading = true;
         self.albums_error = None;
-        self.send_request(Request::LibraryList { limit: 100 });
+        self.send_request(Request::LibraryList {
+            limit: 100,
+            provider: None,
+        });
     }
 
     pub(crate) fn fail_albums(&mut self, message: String) {
@@ -576,7 +586,10 @@ impl DesktopApp {
         self.artists_requested = true;
         self.artists_loading = true;
         self.artists_error = None;
-        self.send_request(Request::FollowedArtists { limit: 100 });
+        self.send_request(Request::FollowedArtists {
+            limit: 100,
+            provider: None,
+        });
     }
 
     fn refresh_artists(&mut self) {
@@ -586,7 +599,10 @@ impl DesktopApp {
         self.artists_requested = true;
         self.artists_loading = true;
         self.artists_error = None;
-        self.send_request(Request::FollowedArtists { limit: 100 });
+        self.send_request(Request::FollowedArtists {
+            limit: 100,
+            provider: None,
+        });
     }
 
     pub(crate) fn fail_artists(&mut self, message: String) {
@@ -602,7 +618,7 @@ impl DesktopApp {
         self.history_requested = true;
         self.history_loading = true;
         self.history_error = None;
-        self.send_request(Request::RecentlyPlayed);
+        self.send_request(Request::RecentlyPlayed { provider: None });
     }
 
     fn refresh_history(&mut self) {
@@ -612,7 +628,7 @@ impl DesktopApp {
         self.history_requested = true;
         self.history_loading = true;
         self.history_error = None;
-        self.send_request(Request::RecentlyPlayed);
+        self.send_request(Request::RecentlyPlayed { provider: None });
     }
 
     pub(crate) fn fail_liked_songs(&mut self, message: String) {
@@ -779,8 +795,9 @@ impl DesktopApp {
         self.send_request(Request::SearchStream {
             query,
             scope: SearchScopeData::All,
-            source: SearchSourceData::Spotify,
+            source: SearchSourceData::legacy_default_remote(),
             version: self.search_version,
+            provider: None,
         });
     }
 
@@ -788,7 +805,7 @@ impl DesktopApp {
         self.playlist_picker_uri = Some(uri);
         self.playlist_loading = true;
         self.search_playlists.clear();
-        self.send_request(Request::PlaylistsList);
+        self.send_request(Request::PlaylistsList { provider: None });
     }
 
     fn add_search_result_to_playlist(&mut self, playlist: String) {
@@ -799,6 +816,7 @@ impl DesktopApp {
         self.send_request(Request::PlaylistAddItems {
             playlist,
             uris: vec![uri],
+            provider: None,
         });
         self.toast = Some("Adding track to playlist".to_string());
     }
@@ -2144,9 +2162,7 @@ impl DesktopApp {
         let summary = playback_summary(self.playback.as_ref());
         let playback = self.playback.as_ref();
         let shuffle_state = playback.is_some_and(|playback| playback.shuffle);
-        let repeat_state = playback
-            .map(|playback| playback.repeat.as_str())
-            .unwrap_or("off");
+        let repeat_state = playback.map(|playback| playback.repeat).unwrap_or_default();
         let is_playing = playback.is_some_and(|playback| playback.is_playing);
 
         let footer_artwork = self
@@ -2244,9 +2260,9 @@ impl DesktopApp {
                             ))
                             .child(transport_button(
                                 "repeat",
-                                format!("Repeat {repeat_state}"),
+                                format!("Repeat {}", repeat_state.label()),
                                 PlaybackCommand::Repeat {
-                                    state: next_repeat_state(repeat_state).to_string(),
+                                    state: next_repeat_state(repeat_state),
                                 },
                                 cx,
                             )),
@@ -3887,12 +3903,11 @@ fn slider_preview_matches_playback(preview: SliderPreview, playback: &Playback) 
     }
 }
 
-fn next_repeat_state(repeat: &str) -> &'static str {
+fn next_repeat_state(repeat: RepeatMode) -> RepeatMode {
     match repeat {
-        "off" => "context",
-        "context" => "track",
-        "track" => "off",
-        _ => "off",
+        RepeatMode::Off => RepeatMode::Context,
+        RepeatMode::Context => RepeatMode::Track,
+        RepeatMode::Track => RepeatMode::Off,
     }
 }
 
@@ -4072,6 +4087,13 @@ fn event_label(event: &DaemonEvent) -> String {
         DaemonEvent::UpdateAvailable { latest_version, .. } => {
             format!("update-available:{latest_version}")
         }
+        DaemonEvent::ProviderPolicy { provider, .. } => {
+            format!("provider-policy:{}", provider.as_str())
+        }
+        DaemonEvent::ProviderPolicyCleared { provider, .. } => {
+            format!("provider-policy-cleared:{}", provider.as_str())
+        }
+        DaemonEvent::AuthMigrationRecommended { .. } => "auth-migration-recommended".to_string(),
         DaemonEvent::Unknown => "unknown".to_string(),
     };
 
@@ -4247,7 +4269,8 @@ mod tests {
             command_rx.try_recv(),
             Ok(Request::SavedTracks {
                 limit: 50,
-                offset: 0
+                offset: 0,
+                provider: None,
             })
         ));
         assert!(command_rx.try_recv().is_err());
@@ -4267,11 +4290,17 @@ mod tests {
 
         assert!(matches!(
             command_rx.try_recv(),
-            Ok(Request::LibraryList { limit: 100 })
+            Ok(Request::LibraryList {
+                limit: 100,
+                provider: None
+            })
         ));
         assert!(matches!(
             command_rx.try_recv(),
-            Ok(Request::FollowedArtists { limit: 100 })
+            Ok(Request::FollowedArtists {
+                limit: 100,
+                provider: None
+            })
         ));
         assert!(command_rx.try_recv().is_err());
     }
@@ -4345,17 +4374,24 @@ mod tests {
         app.apply_daemon_event(DaemonEvent::LibraryChanged {
             action: "saved".to_string(),
             uris: vec!["spotify:album:one".to_string()],
+            provider: None,
         });
 
         assert!(app.albums_loading);
         assert!(app.artists_loading);
         assert!(matches!(
             command_rx.try_recv(),
-            Ok(Request::LibraryList { limit: 100 })
+            Ok(Request::LibraryList {
+                limit: 100,
+                provider: None
+            })
         ));
         assert!(matches!(
             command_rx.try_recv(),
-            Ok(Request::FollowedArtists { limit: 100 })
+            Ok(Request::FollowedArtists {
+                limit: 100,
+                provider: None
+            })
         ));
     }
 
@@ -4371,7 +4407,10 @@ mod tests {
 
         assert!(app.history_loading);
         assert!(app.history_requested);
-        assert!(matches!(command_rx.try_recv(), Ok(Request::RecentlyPlayed)));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::RecentlyPlayed { .. })
+        ));
         assert!(command_rx.try_recv().is_err());
     }
 
@@ -4429,11 +4468,18 @@ mod tests {
                 recent_items: 1,
                 library_items: 0,
                 media_items: 0,
+                provider: None,
+                status: spotuify_protocol::SyncCompletionStatus::Succeeded,
+                error: None,
+                provider_outcomes: Vec::new(),
             },
         });
 
         assert!(app.history_loading);
-        assert!(matches!(command_rx.try_recv(), Ok(Request::RecentlyPlayed)));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::RecentlyPlayed { .. })
+        ));
     }
 
     #[test]
@@ -4464,13 +4510,15 @@ mod tests {
         app.apply_daemon_event(DaemonEvent::LibraryChanged {
             action: "saved".to_string(),
             uris: vec!["spotify:track:saved".to_string()],
+            provider: None,
         });
         assert!(app.liked_loading);
         assert!(matches!(
             command_rx.try_recv(),
             Ok(Request::SavedTracks {
                 limit: 50,
-                offset: 0
+                offset: 0,
+                provider: None,
             })
         ));
     }
@@ -4681,7 +4729,7 @@ mod tests {
             }),
             is_playing: true,
             progress_ms: 61_000,
-            repeat: "context".to_string(),
+            repeat: RepeatMode::Context,
             ..Playback::default()
         };
 
@@ -4703,14 +4751,14 @@ mod tests {
             action: "optimistic-shuffle".to_string(),
             playback: Some(Playback {
                 shuffle: true,
-                repeat: "track".to_string(),
+                repeat: RepeatMode::Track,
                 ..Playback::default()
             }),
         });
 
         let playback = app.playback.expect("playback event should seed state");
         assert!(playback.shuffle);
-        assert_eq!(playback.repeat, "track");
+        assert_eq!(playback.repeat, RepeatMode::Track);
     }
 
     #[test]
@@ -4783,8 +4831,9 @@ mod tests {
             Ok(Request::SearchStream {
                 query,
                 scope: SearchScopeData::All,
-                source: SearchSourceData::Spotify,
+                source: SearchSourceData::Remote(_),
                 version: 1,
+                provider: None,
             }) if query == "radiohead"
         ));
     }
@@ -4807,6 +4856,7 @@ mod tests {
             offset: 0,
             version: 1,
             items: vec![item.clone()],
+            provider: None,
         });
         assert!(app.search_results.is_empty());
 
@@ -4817,12 +4867,14 @@ mod tests {
             offset: 0,
             version: 2,
             items: vec![item],
+            provider: None,
         });
         assert_eq!(app.search_results.len(), 1);
 
         app.apply_daemon_event(DaemonEvent::SearchComplete {
             query: "radiohead".to_string(),
             version: 2,
+            provider: None,
         });
         assert!(!app.search_loading);
     }
@@ -4840,6 +4892,7 @@ mod tests {
             kind: Some(MediaKind::Playlist),
             offset: Some(0),
             message: "playlist page failed".to_string(),
+            provider: None,
         });
         assert!(app.search_loading);
         assert_eq!(app.search_error.as_deref(), Some("playlist page failed"));
@@ -4860,6 +4913,7 @@ mod tests {
             offset: 0,
             version: 1,
             items: vec![show],
+            provider: None,
         });
         app.apply_daemon_event(DaemonEvent::SearchPage {
             query: app.search_query.clone(),
@@ -4867,6 +4921,7 @@ mod tests {
             offset: 0,
             version: 1,
             items: vec![track],
+            provider: None,
         });
 
         assert_eq!(app.search_results[0].kind, MediaKind::Track);
@@ -4874,6 +4929,7 @@ mod tests {
         app.apply_daemon_event(DaemonEvent::SearchComplete {
             query: app.search_query.clone(),
             version: 1,
+            provider: None,
         });
         assert!(!app.search_loading);
     }
@@ -4891,7 +4947,7 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 1,
                 image_url: None,
-                snapshot_id: None,
+                version_token: None,
             }],
         });
 
@@ -4911,7 +4967,10 @@ mod tests {
 
         assert!(app.playlists_loading);
         assert!(app.playlists_requested);
-        assert!(matches!(command_rx.try_recv(), Ok(Request::PlaylistsList)));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::PlaylistsList { .. })
+        ));
         assert!(command_rx.try_recv().is_err());
     }
 
@@ -4926,7 +4985,7 @@ mod tests {
                 owner: "me".to_string(),
                 tracks_total: 2,
                 image_url: None,
-                snapshot_id: None,
+                version_token: None,
             }],
         });
 
@@ -4948,11 +5007,11 @@ mod tests {
             owner: "me".to_string(),
             tracks_total: 1,
             image_url: None,
-            snapshot_id: None,
+            version_token: None,
         });
         assert!(matches!(
             command_rx.try_recv(),
-            Ok(Request::PlaylistTracks { playlist, wait: false }) if playlist == "playlist-1"
+            Ok(Request::PlaylistTracks { playlist, wait: false, provider: None }) if playlist == "playlist-1"
         ));
 
         app.apply_playlist_tracks_response(
@@ -5069,10 +5128,14 @@ mod tests {
         app.apply_daemon_event(DaemonEvent::PlaylistsChanged {
             action: "updated".to_string(),
             playlist: Some("playlist-1".to_string()),
+            provider: None,
         });
 
         assert!(app.playlists_loading);
-        assert!(matches!(command_rx.try_recv(), Ok(Request::PlaylistsList)));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::PlaylistsList { .. })
+        ));
     }
 
     #[test]
@@ -5257,10 +5320,9 @@ mod tests {
 
     #[test]
     fn repeat_button_cycles_through_daemon_modes() {
-        assert_eq!(next_repeat_state("off"), "context");
-        assert_eq!(next_repeat_state("context"), "track");
-        assert_eq!(next_repeat_state("track"), "off");
-        assert_eq!(next_repeat_state("unknown"), "off");
+        assert_eq!(next_repeat_state(RepeatMode::Off), RepeatMode::Context);
+        assert_eq!(next_repeat_state(RepeatMode::Context), RepeatMode::Track);
+        assert_eq!(next_repeat_state(RepeatMode::Track), RepeatMode::Off);
     }
 
     #[test]
@@ -5306,6 +5368,10 @@ mod tests {
                 recent_items: 0,
                 library_items: 0,
                 media_items: 0,
+                provider: None,
+                status: spotuify_protocol::SyncCompletionStatus::Succeeded,
+                error: None,
+                provider_outcomes: Vec::new(),
             },
         });
 
@@ -5368,7 +5434,9 @@ mod gpui_tests {
             app.search_results = (0..40)
                 .map(|index| MediaItem {
                     name: format!("Result {index}"),
-                    uri: format!("spotify:track:{index}"),
+                    uri: spotuify_core::ResourceUri::spotify(MediaKind::Track, format!("{index}"))
+                        .expect("test track uri is valid")
+                        .as_uri(),
                     kind: MediaKind::Track,
                     ..MediaItem::default()
                 })
