@@ -2428,8 +2428,7 @@ impl DesktopApp {
 
         div()
             .w(px(320.))
-            .h(px(0.))
-            .flex_1()
+            .h_full()
             .flex_shrink_0()
             .my_5()
             .mr_5()
