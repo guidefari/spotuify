@@ -418,6 +418,9 @@ impl DesktopApp {
     }
 
     fn select_destination(&mut self, destination: Destination) {
+        self.detail_history.clear();
+        self.close_album();
+        self.close_artist();
         self.selected_destination = destination;
         if self.selected_destination == Destination::NowPlaying {
             self.request_artwork_for_current_track();
