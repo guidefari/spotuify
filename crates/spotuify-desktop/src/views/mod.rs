@@ -23,9 +23,7 @@ use spotuify_protocol::{
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
-#[cfg(debug_assertions)]
-use std::time::Instant;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc::UnboundedSender, watch};
 
 pub struct DesktopApp {
@@ -47,6 +45,8 @@ pub struct DesktopApp {
     lyrics_requested_uri: Option<String>,
     pub(crate) update_banner: Option<UpdateBanner>,
     pub(crate) toast: Option<String>,
+    toast_observed_message: Option<String>,
+    toast_expires_at: Option<Instant>,
     pub(crate) command_tx: Option<UnboundedSender<Request>>,
     pub(crate) slider_tx: Option<watch::Sender<Option<Request>>>,
     search_tx: Option<watch::Sender<Option<SearchRequest>>>,
@@ -295,6 +295,8 @@ enum DetailLocation {
     Artist(MediaItem),
 }
 
+const TOAST_VISIBLE_FOR: Duration = Duration::from_secs(4);
+
 impl DesktopApp {
     pub fn new() -> Self {
         Self {
@@ -316,6 +318,8 @@ impl DesktopApp {
             lyrics_requested_uri: None,
             update_banner: None,
             toast: None,
+            toast_observed_message: None,
+            toast_expires_at: None,
             command_tx: None,
             slider_tx: None,
             search_tx: None,
@@ -380,6 +384,28 @@ impl DesktopApp {
             #[cfg(debug_assertions)]
             debug_fps: DebugFps::new(),
         }
+    }
+
+    fn update_toast_lifetime(&mut self, now: Instant) -> bool {
+        let Some(message) = self.toast.as_ref() else {
+            self.toast_observed_message = None;
+            self.toast_expires_at = None;
+            return false;
+        };
+        if self.toast_observed_message.as_ref() != Some(message) {
+            self.toast_observed_message = Some(message.clone());
+            self.toast_expires_at = Some(now + TOAST_VISIBLE_FOR);
+        }
+        if self
+            .toast_expires_at
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.toast = None;
+            self.toast_observed_message = None;
+            self.toast_expires_at = None;
+            return false;
+        }
+        true
     }
 
     pub(crate) fn set_command_senders(
@@ -1483,6 +1509,9 @@ impl Render for DesktopApp {
                 }));
         }
         self.ensure_search_input(cx);
+        if self.update_toast_lifetime(Instant::now()) {
+            window.request_animation_frame();
+        }
 
         #[cfg(debug_assertions)]
         {
@@ -5100,6 +5129,32 @@ mod tests {
 
         assert!((fps.frames_per_second - 62.5).abs() < 0.1);
         assert!((fps.frame_time_ms - 16.).abs() < 0.1);
+    }
+
+    #[test]
+    fn toast_expires_after_visible_window() {
+        let mut app = DesktopApp::new();
+        let started = Instant::now();
+        app.toast = Some("Saved".to_string());
+
+        assert!(app.update_toast_lifetime(started));
+        assert!(app.update_toast_lifetime(started + Duration::from_secs(3)));
+        assert_eq!(app.toast.as_deref(), Some("Saved"));
+        assert!(!app.update_toast_lifetime(started + Duration::from_secs(4)));
+        assert!(app.toast.is_none());
+    }
+
+    #[test]
+    fn replacing_toast_restarts_its_visible_window() {
+        let mut app = DesktopApp::new();
+        let started = Instant::now();
+        app.toast = Some("First".to_string());
+        assert!(app.update_toast_lifetime(started));
+
+        app.toast = Some("Second".to_string());
+        assert!(app.update_toast_lifetime(started + Duration::from_secs(3)));
+        assert!(app.update_toast_lifetime(started + Duration::from_secs(6)));
+        assert_eq!(app.toast.as_deref(), Some("Second"));
     }
 
     #[test]
