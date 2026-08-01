@@ -442,25 +442,18 @@ impl DesktopApp {
 
     fn toggle_queue_rail(&mut self) {
         self.queue_visible = !self.queue_visible;
-        if self.queue_visible && !self.queue_requested {
+        if self.queue_visible && !self.queue_loading {
+            // The startup seed is intentionally cheap and can lag behind a
+            // Connect/Web API queue mutation. Opening the rail must request
+            // the daemon's current authoritative snapshot.
             self.queue_loading = true;
             self.queue_requested = true;
             self.send_request(Request::QueueGet);
         }
     }
 
-    fn show_preferences(&mut self) {
+    pub(crate) fn show_preferences(&mut self) {
         self.select_destination(Destination::Preferences);
-    }
-
-    fn open_preferences(
-        &mut self,
-        _: &OpenPreferences,
-        _: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.show_preferences();
-        cx.notify();
     }
 
     fn choose_theme_preference(
@@ -1651,6 +1644,7 @@ impl DesktopApp {
         .child(self.now_playing_footer(cx));
 
         let mut root = div()
+            .key_context("spotuify")
             .size_full()
             .relative()
             .font_family("JetBrains Mono")
@@ -1659,7 +1653,10 @@ impl DesktopApp {
             .text_color(rgb(cx.desktop_theme().text_primary))
             .flex()
             .flex_row()
-            .on_action(cx.listener(Self::open_preferences))
+            .on_action(cx.listener(|app, _: &OpenPreferences, _, cx| {
+                app.show_preferences();
+                cx.notify();
+            }))
             .child(self.sidebar(cx))
             .child(content);
 
@@ -5355,6 +5352,19 @@ mod tests {
         assert!(app.queue_requested);
         assert!(matches!(command_rx.try_recv(), Ok(Request::QueueGet)));
         assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn opening_queue_rail_refreshes_a_seeded_snapshot() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        app.set_queue_seed(Queue::default());
+
+        app.toggle_queue_rail();
+
+        assert!(matches!(command_rx.try_recv(), Ok(Request::QueueGet)));
     }
 
     #[test]
