@@ -2579,7 +2579,8 @@ impl DesktopApp {
                                 repeat_state != RepeatMode::Off,
                                 false,
                                 cx,
-                            )),
+                            ))
+                            .child(footer_queue_button(self.queue_visible, cx)),
                     ),
             )
             .child(
@@ -4271,6 +4272,40 @@ fn footer_like_button(
             19.,
             foreground,
         ))
+}
+
+fn footer_queue_button(queue_visible: bool, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+    let foreground = if queue_visible {
+        cx.desktop_theme().accent
+    } else {
+        cx.desktop_theme().text_primary
+    };
+    div()
+        .id("transport-queue")
+        .cursor_pointer()
+        .size(px(38.))
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(cx.desktop_theme().border_strong))
+        .bg(rgb(if queue_visible {
+            cx.desktop_theme().nav_active
+        } else {
+            cx.desktop_theme().bg_elevated
+        }))
+        .flex()
+        .items_center()
+        .justify_center()
+        .hover(|style| style.bg(rgb(cx.desktop_theme().button_secondary_hover)))
+        .tooltip(icon_tooltip(if queue_visible {
+            "Hide queue"
+        } else {
+            "Show queue"
+        }))
+        .on_click(cx.listener(|app, _, _, cx| {
+            app.toggle_queue_rail();
+            cx.notify();
+        }))
+        .child(app_icon(AppIcon::Queue, 18., foreground))
 }
 
 fn transport_button(
