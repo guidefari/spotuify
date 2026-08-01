@@ -2054,37 +2054,6 @@ impl DesktopApp {
             main = main.child(queue_message(cx, "Nothing is playing"));
         }
 
-        let toggle_label = if self.queue_visible {
-            "Hide queue"
-        } else {
-            "Show queue"
-        };
-        main = main.child(
-            div()
-                .id("now-playing-queue-toggle")
-                .mt_6()
-                .cursor_pointer()
-                .rounded_md()
-                .bg(rgb(cx.desktop_theme().button_secondary))
-                .px_4()
-                .py_2()
-                .text_sm()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(app_icon(
-                    AppIcon::Queue,
-                    18.,
-                    cx.desktop_theme().text_primary,
-                ))
-                .child(toggle_label)
-                .hover(|style| style.bg(rgb(cx.desktop_theme().button_secondary_hover)))
-                .on_click(cx.listener(|app, _, _, cx| {
-                    app.toggle_queue_rail();
-                    cx.notify();
-                })),
-        );
-
         let mut pane = div()
             .flex_1()
             .h_full()
