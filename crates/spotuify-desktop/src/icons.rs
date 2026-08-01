@@ -2,6 +2,8 @@ use gpui::prelude::*;
 use gpui::{svg, AnyView, App, AssetSource, SharedString, Window};
 use std::borrow::Cow;
 
+use crate::theme::ActiveTheme;
+
 macro_rules! phosphor_icons {
     ($($variant:ident => $path:literal),+ $(,)?) => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -84,17 +86,17 @@ impl Render for IconTooltip {
     fn render(
         &mut self,
         _window: &mut Window,
-        _cx: &mut gpui::Context<'_, Self>,
+        cx: &mut gpui::Context<'_, Self>,
     ) -> impl IntoElement {
         gpui::div()
             .rounded_md()
-            .bg(gpui::rgb(crate::theme::BG_ELEVATED))
+            .bg(gpui::rgb(cx.desktop_theme().bg_elevated))
             .border_1()
-            .border_color(gpui::rgb(crate::theme::BORDER_STRONG))
+            .border_color(gpui::rgb(cx.desktop_theme().border_strong))
             .px_3()
             .py_2()
             .text_xs()
-            .text_color(gpui::rgb(crate::theme::TEXT_PRIMARY))
+            .text_color(gpui::rgb(cx.desktop_theme().text_primary))
             .child(self.label.clone())
     }
 }

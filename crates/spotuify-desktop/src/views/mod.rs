@@ -1,6 +1,6 @@
 use crate::{
     icons::{icon as app_icon, tooltip as icon_tooltip, AppIcon},
-    theme,
+    theme::{self, ActiveTheme},
 };
 use gpui::prelude::*;
 use gpui::{
@@ -8,7 +8,8 @@ use gpui::{
     DragMoveEvent, Element, ElementId, ElementInputHandler, Entity, EntityInputHandler,
     FocusHandle, Focusable, GlobalElementId, Image, ImageFormat, IntoElement, KeyDownEvent,
     LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render,
-    ScrollHandle, ShapedLine, SharedString, Style, TextRun, UTF16Selection, WeakEntity, Window,
+    ScrollHandle, ShapedLine, SharedString, Style, Subscription, TextRun, UTF16Selection,
+    WeakEntity, Window,
 };
 use spotuify_core::{
     active_lyric_line_index, Device, MediaItem, MediaKind, Playback, Playlist, Queue, RepeatMode,
@@ -105,6 +106,7 @@ pub struct DesktopApp {
     slider_drag: Option<SliderKind>,
     slider_preview: Option<SliderPreview>,
     slider_pending_receipt: Option<ReceiptId>,
+    appearance_subscription: Option<Subscription>,
     #[cfg(debug_assertions)]
     debug_fps: DebugFps,
 }
@@ -365,6 +367,7 @@ impl DesktopApp {
             slider_drag: None,
             slider_preview: None,
             slider_pending_receipt: None,
+            appearance_subscription: None,
             #[cfg(debug_assertions)]
             debug_fps: DebugFps::new(),
         }
@@ -1289,6 +1292,14 @@ impl DesktopApp {
 
 impl Render for DesktopApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        if self.appearance_subscription.is_none() {
+            theme::sync_system_appearance(window.appearance(), cx);
+            self.appearance_subscription =
+                Some(cx.observe_window_appearance(window, |_, window, cx| {
+                    theme::sync_system_appearance(window.appearance(), cx);
+                    cx.notify();
+                }));
+        }
         self.ensure_search_input(cx);
 
         #[cfg(debug_assertions)]
@@ -1309,6 +1320,7 @@ impl Render for DesktopApp {
         }
         match &self.state {
             DesktopState::Booting => diagnostics_surface(
+                cx,
                 "connecting...",
                 &crate::platform::macos::placeholder_message(),
                 vec![
@@ -1320,6 +1332,7 @@ impl Render for DesktopApp {
             )
             .into_any_element(),
             DesktopState::Gate(state) => diagnostics_surface(
+                cx,
                 "daemon gate",
                 &state.message,
                 vec![
@@ -1363,10 +1376,10 @@ impl DesktopApp {
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(theme::BG_ROOT));
+            .bg(rgb(cx.desktop_theme().bg_root));
 
         if let Some(banner) = &self.update_banner {
-            content = content.child(update_banner_surface(banner));
+            content = content.child(update_banner_surface(cx, banner));
         }
 
         content = if self.selected_destination == Destination::Search {
@@ -1376,7 +1389,7 @@ impl DesktopApp {
         } else if self.selected_destination == Destination::Devices {
             content.child(self.devices_pane(cx))
         } else if self.selected_destination == Destination::Lyrics {
-            content.child(self.lyrics_pane())
+            content.child(self.lyrics_pane(cx))
         } else if self.selected_destination == Destination::LikedSongs {
             content.child(self.liked_songs_pane(cx))
         } else if self.selected_destination == Destination::Albums {
@@ -1388,27 +1401,27 @@ impl DesktopApp {
         } else if self.selected_destination == Destination::Playlists {
             content.child(self.playlists_pane(cx))
         } else {
-            content.child(self.content_pane(state))
+            content.child(self.content_pane(state, cx))
         }
         .child(self.now_playing_footer(cx));
 
         let mut root = div()
             .size_full()
             .relative()
-            .bg(rgb(theme::BG_ROOT))
-            .text_color(rgb(theme::TEXT_PRIMARY))
+            .bg(rgb(cx.desktop_theme().bg_root))
+            .text_color(rgb(cx.desktop_theme().text_primary))
             .flex()
             .flex_row()
             .child(self.sidebar(cx))
             .child(content);
 
         if let Some(toast) = &self.toast {
-            root = root.child(toast_surface(toast));
+            root = root.child(toast_surface(cx, toast));
         }
 
         #[cfg(debug_assertions)]
         {
-            root = root.child(debug_fps_surface(&self.debug_fps));
+            root = root.child(debug_fps_surface(cx, &self.debug_fps));
         }
 
         root
@@ -1418,9 +1431,9 @@ impl DesktopApp {
         let mut nav = div()
             .w(px(238.))
             .h_full()
-            .bg(rgb(theme::BG_SIDEBAR))
+            .bg(rgb(cx.desktop_theme().bg_sidebar))
             .border_r_1()
-            .border_color(rgb(theme::BORDER))
+            .border_color(rgb(cx.desktop_theme().border))
             .px_4()
             .py_5()
             .flex()
@@ -1430,7 +1443,7 @@ impl DesktopApp {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(theme::ACCENT))
+                    .text_color(rgb(cx.desktop_theme().accent))
                     .child("SPOTUIFY"),
             )
             .child(div().mt_1().mb_6().text_2xl().child("Desktop"));
@@ -1446,7 +1459,11 @@ impl DesktopApp {
         nav
     }
 
-    fn content_pane(&self, state: &ConnectedState) -> impl IntoElement {
+    fn content_pane(
+        &self,
+        state: &ConnectedState,
+        cx: &mut Context<'_, DesktopApp>,
+    ) -> impl IntoElement {
         let auth = state
             .doctor_report
             .as_ref()
@@ -1470,7 +1487,7 @@ impl DesktopApp {
                             .child(
                                 div()
                                     .mt_2()
-                                    .text_color(rgb(theme::TEXT_SECONDARY))
+                                    .text_color(rgb(cx.desktop_theme().text_secondary))
                                     .child(self.selected_destination.stub()),
                             ),
                     )
@@ -1482,7 +1499,7 @@ impl DesktopApp {
                             .whitespace_nowrap()
                             .text_ellipsis()
                             .text_xs()
-                            .text_color(rgb(theme::TEXT_SECONDARY))
+                            .text_color(rgb(cx.desktop_theme().text_secondary))
                             .child(format!("last event: {}", state.last_event.as_deref().unwrap_or("none"))),
                     ),
             )
@@ -1490,22 +1507,22 @@ impl DesktopApp {
                 div()
                     .mt_8()
                     .border_1()
-                    .border_color(rgb(theme::BORDER))
-                    .bg(rgb(theme::BG_SURFACE))
+                    .border_color(rgb(cx.desktop_theme().border))
+                    .bg(rgb(cx.desktop_theme().bg_surface))
                     .rounded_lg()
                     .p_6()
                     .child(div().text_lg().child(format!("{} pane", self.selected_destination.label())))
                     .child(
                         div()
                             .mt_3()
-                            .text_color(rgb(theme::TEXT_SECONDARY))
+                            .text_color(rgb(cx.desktop_theme().text_secondary))
                             .child("This is a routed shell stub. The sidebar already switches panes; data-heavy panes arrive in their own tickets."),
                     )
                     .child(
                         div()
                             .mt_5()
                             .text_sm()
-                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_color(rgb(cx.desktop_theme().text_muted))
                             .child(format!(
                                 "daemon: {} | auth: {} | version: {}",
                                 health_word(state.daemon_status.running),
@@ -1527,20 +1544,21 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child(format!("{} songs", self.liked_total)),
             );
 
         if self.liked_loading && self.liked_songs.is_empty() {
-            return pane.child(queue_message("Loading liked songs..."));
+            return pane.child(queue_message(cx, "Loading liked songs..."));
         }
         if let Some(error) = &self.liked_error {
-            return pane.child(queue_message(&format!(
-                "Couldn't load liked songs: {error}"
-            )));
+            return pane.child(queue_message(
+                cx,
+                &format!("Couldn't load liked songs: {error}"),
+            ));
         }
         if self.liked_songs.is_empty() {
-            return pane.child(queue_message("No liked songs"));
+            return pane.child(queue_message(cx, "No liked songs"));
         }
 
         let mut rows = div()
@@ -1573,23 +1591,23 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child("Saved albums"),
             );
 
         if self.albums_loading && self.albums.is_empty() {
             return pane
-                .child(queue_message("Loading albums..."))
+                .child(queue_message(cx, "Loading albums..."))
                 .into_any_element();
         }
         if let Some(error) = &self.albums_error {
             return pane
-                .child(queue_message(&format!("Couldn't load albums: {error}")))
+                .child(queue_message(cx, &format!("Couldn't load albums: {error}")))
                 .into_any_element();
         }
         if self.albums.is_empty() {
             return pane
-                .child(queue_message("No saved albums"))
+                .child(queue_message(cx, "No saved albums"))
                 .into_any_element();
         }
 
@@ -1614,23 +1632,26 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child("Followed artists"),
             );
 
         if self.artists_loading && self.artists.is_empty() {
             return pane
-                .child(queue_message("Loading artists..."))
+                .child(queue_message(cx, "Loading artists..."))
                 .into_any_element();
         }
         if let Some(error) = &self.artists_error {
             return pane
-                .child(queue_message(&format!("Couldn't load artists: {error}")))
+                .child(queue_message(
+                    cx,
+                    &format!("Couldn't load artists: {error}"),
+                ))
                 .into_any_element();
         }
         if self.artists.is_empty() {
             return pane
-                .child(queue_message("No followed artists"))
+                .child(queue_message(cx, "No followed artists"))
                 .into_any_element();
         }
 
@@ -1652,18 +1673,21 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child("Recently played tracks"),
             );
 
         if self.history_loading && self.history.is_empty() {
-            return pane.child(queue_message("Loading history..."));
+            return pane.child(queue_message(cx, "Loading history..."));
         }
         if let Some(error) = &self.history_error {
-            return pane.child(queue_message(&format!("Couldn't load history: {error}")));
+            return pane.child(queue_message(
+                cx,
+                &format!("Couldn't load history: {error}"),
+            ));
         }
         if self.history.is_empty() {
-            return pane.child(queue_message("No recently played tracks"));
+            return pane.child(queue_message(cx, "No recently played tracks"));
         }
 
         let mut rows = div().mt_6().flex().flex_col().gap_2();
@@ -1688,22 +1712,27 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child("Your playlists"),
             );
 
         if self.playlists_loading && self.playlists.is_empty() {
             return pane
-                .child(queue_message("Loading playlists..."))
+                .child(queue_message(cx, "Loading playlists..."))
                 .into_any_element();
         }
         if let Some(error) = &self.playlists_error {
             return pane
-                .child(queue_message(&format!("Couldn't load playlists: {error}")))
+                .child(queue_message(
+                    cx,
+                    &format!("Couldn't load playlists: {error}"),
+                ))
                 .into_any_element();
         }
         if self.playlists.is_empty() {
-            return pane.child(queue_message("No playlists")).into_any_element();
+            return pane
+                .child(queue_message(cx, "No playlists"))
+                .into_any_element();
         }
 
         let mut rows = div().mt_6().flex().flex_col().gap_2();
@@ -1729,6 +1758,7 @@ impl DesktopApp {
                     .items_center()
                     .gap_3()
                     .child(search_row_action(
+                        cx,
                         "Back",
                         cx.listener(|app, _, _, cx| {
                             app.close_album();
@@ -1745,20 +1775,21 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child(media_subtitle(album)),
             );
 
         if self.album_tracks_loading && self.album_tracks.is_empty() {
-            return pane.child(queue_message("Loading album tracks..."));
+            return pane.child(queue_message(cx, "Loading album tracks..."));
         }
         if let Some(error) = &self.album_tracks_error {
-            return pane.child(queue_message(&format!(
-                "Couldn't load album tracks: {error}"
-            )));
+            return pane.child(queue_message(
+                cx,
+                &format!("Couldn't load album tracks: {error}"),
+            ));
         }
         if self.album_tracks.is_empty() {
-            return pane.child(queue_message("No tracks in this album"));
+            return pane.child(queue_message(cx, "No tracks in this album"));
         }
 
         let mut rows = div().mt_6().flex().flex_col().gap_2();
@@ -1784,6 +1815,7 @@ impl DesktopApp {
                     .items_center()
                     .gap_3()
                     .child(search_row_action(
+                        cx,
                         "Back",
                         cx.listener(|app, _, _, cx| {
                             app.close_artist();
@@ -1800,20 +1832,21 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child("Discography"),
             );
 
         if self.artist_albums_loading && self.artist_albums.is_empty() {
-            return pane.child(queue_message("Loading artist albums..."));
+            return pane.child(queue_message(cx, "Loading artist albums..."));
         }
         if let Some(error) = &self.artist_albums_error {
-            return pane.child(queue_message(&format!(
-                "Couldn't load artist albums: {error}"
-            )));
+            return pane.child(queue_message(
+                cx,
+                &format!("Couldn't load artist albums: {error}"),
+            ));
         }
         if self.artist_albums.is_empty() {
-            return pane.child(queue_message("No albums for this artist"));
+            return pane.child(queue_message(cx, "No albums for this artist"));
         }
 
         let mut rows = div().mt_6().flex().flex_col().gap_2();
@@ -1839,6 +1872,7 @@ impl DesktopApp {
                     .items_center()
                     .gap_3()
                     .child(search_row_action(
+                        cx,
                         "Back",
                         cx.listener(|app, _, _, cx| {
                             app.close_playlist();
@@ -1851,7 +1885,7 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child(format!(
                         "{} tracks · {}",
                         playlist.tracks_total, playlist.owner
@@ -1859,15 +1893,16 @@ impl DesktopApp {
             );
 
         if self.playlist_tracks_loading && self.playlist_tracks.is_empty() {
-            return pane.child(queue_message("Loading playlist tracks..."));
+            return pane.child(queue_message(cx, "Loading playlist tracks..."));
         }
         if let Some(error) = &self.playlist_tracks_error {
-            return pane.child(queue_message(&format!(
-                "Couldn't load playlist tracks: {error}"
-            )));
+            return pane.child(queue_message(
+                cx,
+                &format!("Couldn't load playlist tracks: {error}"),
+            ));
         }
         if self.playlist_tracks.is_empty() {
-            return pane.child(queue_message("No tracks in this playlist"));
+            return pane.child(queue_message(cx, "No tracks in this playlist"));
         }
 
         let mut rows = div().mt_6().flex().flex_col().gap_2();
@@ -1889,7 +1924,7 @@ impl DesktopApp {
             .flex_col()
             .items_center()
             .justify_center()
-            .bg(rgb(theme::BG_ROOT));
+            .bg(rgb(cx.desktop_theme().bg_root));
 
         if let Some(item) = item {
             if let Some(image) = self
@@ -1907,11 +1942,11 @@ impl DesktopApp {
                     div()
                         .w(px(420.))
                         .h(px(420.))
-                        .bg(rgb(theme::BG_ELEVATED))
+                        .bg(rgb(cx.desktop_theme().bg_elevated))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_color(rgb(theme::TEXT_SECONDARY))
+                        .text_color(rgb(cx.desktop_theme().text_secondary))
                         .child("Artwork loading"),
                 );
             }
@@ -1921,7 +1956,7 @@ impl DesktopApp {
                     div()
                         .mt_2()
                         .text_lg()
-                        .text_color(rgb(theme::TEXT_SECONDARY))
+                        .text_color(rgb(cx.desktop_theme().text_secondary))
                         .child(if item.subtitle.is_empty() {
                             item.context.clone()
                         } else {
@@ -1932,11 +1967,11 @@ impl DesktopApp {
                     div()
                         .mt_2()
                         .text_sm()
-                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_color(rgb(cx.desktop_theme().text_muted))
                         .child(summary.progress),
                 );
         } else {
-            main = main.child(queue_message("Nothing is playing"));
+            main = main.child(queue_message(cx, "Nothing is playing"));
         }
 
         let toggle_label = if self.queue_visible {
@@ -1950,16 +1985,20 @@ impl DesktopApp {
                 .mt_6()
                 .cursor_pointer()
                 .rounded_md()
-                .bg(rgb(theme::BUTTON_SECONDARY))
+                .bg(rgb(cx.desktop_theme().button_secondary))
                 .px_4()
                 .py_2()
                 .text_sm()
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(app_icon(AppIcon::Queue, 18., theme::TEXT_PRIMARY))
+                .child(app_icon(
+                    AppIcon::Queue,
+                    18.,
+                    cx.desktop_theme().text_primary,
+                ))
                 .child(toggle_label)
-                .hover(|style| style.bg(rgb(theme::BUTTON_SECONDARY_HOVER)))
+                .hover(|style| style.bg(rgb(cx.desktop_theme().button_secondary_hover)))
                 .on_click(cx.listener(|app, _, _, cx| {
                     app.toggle_queue_rail();
                     cx.notify();
@@ -1971,19 +2010,20 @@ impl DesktopApp {
             .h_full()
             .flex()
             .flex_row()
-            .bg(rgb(theme::BG_ROOT))
+            .bg(rgb(cx.desktop_theme().bg_root))
             .child(main);
         if self.queue_visible {
-            pane = pane.child(self.queue_rail());
+            pane = pane.child(self.queue_rail(cx));
         }
         pane
     }
 
-    fn queue_rail(&self) -> impl IntoElement {
+    fn queue_rail(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
         let mut rows = div().flex().flex_col().gap_2();
         if let Some(queue) = &self.queue {
             if let Some(item) = &queue.currently_playing {
                 rows = rows.child(queue_rail_row(
+                    cx,
                     "Now playing",
                     item,
                     true,
@@ -1994,21 +2034,24 @@ impl DesktopApp {
                 div()
                     .mt_4()
                     .text_xs()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child("NEXT UP"),
             );
             for item in &queue.items {
-                rows = rows.child(queue_rail_row("", item, false, &self.artwork_cache));
+                rows = rows.child(queue_rail_row(cx, "", item, false, &self.artwork_cache));
             }
             if queue.items.is_empty() {
-                rows = rows.child(queue_message("No upcoming items"));
+                rows = rows.child(queue_message(cx, "No upcoming items"));
             }
         } else {
-            rows = rows.child(queue_message(if self.queue_loading {
-                "Loading queue..."
-            } else {
-                "Queue is not loaded yet"
-            }));
+            rows = rows.child(queue_message(
+                cx,
+                if self.queue_loading {
+                    "Loading queue..."
+                } else {
+                    "Queue is not loaded yet"
+                },
+            ));
         }
 
         div()
@@ -2016,8 +2059,8 @@ impl DesktopApp {
             .h_full()
             .flex_shrink_0()
             .border_l_1()
-            .border_color(rgb(theme::BORDER))
-            .bg(rgb(theme::BG_ELEVATED))
+            .border_color(rgb(cx.desktop_theme().border))
+            .bg(rgb(cx.desktop_theme().bg_elevated))
             .p_5()
             .flex()
             .flex_col()
@@ -2030,7 +2073,7 @@ impl DesktopApp {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(theme::TEXT_SECONDARY))
+                            .text_color(rgb(cx.desktop_theme().text_secondary))
                             .child("Now Playing"),
                     ),
             )
@@ -2057,15 +2100,15 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child("Spotify Connect devices"),
             );
 
         if self.devices_loading {
-            return pane.child(queue_message("Loading devices..."));
+            return pane.child(queue_message(cx, "Loading devices..."));
         }
         if self.devices.is_empty() {
-            return pane.child(queue_message("No devices available"));
+            return pane.child(queue_message(cx, "No devices available"));
         }
 
         let mut rows = div().mt_4().flex().flex_col().gap_2();
@@ -2082,7 +2125,7 @@ impl DesktopApp {
                 .id(SharedString::from(format!("device-{}", device.name)))
                 .rounded_md()
                 .border_1()
-                .border_color(rgb(theme::BORDER))
+                .border_color(rgb(cx.desktop_theme().border))
                 .px_4()
                 .py_3()
                 .flex()
@@ -2096,19 +2139,20 @@ impl DesktopApp {
                             div()
                                 .mt_1()
                                 .text_xs()
-                                .text_color(rgb(theme::TEXT_MUTED))
+                                .text_color(rgb(cx.desktop_theme().text_muted))
                                 .child(device.kind.clone()),
                         ),
                 )
                 .child(
                     div()
                         .text_xs()
-                        .text_color(rgb(theme::TEXT_SECONDARY))
+                        .text_color(rgb(cx.desktop_theme().text_secondary))
                         .child(status),
                 );
             if let Some(device_id) = device_id {
                 if !device.is_active && !device.is_restricted {
                     row = row.child(search_row_action(
+                        cx,
                         "Transfer",
                         cx.listener(move |app, _, _, cx| {
                             app.transfer_to_device(device_id.clone());
@@ -2122,7 +2166,7 @@ impl DesktopApp {
         pane.child(rows)
     }
 
-    fn lyrics_pane(&self) -> impl IntoElement {
+    fn lyrics_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
         let pane = div()
             .flex_1()
             .p_8()
@@ -2133,25 +2177,28 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child("Lyrics for the current track"),
             );
 
         if self.lyrics_loading {
-            return pane.child(queue_message("Loading lyrics..."));
+            return pane.child(queue_message(cx, "Loading lyrics..."));
         }
         if let Some(error) = &self.lyrics_error {
-            return pane.child(queue_message(&format!("Lyrics unavailable: {error}")));
+            return pane.child(queue_message(cx, &format!("Lyrics unavailable: {error}")));
         }
         let Some(lyrics) = &self.lyrics else {
-            return pane.child(queue_message(if self.current_track_uri().is_some() {
-                "Lyrics aren't available for this track"
-            } else {
-                "Play a track to see its lyrics"
-            }));
+            return pane.child(queue_message(
+                cx,
+                if self.current_track_uri().is_some() {
+                    "Lyrics aren't available for this track"
+                } else {
+                    "Play a track to see its lyrics"
+                },
+            ));
         };
         if lyrics.lines.is_empty() {
-            return pane.child(queue_message("Lyrics aren't available for this track"));
+            return pane.child(queue_message(cx, "Lyrics aren't available for this track"));
         }
 
         let active = lyrics
@@ -2173,9 +2220,9 @@ impl DesktopApp {
             lines = lines.child(
                 div()
                     .text_color(if is_active {
-                        rgb(theme::TEXT_PRIMARY)
+                        rgb(cx.desktop_theme().text_primary)
                     } else {
-                        rgb(theme::TEXT_MUTED)
+                        rgb(cx.desktop_theme().text_muted)
                     })
                     .text_size(px(if is_active { 26. } else { 20. }))
                     .font_weight(if is_active {
@@ -2197,7 +2244,7 @@ impl DesktopApp {
                 div()
                     .mt_4()
                     .text_sm()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child("These lyrics are not synchronized."),
             )
         })
@@ -2260,7 +2307,7 @@ impl DesktopApp {
                 div()
                     .mt_2()
                     .text_lg()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child("Find tracks, artists, albums, playlists, and episodes."),
             )
             .child(
@@ -2278,9 +2325,9 @@ impl DesktopApp {
                     .text_sm()
                     .text_color(
                         if self.search_error.is_some() && self.search_results.is_empty() {
-                            rgb(theme::ERROR)
+                            rgb(cx.desktop_theme().error)
                         } else {
-                            rgb(theme::TEXT_MUTED)
+                            rgb(cx.desktop_theme().text_muted)
                         },
                     )
                     .child(status),
@@ -2318,8 +2365,8 @@ impl DesktopApp {
         div()
             .h(px(164.))
             .border_t_1()
-            .border_color(rgb(theme::BORDER))
-            .bg(rgb(theme::BG_SURFACE))
+            .border_color(rgb(cx.desktop_theme().border))
+            .bg(rgb(cx.desktop_theme().bg_surface))
             .px_6()
             .py_4()
             .flex()
@@ -2339,9 +2386,9 @@ impl DesktopApp {
                             .overflow_hidden()
                             .when(footer_artwork.is_none(), |element| {
                                 element
-                                    .bg(rgb(theme::BG_ELEVATED))
+                                    .bg(rgb(cx.desktop_theme().bg_elevated))
                                     .border_1()
-                                    .border_color(rgb(theme::BORDER_STRONG))
+                                    .border_color(rgb(cx.desktop_theme().border_strong))
                             })
                             .when_some(footer_art, |element, art| element.child(art)),
                     )
@@ -2355,7 +2402,7 @@ impl DesktopApp {
                                 div()
                                     .mt_1()
                                     .text_sm()
-                                    .text_color(rgb(theme::TEXT_SECONDARY))
+                                    .text_color(rgb(cx.desktop_theme().text_secondary))
                                     .truncate()
                                     .child(summary.subtitle),
                             ),
@@ -2460,8 +2507,12 @@ impl DesktopApp {
                             .items_center()
                             .justify_end()
                             .gap_2()
-                            .text_color(rgb(theme::TEXT_MUTED))
-                            .child(app_icon(AppIcon::Devices, 16., theme::TEXT_MUTED))
+                            .text_color(rgb(cx.desktop_theme().text_muted))
+                            .child(app_icon(
+                                AppIcon::Devices,
+                                16.,
+                                cx.desktop_theme().text_muted,
+                            ))
                             .child(
                                 div()
                                     .max_w(px(180.))
@@ -2475,8 +2526,12 @@ impl DesktopApp {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .text_color(rgb(theme::TEXT_MUTED))
-                            .child(app_icon(AppIcon::Volume, 16., theme::TEXT_MUTED))
+                            .text_color(rgb(cx.desktop_theme().text_muted))
+                            .child(app_icon(
+                                AppIcon::Volume,
+                                16.,
+                                cx.desktop_theme().text_muted,
+                            ))
                             .child(volume_bar(playback, self.slider_preview, cx)),
                     ),
             )
@@ -2484,7 +2539,7 @@ impl DesktopApp {
 }
 
 #[cfg(debug_assertions)]
-fn debug_fps_surface(fps: &DebugFps) -> impl IntoElement {
+fn debug_fps_surface(cx: &App, fps: &DebugFps) -> impl IntoElement {
     let color = if fps.frames_per_second >= 55. {
         0x75c991
     } else if fps.frames_per_second >= 30. {
@@ -2507,8 +2562,8 @@ fn debug_fps_surface(fps: &DebugFps) -> impl IntoElement {
         .right_4()
         .rounded_full()
         .border_1()
-        .border_color(rgb(theme::BORDER_STRONG))
-        .bg(rgb(theme::BG_ELEVATED))
+        .border_color(rgb(cx.desktop_theme().border_strong))
+        .bg(rgb(cx.desktop_theme().bg_elevated))
         .px_3()
         .py_2()
         .text_xs()
@@ -2516,19 +2571,20 @@ fn debug_fps_surface(fps: &DebugFps) -> impl IntoElement {
         .child(label)
 }
 
-fn queue_message(message: &str) -> impl IntoElement {
+fn queue_message(cx: &App, message: &str) -> impl IntoElement {
     div()
         .mt_6()
         .rounded_lg()
         .border_1()
-        .border_color(rgb(theme::BORDER))
-        .bg(rgb(theme::BG_SURFACE))
+        .border_color(rgb(cx.desktop_theme().border))
+        .bg(rgb(cx.desktop_theme().bg_surface))
         .p_5()
-        .text_color(rgb(theme::TEXT_SECONDARY))
+        .text_color(rgb(cx.desktop_theme().text_secondary))
         .child(message.to_string())
 }
 
 fn queue_rail_row(
+    cx: &App,
     label: &str,
     item: &MediaItem,
     current: bool,
@@ -2538,9 +2594,9 @@ fn queue_rail_row(
     let mut row = div()
         .rounded_md()
         .bg(rgb(if current {
-            theme::QUEUE_CURRENT
+            cx.desktop_theme().queue_current
         } else {
-            theme::QUEUE_IDLE
+            cx.desktop_theme().queue_idle
         }))
         .px_3()
         .py_3()
@@ -2555,7 +2611,7 @@ fn queue_rail_row(
             div()
                 .w(px(42.))
                 .h(px(42.))
-                .bg(rgb(theme::BG_ELEVATED))
+                .bg(rgb(cx.desktop_theme().bg_elevated))
                 .child(
                     img(image.clone())
                         .w_full()
@@ -2564,7 +2620,12 @@ fn queue_rail_row(
                 ),
         );
     } else {
-        row = row.child(div().w(px(42.)).h(px(42.)).bg(rgb(theme::BG_ELEVATED)));
+        row = row.child(
+            div()
+                .w(px(42.))
+                .h(px(42.))
+                .bg(rgb(cx.desktop_theme().bg_elevated)),
+        );
     }
     row.child(
         div()
@@ -2575,14 +2636,14 @@ fn queue_rail_row(
             } else {
                 div()
                     .text_xs()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .child(label.to_string())
             })
             .child(
                 div()
                     .mt_1()
                     .text_xs()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
                     .truncate()
                     .child(if item.subtitle.is_empty() {
                         item.context.clone()
@@ -2629,14 +2690,14 @@ fn nav_item(
     cx: &mut Context<'_, DesktopApp>,
 ) -> impl IntoElement {
     let background = if selected {
-        theme::NAV_ACTIVE
+        cx.desktop_theme().nav_active
     } else {
-        theme::BG_SIDEBAR
+        cx.desktop_theme().bg_sidebar
     };
     let foreground = if selected {
-        theme::ACCENT
+        cx.desktop_theme().accent
     } else {
-        theme::TEXT_SECONDARY
+        cx.desktop_theme().text_secondary
     };
 
     div()
@@ -2653,7 +2714,7 @@ fn nav_item(
         .gap_3()
         .child(app_icon(destination.icon(), 20., foreground))
         .child(destination.label())
-        .hover(|style| style.bg(rgb(theme::NAV_HOVER)))
+        .hover(|style| style.bg(rgb(cx.desktop_theme().nav_hover)))
         .on_click(cx.listener(move |app, _, _, cx| {
             app.select_destination(destination);
             cx.notify();
@@ -2665,12 +2726,12 @@ fn search_button(cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
         .id("search-submit")
         .cursor_pointer()
         .rounded_md()
-        .bg(rgb(theme::ACCENT))
+        .bg(rgb(cx.desktop_theme().accent))
         .px_4()
         .py_3()
         .text_sm()
-        .text_color(rgb(theme::TEXT_PRIMARY))
-        .hover(|style| style.bg(rgb(theme::ACCENT_HOVER)))
+        .text_color(rgb(cx.desktop_theme().text_primary))
+        .hover(|style| style.bg(rgb(cx.desktop_theme().accent_hover)))
         .on_click(cx.listener(|app, _, _, cx| {
             app.start_search();
             cx.notify();
@@ -2710,8 +2771,8 @@ fn search_result_row(
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(theme::BORDER))
-        .bg(rgb(theme::BG_SURFACE))
+        .border_color(rgb(cx.desktop_theme().border))
+        .bg(rgb(cx.desktop_theme().bg_surface))
         .px_4()
         .py_3()
         .flex()
@@ -2724,7 +2785,7 @@ fn search_result_row(
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(theme::TEXT_PRIMARY))
+                        .text_color(rgb(cx.desktop_theme().text_primary))
                         .truncate()
                         .child(title),
                 )
@@ -2732,12 +2793,13 @@ fn search_result_row(
                     div()
                         .mt_1()
                         .text_xs()
-                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_color(rgb(cx.desktop_theme().text_muted))
                         .truncate()
                         .child(subtitle),
                 ),
         )
         .child(search_row_action(
+            cx,
             "Play",
             cx.listener(move |app, _, _, cx| {
                 app.send_playback_command(PlaybackCommand::PlayUri {
@@ -2751,6 +2813,7 @@ fn search_result_row(
 
     if can_queue {
         row = row.child(search_row_action(
+            cx,
             "Queue",
             cx.listener(move |app, _, _, cx| {
                 app.send_request(Request::QueueAdd {
@@ -2764,6 +2827,7 @@ fn search_result_row(
 
     if can_add_to_playlist {
         row = row.child(search_row_action(
+            cx,
             "Add to playlist",
             cx.listener(move |app, _, _, cx| {
                 app.open_playlist_picker(add_uri.clone());
@@ -2788,8 +2852,8 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(theme::BORDER))
-        .bg(rgb(theme::BG_SURFACE))
+        .border_color(rgb(cx.desktop_theme().border))
+        .bg(rgb(cx.desktop_theme().bg_surface))
         .px_4()
         .py_3()
         .flex()
@@ -2802,7 +2866,7 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(theme::TEXT_PRIMARY))
+                        .text_color(rgb(cx.desktop_theme().text_primary))
                         .truncate()
                         .child(title.clone()),
                 )
@@ -2810,7 +2874,7 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
                     div()
                         .mt_1()
                         .text_xs()
-                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_color(rgb(cx.desktop_theme().text_muted))
                         .truncate()
                         .child(media_subtitle(item)),
                 ),
@@ -2824,6 +2888,7 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
         let queue_title = title;
         row = row
             .child(search_row_action(
+                cx,
                 "Open",
                 cx.listener(move |app, _, _, cx| {
                     app.open_album(open_album.clone());
@@ -2831,6 +2896,7 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
                 }),
             ))
             .child(search_row_action(
+                cx,
                 "Play",
                 cx.listener(move |app, _, _, cx| {
                     app.send_playback_command(PlaybackCommand::PlayUri {
@@ -2842,6 +2908,7 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
                 }),
             ))
             .child(search_row_action(
+                cx,
                 "Queue",
                 cx.listener(move |app, _, _, cx| {
                     app.send_request(Request::QueueAdd {
@@ -2871,8 +2938,8 @@ fn artist_row(
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(theme::BORDER))
-        .bg(rgb(theme::BG_SURFACE))
+        .border_color(rgb(cx.desktop_theme().border))
+        .bg(rgb(cx.desktop_theme().bg_surface))
         .px_4()
         .py_3()
         .flex()
@@ -2882,10 +2949,11 @@ fn artist_row(
             div()
                 .flex_1()
                 .text_sm()
-                .text_color(rgb(theme::TEXT_PRIMARY))
+                .text_color(rgb(cx.desktop_theme().text_primary))
                 .child(title.to_string()),
         )
         .child(search_row_action(
+            cx,
             "Open",
             cx.listener(move |app, _, _, cx| {
                 app.open_artist(artist.clone());
@@ -2915,8 +2983,8 @@ fn detail_album_row(
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(theme::BORDER))
-        .bg(rgb(theme::BG_SURFACE))
+        .border_color(rgb(cx.desktop_theme().border))
+        .bg(rgb(cx.desktop_theme().bg_surface))
         .px_4()
         .py_3()
         .flex()
@@ -2927,11 +2995,12 @@ fn detail_album_row(
                 div()
                     .mt_1()
                     .text_xs()
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(cx.desktop_theme().text_muted))
                     .child(media_subtitle(item)),
             ),
         )
         .child(search_row_action(
+            cx,
             "Play",
             cx.listener(move |app, _, _, cx| {
                 app.send_playback_command(PlaybackCommand::PlayUri {
@@ -2943,6 +3012,7 @@ fn detail_album_row(
             }),
         ))
         .child(search_row_action(
+            cx,
             "Queue",
             cx.listener(move |app, _, _, cx| {
                 app.send_request(Request::QueueAdd {
@@ -2982,8 +3052,8 @@ fn liked_song_row(
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(theme::BORDER))
-        .bg(rgb(theme::BG_SURFACE))
+        .border_color(rgb(cx.desktop_theme().border))
+        .bg(rgb(cx.desktop_theme().bg_surface))
         .px_4()
         .py_3()
         .flex()
@@ -2996,7 +3066,7 @@ fn liked_song_row(
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(theme::TEXT_PRIMARY))
+                        .text_color(rgb(cx.desktop_theme().text_primary))
                         .truncate()
                         .child(title),
                 )
@@ -3004,12 +3074,13 @@ fn liked_song_row(
                     div()
                         .mt_1()
                         .text_xs()
-                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_color(rgb(cx.desktop_theme().text_muted))
                         .truncate()
                         .child(subtitle),
                 ),
         )
         .child(search_row_action(
+            cx,
             "Play",
             cx.listener(move |app, _, _, cx| {
                 app.send_playback_command(PlaybackCommand::PlayUri {
@@ -3021,6 +3092,7 @@ fn liked_song_row(
             }),
         ))
         .child(search_row_action(
+            cx,
             "Queue",
             cx.listener(move |app, _, _, cx| {
                 app.send_request(Request::QueueAdd {
@@ -3053,8 +3125,8 @@ fn history_row(
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(theme::BORDER))
-        .bg(rgb(theme::BG_SURFACE))
+        .border_color(rgb(cx.desktop_theme().border))
+        .bg(rgb(cx.desktop_theme().bg_surface))
         .px_4()
         .py_3()
         .flex()
@@ -3065,11 +3137,12 @@ fn history_row(
                 div()
                     .mt_1()
                     .text_xs()
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(cx.desktop_theme().text_muted))
                     .child(subtitle),
             ),
         )
         .child(search_row_action(
+            cx,
             "Play",
             cx.listener(move |app, _, _, cx| {
                 app.send_playback_command(PlaybackCommand::PlayUri {
@@ -3081,6 +3154,7 @@ fn history_row(
             }),
         ))
         .child(search_row_action(
+            cx,
             "Queue",
             cx.listener(move |app, _, _, cx| {
                 app.send_request(Request::QueueAdd { uri: uri.clone() });
@@ -3101,8 +3175,8 @@ fn playlist_row(
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(theme::BORDER))
-        .bg(rgb(theme::BG_SURFACE))
+        .border_color(rgb(cx.desktop_theme().border))
+        .bg(rgb(cx.desktop_theme().bg_surface))
         .px_4()
         .py_3()
         .flex()
@@ -3116,7 +3190,7 @@ fn playlist_row(
                     div()
                         .mt_1()
                         .text_xs()
-                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_color(rgb(cx.desktop_theme().text_muted))
                         .child(format!(
                             "{} tracks · {}",
                             playlist.tracks_total, playlist.owner
@@ -3124,6 +3198,7 @@ fn playlist_row(
                 ),
         )
         .child(search_row_action(
+            cx,
             "Open",
             cx.listener(move |app, _, _, cx| {
                 app.open_playlist(playlist.clone());
@@ -3153,8 +3228,8 @@ fn playlist_track_row(
         .w_full()
         .rounded_md()
         .border_1()
-        .border_color(rgb(theme::BORDER))
-        .bg(rgb(theme::BG_SURFACE))
+        .border_color(rgb(cx.desktop_theme().border))
+        .bg(rgb(cx.desktop_theme().bg_surface))
         .px_4()
         .py_3()
         .flex()
@@ -3165,11 +3240,12 @@ fn playlist_track_row(
                 div()
                     .mt_1()
                     .text_xs()
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(cx.desktop_theme().text_muted))
                     .child(subtitle),
             ),
         )
         .child(search_row_action(
+            cx,
             "Play",
             cx.listener(move |app, _, _, cx| {
                 app.send_playback_command(PlaybackCommand::PlayUri {
@@ -3181,6 +3257,7 @@ fn playlist_track_row(
             }),
         ))
         .child(search_row_action(
+            cx,
             "Queue",
             cx.listener(move |app, _, _, cx| {
                 app.send_request(Request::QueueAdd { uri: uri.clone() });
@@ -3191,6 +3268,7 @@ fn playlist_track_row(
 }
 
 fn search_row_action(
+    cx: &App,
     label: &'static str,
     listener: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
@@ -3198,12 +3276,12 @@ fn search_row_action(
         .cursor_pointer()
         .rounded_md()
         .border_1()
-        .border_color(rgb(theme::BORDER_STRONG))
+        .border_color(rgb(cx.desktop_theme().border_strong))
         .px_3()
         .py_2()
         .text_xs()
-        .text_color(rgb(theme::TEXT_PRIMARY))
-        .hover(|style| style.bg(rgb(theme::BUTTON_SECONDARY_HOVER)))
+        .text_color(rgb(cx.desktop_theme().text_primary))
+        .hover(|style| style.bg(rgb(cx.desktop_theme().button_secondary_hover)))
         .on_mouse_up(MouseButton::Left, listener)
         .child(label)
 }
@@ -3213,8 +3291,8 @@ fn playlist_picker_surface(app: &DesktopApp, cx: &mut Context<'_, DesktopApp>) -
         .mt_5()
         .rounded_lg()
         .border_1()
-        .border_color(rgb(theme::ERROR_BORDER))
-        .bg(rgb(theme::ERROR_SURFACE))
+        .border_color(rgb(cx.desktop_theme().error_border))
+        .bg(rgb(cx.desktop_theme().error_surface))
         .p_4()
         .child(div().text_sm().child("Choose a playlist"));
 
@@ -3223,7 +3301,7 @@ fn playlist_picker_surface(app: &DesktopApp, cx: &mut Context<'_, DesktopApp>) -
             div()
                 .mt_2()
                 .text_xs()
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(cx.desktop_theme().text_muted))
                 .child("Loading playlists…"),
         );
     } else if app.search_playlists.is_empty() {
@@ -3231,7 +3309,7 @@ fn playlist_picker_surface(app: &DesktopApp, cx: &mut Context<'_, DesktopApp>) -
             div()
                 .mt_2()
                 .text_xs()
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(cx.desktop_theme().text_muted))
                 .child("No playlists available"),
         );
     } else {
@@ -3248,12 +3326,12 @@ fn playlist_picker_surface(app: &DesktopApp, cx: &mut Context<'_, DesktopApp>) -
                     .cursor_pointer()
                     .rounded_md()
                     .border_1()
-                    .border_color(rgb(theme::BORDER_STRONG))
+                    .border_color(rgb(cx.desktop_theme().border_strong))
                     .px_3()
                     .py_2()
                     .text_xs()
-                    .text_color(rgb(theme::TEXT_PRIMARY))
-                    .hover(|style| style.bg(rgb(theme::BUTTON_SECONDARY_HOVER)))
+                    .text_color(rgb(cx.desktop_theme().text_primary))
+                    .hover(|style| style.bg(rgb(cx.desktop_theme().button_secondary_hover)))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |app, _, _, cx| {
@@ -3272,7 +3350,7 @@ fn playlist_picker_surface(app: &DesktopApp, cx: &mut Context<'_, DesktopApp>) -
             .mt_3()
             .cursor_pointer()
             .text_xs()
-            .text_color(rgb(theme::ACCENT_HOVER))
+            .text_color(rgb(cx.desktop_theme().accent_hover))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|app, _, _, cx| {
@@ -3755,7 +3833,7 @@ impl Element for SearchTextElement {
                     point(bounds.left() + cursor_pos, bounds.top()),
                     gpui::size(px(2.), bounds.bottom() - bounds.top()),
                 ),
-                rgb(theme::ACCENT),
+                rgb(cx.desktop_theme().accent),
             ))
         } else {
             None
@@ -3772,7 +3850,7 @@ impl Element for SearchTextElement {
                         bounds.bottom(),
                     ),
                 ),
-                rgb(theme::BUTTON_SECONDARY_HOVER),
+                rgb(cx.desktop_theme().button_secondary_hover),
             )
         });
         SearchTextPrepaint {
@@ -3831,8 +3909,8 @@ impl Render for SearchInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .rounded_md()
             .border_1()
-            .border_color(rgb(theme::BORDER_STRONG))
-            .bg(rgb(theme::BG_SIDEBAR))
+            .border_color(rgb(cx.desktop_theme().border_strong))
+            .bg(rgb(cx.desktop_theme().bg_sidebar))
             .px_3()
             .items_center()
             .text_sm()
@@ -3840,7 +3918,7 @@ impl Render for SearchInput {
     }
 }
 
-fn update_banner_surface(banner: &UpdateBanner) -> impl IntoElement {
+fn update_banner_surface(cx: &App, banner: &UpdateBanner) -> impl IntoElement {
     let detail = banner
         .command
         .as_deref()
@@ -3852,8 +3930,8 @@ fn update_banner_surface(banner: &UpdateBanner) -> impl IntoElement {
         .mt_5()
         .rounded_lg()
         .border_1()
-        .border_color(rgb(theme::ERROR_BORDER))
-        .bg(rgb(theme::ACCENT_SUBTLE))
+        .border_color(rgb(cx.desktop_theme().error_border))
+        .bg(rgb(cx.desktop_theme().accent_subtle))
         .px_4()
         .py_3()
         .child(format!("Update available: {}", banner.latest_version))
@@ -3861,12 +3939,12 @@ fn update_banner_surface(banner: &UpdateBanner) -> impl IntoElement {
             div()
                 .mt_1()
                 .text_sm()
-                .text_color(rgb(theme::ACCENT_HOVER))
+                .text_color(rgb(cx.desktop_theme().accent_hover))
                 .child(detail.to_string()),
         )
 }
 
-fn toast_surface(message: &str) -> impl IntoElement {
+fn toast_surface(cx: &App, message: &str) -> impl IntoElement {
     div()
         .absolute()
         .right_6()
@@ -3874,12 +3952,12 @@ fn toast_surface(message: &str) -> impl IntoElement {
         .max_w(px(420.))
         .rounded_lg()
         .border_1()
-        .border_color(rgb(theme::BORDER_STRONG))
-        .bg(rgb(theme::BG_ELEVATED))
+        .border_color(rgb(cx.desktop_theme().border_strong))
+        .bg(rgb(cx.desktop_theme().bg_elevated))
         .px_4()
         .py_3()
         .text_sm()
-        .text_color(rgb(theme::TEXT_PRIMARY))
+        .text_color(rgb(cx.desktop_theme().text_primary))
         .child(message.to_string())
 }
 
@@ -3929,9 +4007,9 @@ fn footer_like_button(
 ) -> impl IntoElement {
     let label = if liked { "Unlike" } else { "Like" };
     let foreground = if liked {
-        theme::ACCENT
+        cx.desktop_theme().accent
     } else {
-        theme::TEXT_SECONDARY
+        cx.desktop_theme().text_secondary
     };
 
     div()
@@ -3941,11 +4019,11 @@ fn footer_like_button(
         .flex_shrink_0()
         .rounded_full()
         .border_1()
-        .border_color(rgb(theme::BORDER_STRONG))
+        .border_color(rgb(cx.desktop_theme().border_strong))
         .bg(rgb(if liked {
-            theme::NAV_ACTIVE
+            cx.desktop_theme().nav_active
         } else {
-            theme::BG_ELEVATED
+            cx.desktop_theme().bg_elevated
         }))
         .text_color(rgb(foreground))
         .flex()
@@ -3953,7 +4031,7 @@ fn footer_like_button(
         .justify_center()
         .cursor_pointer()
         .when(!enabled, |element| element.opacity(0.45))
-        .hover(|style| style.bg(rgb(theme::BUTTON_SECONDARY_HOVER)))
+        .hover(|style| style.bg(rgb(cx.desktop_theme().button_secondary_hover)))
         .tooltip(icon_tooltip(label))
         .on_click(cx.listener(|app, _, _, cx| {
             app.toggle_current_track_like();
@@ -3982,23 +4060,23 @@ fn transport_button(
     let label = label.into();
     let size = if primary { 46. } else { 38. };
     let background = if primary {
-        theme::ACCENT
+        cx.desktop_theme().accent
     } else if active {
-        theme::NAV_ACTIVE
+        cx.desktop_theme().nav_active
     } else {
-        theme::BG_ELEVATED
+        cx.desktop_theme().bg_elevated
     };
     let foreground = if primary {
-        theme::BG_ROOT
+        cx.desktop_theme().bg_root
     } else if active {
-        theme::ACCENT
+        cx.desktop_theme().accent
     } else {
-        theme::TEXT_PRIMARY
+        cx.desktop_theme().text_primary
     };
     let hover_background = if primary {
-        theme::ACCENT_HOVER
+        cx.desktop_theme().accent_hover
     } else {
-        theme::BUTTON_SECONDARY_HOVER
+        cx.desktop_theme().button_secondary_hover
     };
 
     div()
@@ -4008,9 +4086,9 @@ fn transport_button(
         .rounded_full()
         .border_1()
         .border_color(rgb(if primary {
-            theme::ACCENT
+            cx.desktop_theme().accent
         } else {
-            theme::BORDER_STRONG
+            cx.desktop_theme().border_strong
         }))
         .bg(rgb(background))
         .text_color(rgb(foreground))
@@ -4049,13 +4127,13 @@ fn seek_bar(
         .h(px(14.))
         .cursor_pointer()
         .rounded_md()
-        .bg(rgb(theme::SLIDER_TRACK))
+        .bg(rgb(cx.desktop_theme().slider_track))
         .child(
             div()
                 .h_full()
                 .w(px(SLIDER_WIDTH * fraction))
                 .rounded_md()
-                .bg(rgb(theme::ACCENT)),
+                .bg(rgb(cx.desktop_theme().accent)),
         )
         .on_drag(SeekDrag, |_, _, _, cx| cx.new(|_| SliderGhost))
         .on_drag_move(cx.listener(|app, event: &DragMoveEvent<SeekDrag>, _, cx| {
@@ -4137,13 +4215,13 @@ fn volume_bar(
         .h(px(10.))
         .cursor_pointer()
         .rounded_md()
-        .bg(rgb(theme::SLIDER_TRACK))
+        .bg(rgb(cx.desktop_theme().slider_track))
         .child(
             div()
                 .h_full()
                 .w(px(140. * fraction))
                 .rounded_md()
-                .bg(rgb(theme::ACCENT)),
+                .bg(rgb(cx.desktop_theme().accent)),
         );
 
     if supports_volume {
@@ -4411,33 +4489,33 @@ fn should_toast_playback_action(action: &str) -> bool {
     !matches!(action, "snapshot" | "synced" | "sync" | "poll") && !action.starts_with("optimistic-")
 }
 
-fn diagnostics_surface(title: &str, body: &str, lines: Vec<String>) -> impl IntoElement {
+fn diagnostics_surface(cx: &App, title: &str, body: &str, lines: Vec<String>) -> impl IntoElement {
     let mut status_rows = div().mt_6().flex().flex_col();
     for line in lines {
         status_rows = status_rows.child(
             div()
                 .mb_2()
                 .text_sm()
-                .text_color(rgb(theme::TEXT_SECONDARY))
+                .text_color(rgb(cx.desktop_theme().text_secondary))
                 .child(line),
         );
     }
 
     div()
         .size_full()
-        .bg(rgb(theme::BG_SURFACE))
+        .bg(rgb(cx.desktop_theme().bg_surface))
         .p_8()
         .flex()
         .flex_col()
         .items_start()
         .justify_start()
-        .text_color(rgb(theme::TEXT_PRIMARY))
+        .text_color(rgb(cx.desktop_theme().text_primary))
         .child(div().text_3xl().child(title.to_string()))
         .child(
             div()
                 .mt_2()
                 .text_lg()
-                .text_color(rgb(theme::TEXT_SECONDARY))
+                .text_color(rgb(cx.desktop_theme().text_secondary))
                 .child(body.to_string()),
         )
         .child(status_rows)
@@ -5845,8 +5923,13 @@ mod gpui_tests {
     use gpui::{point, px, size, Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext};
     use spotuify_protocol::IPC_PROTOCOL_VERSION;
 
+    fn initialize_theme(cx: &mut TestAppContext) {
+        cx.set_global(theme::DesktopTheme::new(gpui::WindowAppearance::Light));
+    }
+
     #[gpui::test]
     fn search_results_scroll_with_mouse_wheel(cx: &mut TestAppContext) {
+        initialize_theme(cx);
         let (view, cx) = cx.add_window_view(|_, _| DesktopApp::new());
         view.update(cx, |app, cx| {
             app.state = DesktopState::Connected(ConnectedState {
@@ -5904,6 +5987,7 @@ mod gpui_tests {
 
     #[gpui::test]
     fn liked_songs_scroll_with_mouse_wheel(cx: &mut TestAppContext) {
+        initialize_theme(cx);
         let (view, cx) = cx.add_window_view(|_, _| DesktopApp::new());
         view.update(cx, |app, cx| {
             app.state = DesktopState::Connected(ConnectedState {
@@ -5961,6 +6045,7 @@ mod gpui_tests {
 
     #[gpui::test]
     fn seek_bar_accepts_click_without_drag(cx: &mut TestAppContext) {
+        initialize_theme(cx);
         let (view, cx) = cx.add_window_view(|_, _| DesktopApp::new());
         let (command_tx, _) = tokio::sync::mpsc::unbounded_channel();
         let (slider_tx, slider_rx) = watch::channel::<Option<Request>>(None);
