@@ -126,7 +126,6 @@ async fn bootstrap(view: gpui::Entity<DesktopApp>, mut cx: gpui::AsyncApp) {
             app.request_artwork_for_current_track();
             app.request_current_track_membership();
         }
-        app.toast = Some("Connected to daemon".to_string());
         cx.notify();
     });
 
