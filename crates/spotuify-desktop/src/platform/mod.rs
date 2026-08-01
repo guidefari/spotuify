@@ -238,6 +238,13 @@ async fn dispatch_transport_request(
         Request::SearchStream { query, version, .. } => Some((query.clone(), *version)),
         _ => None,
     };
+    let lyrics_request = match &command {
+        Request::LyricsGet {
+            track_uri: Some(track_uri),
+            ..
+        } => Some(track_uri.clone()),
+        _ => None,
+    };
     let is_playlist_list = matches!(&command, Request::PlaylistsList { .. });
     let is_queue_get = matches!(&command, Request::QueueGet);
     let is_devices_list = matches!(&command, Request::DevicesList);
@@ -245,7 +252,11 @@ async fn dispatch_transport_request(
     match result {
         Ok(Response::Ok { data }) => {
             let _ = view.update(cx, |app, cx| {
-                app.apply_daemon_response(data);
+                if let Some(track_uri) = lyrics_request.as_deref() {
+                    app.apply_daemon_response_for_track(data, Some(track_uri));
+                } else {
+                    app.apply_daemon_response(data);
+                }
                 cx.notify();
             });
         }
@@ -263,6 +274,9 @@ async fn dispatch_transport_request(
                 }
                 if is_devices_list {
                     app.devices_loading = false;
+                }
+                if let Some(track_uri) = &lyrics_request {
+                    app.fail_lyrics(track_uri, message.clone());
                 }
                 app.toast = Some(format!("Transport failed: {message}"));
                 cx.notify();
@@ -282,6 +296,9 @@ async fn dispatch_transport_request(
                 }
                 if is_devices_list {
                     app.devices_loading = false;
+                }
+                if let Some(track_uri) = &lyrics_request {
+                    app.fail_lyrics(track_uri, error.to_string());
                 }
                 app.toast = Some(format!("Transport failed: {error}"));
                 cx.notify();
