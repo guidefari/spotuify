@@ -44,6 +44,12 @@ pub struct DesktopApp {
     pub(crate) search_loading: bool,
     pub(crate) search_error: Option<String>,
     search_version: u64,
+    pub(crate) liked_songs: Vec<MediaItem>,
+    pub(crate) liked_total: u32,
+    pub(crate) liked_offset: u32,
+    pub(crate) liked_loading: bool,
+    pub(crate) liked_error: Option<String>,
+    liked_requested: bool,
     search_playlists: Vec<Playlist>,
     playlist_picker_uri: Option<String>,
     pub(crate) playlist_loading: bool,
@@ -215,6 +221,12 @@ impl DesktopApp {
             search_loading: false,
             search_error: None,
             search_version: 0,
+            liked_songs: Vec::new(),
+            liked_total: 0,
+            liked_offset: 0,
+            liked_loading: false,
+            liked_error: None,
+            liked_requested: false,
             search_playlists: Vec::new(),
             playlist_picker_uri: None,
             playlist_loading: false,
@@ -260,6 +272,9 @@ impl DesktopApp {
             self.queue_requested = true;
             self.send_request(Request::QueueGet);
         }
+        if destination == Destination::LikedSongs {
+            self.request_liked_songs();
+        }
         if destination == Destination::Devices {
             self.request_devices();
         }
@@ -278,6 +293,37 @@ impl DesktopApp {
         }
         self.devices_loading = true;
         self.send_request(Request::DevicesList);
+    }
+
+    fn request_liked_songs(&mut self) {
+        if self.liked_requested || self.command_tx.is_none() {
+            return;
+        }
+        self.liked_requested = true;
+        self.liked_loading = true;
+        self.liked_error = None;
+        self.send_request(Request::SavedTracks {
+            limit: 50,
+            offset: 0,
+        });
+    }
+
+    fn refresh_liked_songs(&mut self) {
+        if self.command_tx.is_none() || self.liked_loading {
+            return;
+        }
+        self.liked_requested = true;
+        self.liked_loading = true;
+        self.liked_error = None;
+        self.send_request(Request::SavedTracks {
+            limit: 50,
+            offset: 0,
+        });
+    }
+
+    pub(crate) fn fail_liked_songs(&mut self, message: String) {
+        self.liked_loading = false;
+        self.liked_error = Some(message);
     }
 
     fn transfer_to_device(&mut self, device: String) {
@@ -464,6 +510,18 @@ impl DesktopApp {
             } if self.lyrics_track_uri.as_deref() == Some(track_uri.as_str()) => {
                 self.lyrics_offset_ms = offset_ms;
             }
+            ResponseData::SavedTracksPage {
+                items,
+                total,
+                offset,
+            } => {
+                self.liked_songs = items;
+                self.liked_total = total;
+                self.liked_offset = offset;
+                self.liked_loading = false;
+                self.liked_error = None;
+                self.liked_requested = true;
+            }
             _ => {}
         }
     }
@@ -543,6 +601,9 @@ impl DesktopApp {
                 if !matches!(action.as_str(), "snapshot" | "synced" | "sync" | "poll") {
                     self.toast = Some(format!("Devices updated: {action}"));
                 }
+            }
+            DaemonEvent::LibraryChanged { .. } if self.liked_requested => {
+                self.refresh_liked_songs();
             }
             DaemonEvent::SearchPage {
                 query,
@@ -708,6 +769,8 @@ impl DesktopApp {
             content.child(self.devices_pane(cx))
         } else if self.selected_destination == Destination::Lyrics {
             content.child(self.lyrics_pane())
+        } else if self.selected_destination == Destination::LikedSongs {
+            content.child(self.liked_songs_pane(cx))
         } else {
             content.child(self.content_pane(state))
         }
@@ -825,6 +888,40 @@ impl DesktopApp {
                             )),
                     ),
             )
+    }
+
+    fn liked_songs_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+        let pane = div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .child(div().text_3xl().child("Liked Songs"))
+            .child(
+                div()
+                    .mt_2()
+                    .text_lg()
+                    .text_color(rgb(0xd6c7ba))
+                    .child(format!("{} songs", self.liked_total)),
+            );
+
+        if self.liked_loading && self.liked_songs.is_empty() {
+            return pane.child(queue_message("Loading liked songs..."));
+        }
+        if let Some(error) = &self.liked_error {
+            return pane.child(queue_message(&format!(
+                "Couldn't load liked songs: {error}"
+            )));
+        }
+        if self.liked_songs.is_empty() {
+            return pane.child(queue_message("No liked songs"));
+        }
+
+        let mut rows = div().mt_6().flex().flex_col().gap_2();
+        for (index, item) in self.liked_songs.iter().enumerate() {
+            rows = rows.child(liked_song_row(index, item, cx));
+        }
+        pane.child(rows)
     }
 
     fn queue_pane(&self, _state: &ConnectedState) -> impl IntoElement {
@@ -1424,6 +1521,84 @@ fn search_result_row(
     }
 
     row
+}
+
+fn liked_song_row(
+    index: usize,
+    item: &MediaItem,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
+    let uri = item.uri.clone();
+    let title = if item.name.is_empty() {
+        "Untitled song".to_string()
+    } else {
+        item.name.clone()
+    };
+    let subtitle = if item.subtitle.is_empty() {
+        item.album.clone().unwrap_or_else(|| "Track".to_string())
+    } else if let Some(album) = &item.album {
+        format!("{} · {}", item.subtitle, album)
+    } else {
+        item.subtitle.clone()
+    };
+    let play_uri = uri.clone();
+    let play_title = title.clone();
+    let queue_uri = uri;
+    let queue_title = title.clone();
+
+    div()
+        .id(SharedString::from(format!("liked-song-{index}")))
+        .w_full()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(0x3b2722))
+        .bg(rgb(0x1b1518))
+        .px_4()
+        .py_3()
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .flex_1()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(0xf7efe8))
+                        .truncate()
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .mt_1()
+                        .text_xs()
+                        .text_color(rgb(0x9e929d))
+                        .truncate()
+                        .child(subtitle),
+                ),
+        )
+        .child(search_row_action(
+            "Play",
+            cx.listener(move |app, _, _, cx| {
+                app.send_playback_command(PlaybackCommand::PlayUri {
+                    uri: play_uri.clone(),
+                    context_uri: None,
+                });
+                app.toast = Some(format!("Playing {play_title}"));
+                cx.notify();
+            }),
+        ))
+        .child(search_row_action(
+            "Queue",
+            cx.listener(move |app, _, _, cx| {
+                app.send_request(Request::QueueAdd {
+                    uri: queue_uri.clone(),
+                });
+                app.toast = Some(format!("Queued {queue_title}"));
+                cx.notify();
+            }),
+        ))
 }
 
 fn search_row_action(
@@ -2643,6 +2818,67 @@ mod tests {
         assert!(app.queue_requested);
         assert!(matches!(command_rx.try_recv(), Ok(Request::QueueGet)));
         assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn entering_liked_songs_requests_saved_tracks_once() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+
+        app.select_destination(Destination::LikedSongs);
+        app.select_destination(Destination::LikedSongs);
+
+        assert!(app.liked_loading);
+        assert!(app.liked_requested);
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::SavedTracks {
+                limit: 50,
+                offset: 0
+            })
+        ));
+        assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn liked_songs_response_is_authoritative_and_library_change_refetches() {
+        let mut app = connected_app();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        app.select_destination(Destination::LikedSongs);
+        let _ = command_rx.try_recv();
+
+        let item = MediaItem {
+            name: "Saved song".to_string(),
+            uri: "spotify:track:saved".to_string(),
+            kind: MediaKind::Track,
+            ..MediaItem::default()
+        };
+        app.apply_daemon_response(ResponseData::SavedTracksPage {
+            items: vec![item.clone()],
+            total: 101,
+            offset: 0,
+        });
+        assert_eq!(app.liked_songs, vec![item]);
+        assert_eq!(app.liked_total, 101);
+        assert_eq!(app.liked_offset, 0);
+        assert!(!app.liked_loading);
+
+        app.apply_daemon_event(DaemonEvent::LibraryChanged {
+            action: "saved".to_string(),
+            uris: vec!["spotify:track:saved".to_string()],
+        });
+        assert!(app.liked_loading);
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::SavedTracks {
+                limit: 50,
+                offset: 0
+            })
+        ));
     }
 
     fn test_playback(uri: &str, progress_ms: u64) -> Playback {

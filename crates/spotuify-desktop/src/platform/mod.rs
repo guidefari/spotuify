@@ -248,6 +248,7 @@ async fn dispatch_transport_request(
     let is_playlist_list = matches!(&command, Request::PlaylistsList { .. });
     let is_queue_get = matches!(&command, Request::QueueGet);
     let is_devices_list = matches!(&command, Request::DevicesList);
+    let is_saved_tracks = matches!(&command, Request::SavedTracks { .. });
     let result = client.request(command).await;
     match result {
         Ok(Response::Ok { data }) => {
@@ -275,6 +276,9 @@ async fn dispatch_transport_request(
                 if is_devices_list {
                     app.devices_loading = false;
                 }
+                if is_saved_tracks {
+                    app.fail_liked_songs(message.clone());
+                }
                 if let Some(track_uri) = &lyrics_request {
                     app.fail_lyrics(track_uri, message.clone());
                 }
@@ -296,6 +300,9 @@ async fn dispatch_transport_request(
                 }
                 if is_devices_list {
                     app.devices_loading = false;
+                }
+                if is_saved_tracks {
+                    app.fail_liked_songs(error.to_string());
                 }
                 if let Some(track_uri) = &lyrics_request {
                     app.fail_lyrics(track_uri, error.to_string());
