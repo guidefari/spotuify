@@ -70,6 +70,14 @@ pub struct DesktopApp {
     playlist_tracks: Vec<MediaItem>,
     playlist_tracks_loading: bool,
     playlist_tracks_error: Option<String>,
+    selected_album: Option<MediaItem>,
+    album_tracks: Vec<MediaItem>,
+    album_tracks_loading: bool,
+    album_tracks_error: Option<String>,
+    selected_artist: Option<MediaItem>,
+    artist_albums: Vec<MediaItem>,
+    artist_albums_loading: bool,
+    artist_albums_error: Option<String>,
     search_playlists: Vec<Playlist>,
     playlist_picker_uri: Option<String>,
     pub(crate) playlist_loading: bool,
@@ -267,6 +275,14 @@ impl DesktopApp {
             playlist_tracks: Vec::new(),
             playlist_tracks_loading: false,
             playlist_tracks_error: None,
+            selected_album: None,
+            album_tracks: Vec::new(),
+            album_tracks_loading: false,
+            album_tracks_error: None,
+            selected_artist: None,
+            artist_albums: Vec::new(),
+            artist_albums_loading: false,
+            artist_albums_error: None,
             search_playlists: Vec::new(),
             playlist_picker_uri: None,
             playlist_loading: false,
@@ -378,6 +394,92 @@ impl DesktopApp {
         self.playlist_tracks.clear();
         self.playlist_tracks_error = None;
         self.playlist_tracks_loading = false;
+    }
+
+    fn open_album(&mut self, album: MediaItem) {
+        if album.uri.is_empty() {
+            return;
+        }
+        if self
+            .selected_album
+            .as_ref()
+            .is_some_and(|selected| selected.uri == album.uri)
+        {
+            return;
+        }
+        self.selected_album = Some(album);
+        self.album_tracks.clear();
+        self.album_tracks_error = None;
+        self.album_tracks_loading = true;
+        self.send_request(Request::AlbumTracks {
+            album: self
+                .selected_album
+                .as_ref()
+                .expect("album was set")
+                .uri
+                .clone(),
+        });
+    }
+
+    fn close_album(&mut self) {
+        self.selected_album = None;
+        self.album_tracks.clear();
+        self.album_tracks_error = None;
+        self.album_tracks_loading = false;
+    }
+
+    pub(crate) fn fail_album_tracks(&mut self, album: &str, message: String) {
+        if self
+            .selected_album
+            .as_ref()
+            .is_some_and(|selected| selected.uri == album)
+        {
+            self.album_tracks_loading = false;
+            self.album_tracks_error = Some(message);
+        }
+    }
+
+    fn open_artist(&mut self, artist: MediaItem) {
+        if artist.uri.is_empty() {
+            return;
+        }
+        if self
+            .selected_artist
+            .as_ref()
+            .is_some_and(|selected| selected.uri == artist.uri)
+        {
+            return;
+        }
+        self.selected_artist = Some(artist);
+        self.artist_albums.clear();
+        self.artist_albums_error = None;
+        self.artist_albums_loading = true;
+        self.send_request(Request::ArtistAlbums {
+            artist: self
+                .selected_artist
+                .as_ref()
+                .expect("artist was set")
+                .uri
+                .clone(),
+        });
+    }
+
+    fn close_artist(&mut self) {
+        self.selected_artist = None;
+        self.artist_albums.clear();
+        self.artist_albums_error = None;
+        self.artist_albums_loading = false;
+    }
+
+    pub(crate) fn fail_artist_albums(&mut self, artist: &str, message: String) {
+        if self
+            .selected_artist
+            .as_ref()
+            .is_some_and(|selected| selected.uri == artist)
+        {
+            self.artist_albums_loading = false;
+            self.artist_albums_error = Some(message);
+        }
     }
 
     pub(crate) fn fail_playlist_tracks(&mut self, playlist: &str, message: String) {
@@ -765,6 +867,36 @@ impl DesktopApp {
         }
     }
 
+    pub(crate) fn apply_album_tracks_response(&mut self, album: &str, response: ResponseData) {
+        if self
+            .selected_album
+            .as_ref()
+            .is_none_or(|selected| selected.uri != album)
+        {
+            return;
+        }
+        if let ResponseData::MediaItems { items } = response {
+            self.album_tracks = items;
+            self.album_tracks_loading = false;
+            self.album_tracks_error = None;
+        }
+    }
+
+    pub(crate) fn apply_artist_albums_response(&mut self, artist: &str, response: ResponseData) {
+        if self
+            .selected_artist
+            .as_ref()
+            .is_none_or(|selected| selected.uri != artist)
+        {
+            return;
+        }
+        if let ResponseData::MediaItems { items } = response {
+            self.artist_albums = items;
+            self.artist_albums_loading = false;
+            self.artist_albums_error = None;
+        }
+    }
+
     pub(crate) fn fail_search(&mut self, query: &str, version: u64, message: String) {
         if version == self.search_version && query == self.search_query.trim() {
             self.search_loading = false;
@@ -1034,7 +1166,7 @@ impl DesktopApp {
         } else if self.selected_destination == Destination::Albums {
             content.child(self.albums_pane(cx))
         } else if self.selected_destination == Destination::Artists {
-            content.child(self.artists_pane())
+            content.child(self.artists_pane(cx))
         } else if self.selected_destination == Destination::History {
             content.child(self.history_pane(cx))
         } else if self.selected_destination == Destination::Playlists {
@@ -1193,6 +1325,9 @@ impl DesktopApp {
     }
 
     fn albums_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+        if let Some(album) = &self.selected_album {
+            return self.album_detail_pane(album, cx).into_any_element();
+        }
         let pane = div()
             .flex_1()
             .p_8()
@@ -1208,23 +1343,32 @@ impl DesktopApp {
             );
 
         if self.albums_loading && self.albums.is_empty() {
-            return pane.child(queue_message("Loading albums..."));
+            return pane
+                .child(queue_message("Loading albums..."))
+                .into_any_element();
         }
         if let Some(error) = &self.albums_error {
-            return pane.child(queue_message(&format!("Couldn't load albums: {error}")));
+            return pane
+                .child(queue_message(&format!("Couldn't load albums: {error}")))
+                .into_any_element();
         }
         if self.albums.is_empty() {
-            return pane.child(queue_message("No saved albums"));
+            return pane
+                .child(queue_message("No saved albums"))
+                .into_any_element();
         }
 
         let mut rows = div().mt_6().flex().flex_col().gap_2();
         for (index, item) in self.albums.iter().enumerate() {
             rows = rows.child(album_row(index, item, cx));
         }
-        pane.child(rows)
+        pane.child(rows).into_any_element()
     }
 
-    fn artists_pane(&self) -> impl IntoElement {
+    fn artists_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+        if let Some(artist) = &self.selected_artist {
+            return self.artist_detail_pane(artist, cx).into_any_element();
+        }
         let pane = div()
             .flex_1()
             .p_8()
@@ -1240,20 +1384,26 @@ impl DesktopApp {
             );
 
         if self.artists_loading && self.artists.is_empty() {
-            return pane.child(queue_message("Loading artists..."));
+            return pane
+                .child(queue_message("Loading artists..."))
+                .into_any_element();
         }
         if let Some(error) = &self.artists_error {
-            return pane.child(queue_message(&format!("Couldn't load artists: {error}")));
+            return pane
+                .child(queue_message(&format!("Couldn't load artists: {error}")))
+                .into_any_element();
         }
         if self.artists.is_empty() {
-            return pane.child(queue_message("No followed artists"));
+            return pane
+                .child(queue_message("No followed artists"))
+                .into_any_element();
         }
 
         let mut rows = div().mt_6().flex().flex_col().gap_2();
         for (index, item) in self.artists.iter().enumerate() {
-            rows = rows.child(artist_row(index, item));
+            rows = rows.child(artist_row(index, item, cx));
         }
-        pane.child(rows)
+        pane.child(rows).into_any_element()
     }
 
     fn history_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
@@ -1326,6 +1476,116 @@ impl DesktopApp {
             rows = rows.child(playlist_row(index, playlist, cx));
         }
         pane.child(rows).into_any_element()
+    }
+
+    fn album_detail_pane(
+        &self,
+        album: &MediaItem,
+        cx: &mut Context<'_, DesktopApp>,
+    ) -> impl IntoElement {
+        let pane = div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(search_row_action(
+                        "Back",
+                        cx.listener(|app, _, _, cx| {
+                            app.close_album();
+                            cx.notify();
+                        }),
+                    ))
+                    .child(div().text_3xl().child(if album.name.is_empty() {
+                        "Untitled album".to_string()
+                    } else {
+                        album.name.clone()
+                    })),
+            )
+            .child(
+                div()
+                    .mt_2()
+                    .text_lg()
+                    .text_color(rgb(0xd6c7ba))
+                    .child(media_subtitle(album)),
+            );
+
+        if self.album_tracks_loading && self.album_tracks.is_empty() {
+            return pane.child(queue_message("Loading album tracks..."));
+        }
+        if let Some(error) = &self.album_tracks_error {
+            return pane.child(queue_message(&format!(
+                "Couldn't load album tracks: {error}"
+            )));
+        }
+        if self.album_tracks.is_empty() {
+            return pane.child(queue_message("No tracks in this album"));
+        }
+
+        let mut rows = div().mt_6().flex().flex_col().gap_2();
+        for (index, item) in self.album_tracks.iter().enumerate() {
+            rows = rows.child(playlist_track_row(index, item, cx));
+        }
+        pane.child(rows)
+    }
+
+    fn artist_detail_pane(
+        &self,
+        artist: &MediaItem,
+        cx: &mut Context<'_, DesktopApp>,
+    ) -> impl IntoElement {
+        let pane = div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(search_row_action(
+                        "Back",
+                        cx.listener(|app, _, _, cx| {
+                            app.close_artist();
+                            cx.notify();
+                        }),
+                    ))
+                    .child(div().text_3xl().child(if artist.name.is_empty() {
+                        "Unnamed artist".to_string()
+                    } else {
+                        artist.name.clone()
+                    })),
+            )
+            .child(
+                div()
+                    .mt_2()
+                    .text_lg()
+                    .text_color(rgb(0xd6c7ba))
+                    .child("Discography"),
+            );
+
+        if self.artist_albums_loading && self.artist_albums.is_empty() {
+            return pane.child(queue_message("Loading artist albums..."));
+        }
+        if let Some(error) = &self.artist_albums_error {
+            return pane.child(queue_message(&format!(
+                "Couldn't load artist albums: {error}"
+            )));
+        }
+        if self.artist_albums.is_empty() {
+            return pane.child(queue_message("No albums for this artist"));
+        }
+
+        let mut rows = div().mt_6().flex().flex_col().gap_2();
+        for (index, item) in self.artist_albums.iter().enumerate() {
+            rows = rows.child(detail_album_row(index, item, cx));
+        }
+        pane.child(rows)
     }
 
     fn playlist_detail_pane(
@@ -2023,11 +2283,19 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
         );
 
     if can_act {
+        let open_album = item.clone();
         let play_uri = uri.clone();
         let queue_uri = uri;
         let play_title = title.clone();
         let queue_title = title;
         row = row
+            .child(search_row_action(
+                "Open",
+                cx.listener(move |app, _, _, cx| {
+                    app.open_album(open_album.clone());
+                    cx.notify();
+                }),
+            ))
             .child(search_row_action(
                 "Play",
                 cx.listener(move |app, _, _, cx| {
@@ -2053,12 +2321,17 @@ fn album_row(index: usize, item: &MediaItem, cx: &mut Context<'_, DesktopApp>) -
     row
 }
 
-fn artist_row(index: usize, item: &MediaItem) -> impl IntoElement {
+fn artist_row(
+    index: usize,
+    item: &MediaItem,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
     let title = if item.name.is_empty() {
         "Unnamed artist"
     } else {
         item.name.as_str()
     };
+    let artist = item.clone();
     div()
         .id(SharedString::from(format!("artist-{index}")))
         .w_full()
@@ -2068,19 +2341,83 @@ fn artist_row(index: usize, item: &MediaItem) -> impl IntoElement {
         .bg(rgb(0x1b1518))
         .px_4()
         .py_3()
+        .flex()
+        .items_center()
+        .gap_3()
         .child(
             div()
+                .flex_1()
                 .text_sm()
                 .text_color(rgb(0xf7efe8))
                 .child(title.to_string()),
         )
+        .child(search_row_action(
+            "Open",
+            cx.listener(move |app, _, _, cx| {
+                app.open_artist(artist.clone());
+                cx.notify();
+            }),
+        ))
+}
+
+fn detail_album_row(
+    index: usize,
+    item: &MediaItem,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
+    let uri = item.uri.clone();
+    let title = if item.name.is_empty() {
+        "Untitled album".to_string()
+    } else {
+        item.name.clone()
+    };
+    let play_uri = uri.clone();
+    let queue_uri = uri;
+    let play_title = title.clone();
+    let queue_title = title.clone();
+
+    div()
+        .id(SharedString::from(format!("artist-album-{index}")))
+        .w_full()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(0x3b2722))
+        .bg(rgb(0x1b1518))
+        .px_4()
+        .py_3()
+        .flex()
+        .items_center()
+        .gap_3()
         .child(
-            div()
-                .mt_1()
-                .text_xs()
-                .text_color(rgb(0x9e929d))
-                .child("Artist details are not available in this pane yet"),
+            div().flex_1().child(div().text_sm().child(title)).child(
+                div()
+                    .mt_1()
+                    .text_xs()
+                    .text_color(rgb(0x9e929d))
+                    .child(media_subtitle(item)),
+            ),
         )
+        .child(search_row_action(
+            "Play",
+            cx.listener(move |app, _, _, cx| {
+                app.send_playback_command(PlaybackCommand::PlayUri {
+                    uri: play_uri.clone(),
+                    context_uri: None,
+                });
+                app.toast = Some(format!("Playing {play_title}"));
+                cx.notify();
+            }),
+        ))
+        .child(search_row_action(
+            "Queue",
+            cx.listener(move |app, _, _, cx| {
+                app.send_request(Request::QueueAdd {
+                    uri: queue_uri.clone(),
+                });
+                app.toast = Some(format!("Queued {queue_title}"));
+                cx.notify();
+            }),
+        ))
 }
 
 fn liked_song_row(
@@ -4277,6 +4614,91 @@ mod tests {
         assert_eq!(app.playlist_tracks.len(), 1);
         assert_eq!(app.playlist_tracks[0].name, "Song");
         assert!(!app.playlist_tracks_loading);
+    }
+
+    #[test]
+    fn album_detail_requests_once_and_applies_matching_response() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        let album = MediaItem {
+            uri: "spotify:album:album-1".to_string(),
+            name: "Album".to_string(),
+            kind: MediaKind::Album,
+            ..MediaItem::default()
+        };
+
+        app.open_album(album.clone());
+        app.open_album(album);
+
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::AlbumTracks { album }) if album == "spotify:album:album-1"
+        ));
+        assert!(command_rx.try_recv().is_err());
+        app.apply_album_tracks_response(
+            "spotify:album:album-1",
+            ResponseData::MediaItems {
+                items: vec![MediaItem {
+                    uri: "spotify:track:track-1".to_string(),
+                    name: "Track".to_string(),
+                    kind: MediaKind::Track,
+                    ..MediaItem::default()
+                }],
+            },
+        );
+        assert_eq!(app.album_tracks.len(), 1);
+        assert!(!app.album_tracks_loading);
+    }
+
+    #[test]
+    fn artist_detail_response_and_error_are_scoped_to_selected_artist() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        app.open_artist(MediaItem {
+            uri: "spotify:artist:artist-1".to_string(),
+            name: "Artist".to_string(),
+            kind: MediaKind::Artist,
+            ..MediaItem::default()
+        });
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::ArtistAlbums { artist }) if artist == "spotify:artist:artist-1"
+        ));
+
+        app.apply_artist_albums_response(
+            "spotify:artist:other",
+            ResponseData::MediaItems { items: vec![] },
+        );
+        assert!(app.artist_albums_loading);
+        app.fail_artist_albums("spotify:artist:artist-1", "unavailable".to_string());
+        assert!(!app.artist_albums_loading);
+        assert_eq!(app.artist_albums_error.as_deref(), Some("unavailable"));
+    }
+
+    #[test]
+    fn detail_back_navigation_clears_album_and_artist_state() {
+        let mut app = DesktopApp::new();
+        app.selected_album = Some(MediaItem {
+            uri: "spotify:album:1".to_string(),
+            ..MediaItem::default()
+        });
+        app.album_tracks.push(MediaItem::default());
+        app.close_album();
+        assert!(app.selected_album.is_none());
+        assert!(app.album_tracks.is_empty());
+
+        app.selected_artist = Some(MediaItem {
+            uri: "spotify:artist:1".to_string(),
+            ..MediaItem::default()
+        });
+        app.artist_albums.push(MediaItem::default());
+        app.close_artist();
+        assert!(app.selected_artist.is_none());
+        assert!(app.artist_albums.is_empty());
     }
 
     #[test]

@@ -250,6 +250,14 @@ async fn dispatch_transport_request(
         Request::PlaylistTracks { playlist, .. } => Some(playlist.clone()),
         _ => None,
     };
+    let album_tracks_request = match &command {
+        Request::AlbumTracks { album } => Some(album.clone()),
+        _ => None,
+    };
+    let artist_albums_request = match &command {
+        Request::ArtistAlbums { artist } => Some(artist.clone()),
+        _ => None,
+    };
     let is_queue_get = matches!(&command, Request::QueueGet);
     let is_devices_list = matches!(&command, Request::DevicesList);
     let is_saved_tracks = matches!(&command, Request::SavedTracks { .. });
@@ -264,6 +272,10 @@ async fn dispatch_transport_request(
                     app.apply_daemon_response_for_track(data, Some(track_uri));
                 } else if let Some(playlist) = playlist_tracks_request.as_deref() {
                     app.apply_playlist_tracks_response(playlist, data);
+                } else if let Some(album) = album_tracks_request.as_deref() {
+                    app.apply_album_tracks_response(album, data);
+                } else if let Some(artist) = artist_albums_request.as_deref() {
+                    app.apply_artist_albums_response(artist, data);
                 } else if is_recently_played {
                     app.apply_history_response(data);
                 } else if is_library_list {
@@ -286,6 +298,12 @@ async fn dispatch_transport_request(
                 }
                 if let Some(playlist) = &playlist_tracks_request {
                     app.fail_playlist_tracks(playlist, message.clone());
+                }
+                if let Some(album) = &album_tracks_request {
+                    app.fail_album_tracks(album, message.clone());
+                }
+                if let Some(artist) = &artist_albums_request {
+                    app.fail_artist_albums(artist, message.clone());
                 }
                 if is_queue_get {
                     app.queue_loading = false;
@@ -323,6 +341,12 @@ async fn dispatch_transport_request(
                 }
                 if let Some(playlist) = &playlist_tracks_request {
                     app.fail_playlist_tracks(playlist, error.to_string());
+                }
+                if let Some(album) = &album_tracks_request {
+                    app.fail_album_tracks(album, error.to_string());
+                }
+                if let Some(artist) = &artist_albums_request {
+                    app.fail_artist_albums(artist, error.to_string());
                 }
                 if is_queue_get {
                     app.queue_loading = false;
