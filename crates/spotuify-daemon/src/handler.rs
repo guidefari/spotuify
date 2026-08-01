@@ -1868,6 +1868,24 @@ pub(crate) async fn undo_single(
         }
     };
 
+    if let Some(applied) = applied.as_ref() {
+        if let Err(error) = crate::handlers::library::persist_confirmed_library_mutation(
+            state.as_ref(),
+            &applied.mutation,
+        )
+        .await
+        {
+            return Err(
+                provider_mutation_reconciliation_required_after_local_failure(
+                    applied.provider.clone(),
+                    applied.mutation.clone(),
+                    &applied.receipt,
+                    error,
+                ),
+            );
+        }
+    }
+
     // The durable undo row/receipt was claimed before the remote call.
     // Only flip the original after the provider confirms the reversal.
     if let Err(error) = state
@@ -2111,9 +2129,9 @@ async fn provider_playlist_resource(
 }
 
 pub(crate) struct AppliedProviderMutation {
-    provider: ProviderId,
-    mutation: Mutation,
-    receipt: MutationReceipt,
+    pub(crate) provider: ProviderId,
+    pub(crate) mutation: Mutation,
+    pub(crate) receipt: MutationReceipt,
 }
 
 async fn apply_checked_reversal(
@@ -16376,6 +16394,54 @@ redirect_uri = "http://127.0.0.1:8888/callback"
     }
 
     #[tokio::test]
+    async fn confirmed_album_mutations_update_membership_cache() {
+        let _guard = crate::ENV_LOCK.lock().await;
+        let _env = TestEnv::new();
+        let default = Arc::new(FakeProvider::isolated("fake-a").unwrap());
+        let selected = Arc::new(FakeProvider::isolated("fake-b").unwrap());
+        let state = Arc::new(
+            DaemonState::new_with_providers(registry(default, selected))
+                .await
+                .unwrap(),
+        );
+        let resource = ResourceUri::parse("fake-a:album:album-1").unwrap();
+        let uri = resource.as_uri();
+
+        crate::handlers::library::persist_confirmed_library_mutation(
+            state.as_ref(),
+            &Mutation::LibrarySave {
+                uris: vec![resource.clone()],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(state
+            .store()
+            .saved_album_uris(Some("fake-a"))
+            .await
+            .unwrap()
+            .contains(&uri));
+
+        crate::handlers::library::persist_confirmed_library_mutation(
+            state.as_ref(),
+            &Mutation::LibraryUnsave {
+                uris: vec![resource],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!state
+            .store()
+            .saved_album_uris(Some("fake-a"))
+            .await
+            .unwrap()
+            .contains(&uri));
+
+        state.shutdown_search().await;
+        state.shutdown_player().await;
+    }
+
+    #[tokio::test]
     async fn undo_mutation_id_replays_after_restart_without_second_provider_write() {
         let _guard = crate::ENV_LOCK.lock().await;
         let _env = TestEnv::new();
@@ -16401,6 +16467,15 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         assert_eq!(
             wait_for_receipt(&state, pending_receipt(&save)).await,
             ReceiptStatus::Confirmed
+        );
+        assert_eq!(
+            state
+                .store()
+                .saved_track_membership(&["fake-a:track:track-2".to_string()])
+                .await
+                .unwrap(),
+            vec![true],
+            "confirmed save must update local membership before its receipt completes"
         );
         let original = state
             .store()
@@ -16437,6 +16512,15 @@ redirect_uri = "http://127.0.0.1:8888/callback"
                 .unwrap()
                 .status,
             OperationStatus::Undone
+        );
+        assert_eq!(
+            state
+                .store()
+                .saved_track_membership(&["fake-a:track:track-2".to_string()])
+                .await
+                .unwrap(),
+            vec![false],
+            "confirmed undo must update local membership before returning"
         );
         assert_eq!(
             state

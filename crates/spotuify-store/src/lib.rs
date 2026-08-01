@@ -2078,6 +2078,37 @@ impl Store {
             .await
     }
 
+    /// Apply a confirmed provider unsave immediately to the local membership
+    /// cache. Follow state is preserved if a provider uses the same row for it.
+    pub async fn mark_library_items_unsaved(&self, uris: &[String]) -> Result<u32> {
+        if uris.is_empty() {
+            return Ok(0);
+        }
+        let mut tx = self.writer.begin().await?;
+        let mut changed = 0_u32;
+        for uri in uris {
+            changed = changed.saturating_add(
+                sqlx::query("UPDATE library_items SET saved = 0 WHERE item_uri = ? AND saved = 1")
+                    .bind(uri)
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected()
+                    .try_into()
+                    .unwrap_or(u32::MAX),
+            );
+            sqlx::query("DELETE FROM library_items WHERE item_uri = ? AND followed = 0")
+                .bind(uri)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("UPDATE media_items SET saved = 0, liked = 0 WHERE uri = ?")
+                .bind(uri)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(changed)
+    }
+
     /// Replace one provider/kind library snapshot. Empty upstream snapshots
     /// are authoritative and never remove another provider's rows.
     pub async fn replace_provider_library_kind_bulk(

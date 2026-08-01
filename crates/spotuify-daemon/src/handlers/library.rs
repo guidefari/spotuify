@@ -535,10 +535,23 @@ pub(crate) async fn dispatch(
                     let save_uri = resolved_uri
                         .clone()
                         .ok_or_else(|| anyhow::anyhow!("nothing is playing"))?;
-                    apply_uri_mutation(&state_for, provider_mutation_id, &save_uri, |uri| {
-                        Mutation::LibrarySave { uris: vec![uri] }
-                    })
-                    .await?;
+                    let applied =
+                        apply_uri_mutation(&state_for, provider_mutation_id, &save_uri, |uri| {
+                            Mutation::LibrarySave { uris: vec![uri] }
+                        })
+                        .await?;
+                    if let Err(error) =
+                        persist_confirmed_library_mutation(&state_for, &applied.mutation).await
+                    {
+                        return Err(
+                            provider_mutation_reconciliation_required_after_local_failure(
+                                applied.provider,
+                                applied.mutation,
+                                &applied.receipt,
+                                error,
+                            ),
+                        );
+                    }
                     let provider = provider_id_for_uri(&state_for, &save_uri).await?;
                     let message = "save".to_string();
                     state_for.emit_event(DaemonEvent::LibraryChanged {
@@ -573,10 +586,23 @@ pub(crate) async fn dispatch(
                 mutation_lane,
                 mutation_id,
                 move |_op_id| async move {
-                    apply_uri_mutation(&state_for, provider_mutation_id, &uri, |uri| {
-                        Mutation::LibraryUnsave { uris: vec![uri] }
-                    })
-                    .await?;
+                    let applied =
+                        apply_uri_mutation(&state_for, provider_mutation_id, &uri, |uri| {
+                            Mutation::LibraryUnsave { uris: vec![uri] }
+                        })
+                        .await?;
+                    if let Err(error) =
+                        persist_confirmed_library_mutation(&state_for, &applied.mutation).await
+                    {
+                        return Err(
+                            provider_mutation_reconciliation_required_after_local_failure(
+                                applied.provider,
+                                applied.mutation,
+                                &applied.receipt,
+                                error,
+                            ),
+                        );
+                    }
                     let provider = provider_id_for_uri(&state_for, &uri).await?;
                     let message = format!("Unsaved {uri}");
                     state_for.emit_event(DaemonEvent::LibraryChanged {
@@ -989,17 +1015,64 @@ async fn discover_radio(
     })
 }
 
+pub(crate) async fn persist_confirmed_library_mutation(
+    state: &DaemonState,
+    mutation: &Mutation,
+) -> anyhow::Result<()> {
+    let (resources, saved) = match mutation {
+        Mutation::LibrarySave { uris } => (uris, true),
+        Mutation::LibraryUnsave { uris } => (uris, false),
+        _ => return Ok(()),
+    };
+    let uris = resources
+        .iter()
+        .map(ResourceUri::as_uri)
+        .collect::<Vec<_>>();
+    if !saved {
+        state.store().mark_library_items_unsaved(&uris).await?;
+        return Ok(());
+    }
+
+    let cached = state.store().media_items_by_uris(&uris).await?;
+    let mut cached = cached
+        .into_iter()
+        .map(|item| (item.uri.clone(), item))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut items = Vec::with_capacity(resources.len());
+    for resource in resources {
+        let uri = resource.as_uri();
+        if let Some(item) = cached.remove(&uri) {
+            items.push(item);
+            continue;
+        }
+        let provider = state.provider_for_uri(resource).await?;
+        let item = provider
+            .media_item(RequestContext::FOREGROUND, resource)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("provider returned no metadata for {uri}"))?;
+        validate_provider_lookup_result(provider.as_ref(), resource, &item)?;
+        items.push(item);
+    }
+    state.store().persist_library_items(&items).await?;
+    Ok(())
+}
+
 async fn apply_uri_mutation(
     state: &DaemonState,
     mutation_id: Uuid,
     uri: &str,
     mutation: impl FnOnce(ResourceUri) -> Mutation,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<AppliedProviderMutation> {
     let uri = ResourceUri::parse(uri)?;
     let provider = state.provider_for_uri(&uri).await?;
     let mutation = mutation(uri);
-    apply_provider_mutation_checked(provider.as_ref(), mutation_id, &mutation).await?;
-    Ok(())
+    let receipt =
+        apply_provider_mutation_checked(provider.as_ref(), mutation_id, &mutation).await?;
+    Ok(AppliedProviderMutation {
+        provider: provider.id().clone(),
+        mutation,
+        receipt,
+    })
 }
 
 #[cfg(test)]
