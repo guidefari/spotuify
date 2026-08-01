@@ -2005,7 +2005,7 @@ impl DesktopApp {
         let mut main = div()
             .flex_1()
             .h_full()
-            .p_10()
+            .p_8()
             .flex()
             .flex_col()
             .items_center()
@@ -2018,16 +2018,24 @@ impl DesktopApp {
                 .and_then(|url| self.artwork_cache.get(&url))
             {
                 main = main.child(
-                    img(image.clone())
-                        .w(px(420.))
-                        .h(px(420.))
-                        .object_fit(gpui::ObjectFit::Cover),
+                    div()
+                        .w(px(380.))
+                        .h(px(380.))
+                        .rounded_xl()
+                        .overflow_hidden()
+                        .child(
+                            img(image.clone())
+                                .w_full()
+                                .h_full()
+                                .object_fit(gpui::ObjectFit::Cover),
+                        ),
                 );
             } else {
                 main = main.child(
                     div()
-                        .w(px(420.))
-                        .h(px(420.))
+                        .w(px(380.))
+                        .h(px(380.))
+                        .rounded_xl()
                         .bg(rgb(cx.desktop_theme().bg_elevated))
                         .flex()
                         .items_center()
@@ -2112,11 +2120,13 @@ impl DesktopApp {
         }
 
         div()
-            .w(px(310.))
-            .h_full()
+            .w(px(320.))
+            .h(px(0.))
+            .flex_1()
             .flex_shrink_0()
-            .border_l_1()
-            .border_color(rgb(cx.desktop_theme().border))
+            .my_5()
+            .mr_5()
+            .rounded_xl()
             .bg(rgb(cx.desktop_theme().bg_elevated))
             .p_5()
             .flex()
@@ -2424,24 +2434,24 @@ impl DesktopApp {
         });
 
         div()
-            .h(px(164.))
+            .h(px(132.))
             .border_t_1()
             .border_color(rgb(cx.desktop_theme().border))
             .bg(rgb(cx.desktop_theme().bg_surface))
-            .px_6()
-            .py_4()
+            .px_5()
+            .py_3()
             .flex()
             .items_center()
-            .gap_6()
+            .gap_4()
             .child(
                 div()
-                    .w(px(330.))
+                    .w(px(300.))
                     .flex()
                     .items_center()
                     .child(
                         div()
-                            .w(px(66.))
-                            .h(px(66.))
+                            .w(px(58.))
+                            .h(px(58.))
                             .flex_shrink_0()
                             .rounded_md()
                             .overflow_hidden()
@@ -2557,7 +2567,7 @@ impl DesktopApp {
             )
             .child(
                 div()
-                    .w(px(210.))
+                    .w(px(200.))
                     .flex()
                     .flex_col()
                     .items_end()
@@ -2674,7 +2684,9 @@ fn queue_rail_row(
             div()
                 .w(px(42.))
                 .h(px(42.))
-                .bg(rgb(cx.desktop_theme().bg_elevated))
+                .rounded_md()
+                .overflow_hidden()
+                .bg(rgb(cx.desktop_theme().bg_surface))
                 .child(
                     img(image.clone())
                         .w_full()
@@ -2687,21 +2699,24 @@ fn queue_rail_row(
             div()
                 .w(px(42.))
                 .h(px(42.))
-                .bg(rgb(cx.desktop_theme().bg_elevated)),
+                .rounded_md()
+                .bg(rgb(cx.desktop_theme().bg_surface)),
         );
     }
     row.child(
         div()
             .flex_1()
             .overflow_hidden()
-            .child(if label.is_empty() {
-                div().text_sm().truncate().child(item.name.clone())
-            } else {
-                div()
-                    .text_xs()
-                    .text_color(rgb(cx.desktop_theme().text_secondary))
-                    .child(label.to_string())
+            .when(!label.is_empty(), |metadata| {
+                metadata.child(
+                    div()
+                        .mb_1()
+                        .text_xs()
+                        .text_color(rgb(cx.desktop_theme().accent))
+                        .child(label.to_string()),
+                )
             })
+            .child(div().text_sm().truncate().child(item.name.clone()))
             .child(
                 div()
                     .mt_1()
