@@ -4750,6 +4750,12 @@ pub(crate) struct PostCommandPlayback {
 pub(crate) struct ExpectedPlayback {
     pub(crate) uri: Option<String>,
     pub(crate) is_playing: Option<bool>,
+    /// Reject a post-command readback that still reports the outgoing track.
+    /// Spotify commonly ACKs next/previous before `/me/player` advances.
+    pub(crate) transition_from_uri: Option<String>,
+    /// Previous may legitimately restart the current track. Accept that same
+    /// URI only when its returned progress proves the restart happened.
+    pub(crate) same_uri_max_progress_ms: Option<u64>,
 }
 
 pub(crate) fn post_command_playback_matches(
@@ -4767,6 +4773,16 @@ pub(crate) fn post_command_playback_matches(
     }
     if let Some(expected_is_playing) = expected.is_playing {
         if playback.is_playing != expected_is_playing {
+            return false;
+        }
+    }
+    if let Some(transition_from_uri) = expected.transition_from_uri.as_deref() {
+        let fetched_uri = playback.item.as_ref().map(|item| item.uri.as_str());
+        if fetched_uri == Some(transition_from_uri)
+            && expected
+                .same_uri_max_progress_ms
+                .is_none_or(|maximum| playback.progress_ms > maximum)
+        {
             return false;
         }
     }
@@ -5037,43 +5053,55 @@ pub(crate) async fn cache_playlist_items(
 pub(crate) fn expected_playback_after_command(
     command: &PlaybackCommand,
     predicted: Option<&Playback>,
+    before: Option<&Playback>,
 ) -> Option<ExpectedPlayback> {
     let predicted_uri =
         || predicted.and_then(|playback| playback.item.as_ref().map(|item| item.uri.clone()));
+    let before_uri =
+        || before.and_then(|playback| playback.item.as_ref().map(|item| item.uri.clone()));
     match command {
         PlaybackCommand::Pause => Some(ExpectedPlayback {
             uri: predicted_uri(),
             is_playing: Some(false),
+            ..Default::default()
         }),
         PlaybackCommand::Resume => Some(ExpectedPlayback {
             uri: predicted_uri(),
             is_playing: Some(true),
+            ..Default::default()
         }),
         PlaybackCommand::Toggle => predicted.map(|playback| ExpectedPlayback {
             uri: playback.item.as_ref().map(|item| item.uri.clone()),
             is_playing: Some(playback.is_playing),
+            ..Default::default()
         }),
         PlaybackCommand::PlayUri { uri, .. } => Some(ExpectedPlayback {
             uri: Some(uri.clone()),
             is_playing: predicted.and_then(|playback| playback.is_playing.then_some(true)),
+            ..Default::default()
         }),
-        PlaybackCommand::Next | PlaybackCommand::Previous => {
-            predicted.map(|playback| ExpectedPlayback {
-                // Spotify may return a different valid track than our cached
-                // prediction (shuffle/autoplay/queue races, or previous
-                // stepping back instead of restarting current). Treat any
-                // post-command snapshot with the expected play/pause state as
-                // authoritative instead of rejecting it and leaving clients on
-                // stale optimistic state; reject a stale paused readback while
-                // the daemon-owned prediction says playback should remain live.
-                uri: None,
-                is_playing: Some(playback.is_playing),
-            })
-        }
+        PlaybackCommand::Next => before_uri().map(|outgoing| ExpectedPlayback {
+            // Shuffle/autoplay/queue races may produce a different valid track
+            // than our prediction, so accept any URI except the one that was
+            // playing before the command.
+            uri: None,
+            is_playing: predicted.or(before).map(|playback| playback.is_playing),
+            transition_from_uri: Some(outgoing),
+            same_uri_max_progress_ms: None,
+        }),
+        PlaybackCommand::Previous => before_uri().map(|outgoing| ExpectedPlayback {
+            uri: None,
+            is_playing: predicted.or(before).map(|playback| playback.is_playing),
+            transition_from_uri: Some(outgoing),
+            // Spotify's restart-current behavior is valid only when the
+            // readback has actually reset near the beginning of the track.
+            same_uri_max_progress_ms: Some(1_500),
+        }),
         PlaybackCommand::Seek { .. } | PlaybackCommand::SeekRelative { .. } => {
             predicted.map(|playback| ExpectedPlayback {
                 uri: playback.item.as_ref().map(|item| item.uri.clone()),
                 is_playing: None,
+                ..Default::default()
             })
         }
         PlaybackCommand::Volume { .. }
@@ -10630,6 +10658,7 @@ redirect_uri = "http://127.0.0.1:8888/callback"
         let expected = ExpectedPlayback {
             uri: Some("spotify:track:new".to_string()),
             is_playing: Some(true),
+            ..Default::default()
         };
 
         let outcome = persist_command_result(
@@ -10661,6 +10690,55 @@ redirect_uri = "http://127.0.0.1:8888/callback"
     }
 
     #[test]
+    fn next_expected_playback_rejects_outgoing_track_readback() {
+        let predicted = spotuify_core::Playback {
+            item: Some(track("spotify:track:next", "Next")),
+            is_playing: true,
+            ..Default::default()
+        };
+        let stale_outgoing = spotuify_core::Playback {
+            item: Some(track("spotify:track:outgoing", "Outgoing")),
+            is_playing: true,
+            progress_ms: 42_000,
+            ..Default::default()
+        };
+
+        let expected = expected_playback_after_command(
+            &PlaybackCommand::Next,
+            Some(&predicted),
+            Some(&stale_outgoing),
+        )
+        .expect("next prediction should build an expectation");
+        assert!(
+            !post_command_playback_matches(&stale_outgoing, Some(&expected)),
+            "next must not reconcile the outgoing track back over its prediction"
+        );
+    }
+
+    #[test]
+    fn previous_accepts_proven_restart_but_rejects_stale_progress() {
+        let outgoing = spotuify_core::Playback {
+            item: Some(track("spotify:track:outgoing", "Outgoing")),
+            is_playing: true,
+            progress_ms: 42_000,
+            ..Default::default()
+        };
+        let predicted = spotuify_core::Playback {
+            progress_ms: 0,
+            ..outgoing.clone()
+        };
+        let expected = expected_playback_after_command(
+            &PlaybackCommand::Previous,
+            Some(&predicted),
+            Some(&outgoing),
+        )
+        .expect("previous should build an expectation");
+
+        assert!(!post_command_playback_matches(&outgoing, Some(&expected)));
+        assert!(post_command_playback_matches(&predicted, Some(&expected)));
+    }
+
+    #[test]
     fn next_previous_expected_playback_accepts_valid_spotify_track_mismatch() {
         let predicted = spotuify_core::Playback {
             item: Some(track("spotify:track:predicted", "Predicted")),
@@ -10677,10 +10755,17 @@ redirect_uri = "http://127.0.0.1:8888/callback"
             is_playing: false,
             ..Default::default()
         };
+        let outgoing = spotuify_core::Playback {
+            item: Some(track("spotify:track:outgoing", "Outgoing")),
+            is_playing: true,
+            progress_ms: 42_000,
+            ..Default::default()
+        };
 
         for command in [PlaybackCommand::Next, PlaybackCommand::Previous] {
-            let expected = expected_playback_after_command(&command, Some(&predicted))
-                .expect("track navigation prediction should build an expectation");
+            let expected =
+                expected_playback_after_command(&command, Some(&predicted), Some(&outgoing))
+                    .expect("track navigation prediction should build an expectation");
             assert!(
                 post_command_playback_matches(&spotify_track, Some(&expected)),
                 "a valid playing track from Spotify should reconcile {command:?}"

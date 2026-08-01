@@ -192,7 +192,11 @@ pub(crate) async fn dispatch(
             // ranking lets the eventual authoritative
             // `CommandResult` event overwrite us cleanly.
             let predicted = compute_optimistic_playback(&state, &command).await;
-            let expected_playback = expected_playback_after_command(&command, predicted.as_ref());
+            let expected_playback = expected_playback_after_command(
+                &command,
+                predicted.as_ref(),
+                Some(&pre_command_playback),
+            );
             if let Some(predicted) = predicted.as_ref() {
                 state
                     .playback_clock()
