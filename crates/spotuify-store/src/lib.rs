@@ -655,6 +655,33 @@ impl Store {
         Ok(memberships)
     }
 
+    /// Saved albums (cache-backed `Request::SavedAlbums`).
+    pub async fn list_saved_albums(
+        &self,
+        limit: u32,
+        provider: Option<&str>,
+    ) -> Result<Vec<MediaItem>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT media_items.uri, media_items.kind, name, subtitle, context,
+                    duration_ms, image_url, search_origin, media_items.release_date
+             FROM library_items
+             JOIN media_items ON media_items.uri = library_items.item_uri
+             WHERE library_items.saved = 1 AND media_items.kind = 'album'
+                   AND (? IS NULL OR media_items.provider = ?)
+             ORDER BY library_items.added_at_ms DESC, name COLLATE NOCASE ASC
+             LIMIT ?",
+        )
+        .bind(provider)
+        .bind(provider)
+        .bind(limit as i64)
+        .fetch_all(&self.reader)
+        .await?;
+        rows.into_iter().map(row_to_media_item).collect()
+    }
+
     /// Subscribed podcasts (cache-backed `Request::SavedShows`). Saved shows only.
     pub async fn list_saved_shows(
         &self,

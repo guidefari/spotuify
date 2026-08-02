@@ -72,6 +72,7 @@ pub(crate) fn categorize(request: &Request) -> Cat {
         | Request::LibrarySave { .. }
         | Request::LibraryUnsave { .. }
         | Request::SavedTracks { .. }
+        | Request::SavedAlbums { .. }
         | Request::SavedShows { .. }
         | Request::FollowedArtists { .. }
         | Request::ArtistFollow { .. }

@@ -137,6 +137,15 @@ pub(crate) async fn dispatch(
                     .collect(),
             })
         }
+        Request::SavedAlbums { limit, provider } => {
+            let (provider, _) = state.provider_or_default(provider.as_ref()).await?;
+            Ok(ResponseData::MediaItems {
+                items: state
+                    .store()
+                    .list_saved_albums(limit, Some(provider.as_str()))
+                    .await?,
+            })
+        }
         Request::SavedShows { limit, provider } => {
             let (provider, _) = state.provider_or_default(provider.as_ref()).await?;
             Ok(ResponseData::MediaItems {

@@ -300,6 +300,7 @@ async fn dispatch_transport_request(
     let is_devices_list = matches!(&command, Request::DevicesList);
     let is_saved_tracks = matches!(&command, Request::SavedTracks { .. });
     let is_library_list = matches!(&command, Request::LibraryList { .. });
+    let is_saved_albums = matches!(&command, Request::SavedAlbums { .. });
     let is_saved_shows = matches!(&command, Request::SavedShows { .. });
     let show_episodes_request = match &command {
         Request::ShowEpisodes { show, .. } => Some(show.clone()),
@@ -348,7 +349,7 @@ async fn dispatch_transport_request(
                     app.apply_podcasts_response(data);
                 } else if is_recently_played {
                     app.apply_history_response(data);
-                } else if is_library_list {
+                } else if is_library_list || is_saved_albums {
                     app.apply_albums_response(data);
                 } else if is_followed_artists {
                     app.apply_artists_response(data);
@@ -394,7 +395,7 @@ async fn dispatch_transport_request(
                 if is_saved_tracks {
                     app.fail_liked_songs(message.clone());
                 }
-                if is_library_list {
+                if is_library_list || is_saved_albums {
                     app.fail_albums(message.clone());
                 }
                 if is_followed_artists {
@@ -446,7 +447,7 @@ async fn dispatch_transport_request(
                 if is_saved_tracks {
                     app.fail_liked_songs(error.to_string());
                 }
-                if is_library_list {
+                if is_library_list || is_saved_albums {
                     app.fail_albums(error.to_string());
                 }
                 if is_followed_artists {

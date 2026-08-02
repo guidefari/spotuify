@@ -212,6 +212,12 @@ pub enum Request {
     LibraryContains {
         uris: Vec<String>,
     },
+    /// Saved albums, served from the synced library cache.
+    SavedAlbums {
+        limit: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<ProviderId>,
+    },
     /// Subscribed podcasts — the user's saved shows (`GET /me/shows`),
     /// served from the synced library cache.
     SavedShows {
@@ -740,6 +746,7 @@ impl Request {
             | Self::QueueAddMany { .. }
             | Self::SavedTracks { .. }
             | Self::LibraryContains { .. }
+            | Self::SavedAlbums { .. }
             | Self::SavedShows { .. }
             | Self::ShowEpisodes { .. }
             | Self::EpisodeFeed { .. }
@@ -807,6 +814,7 @@ impl Request {
             Self::QueueAddMany { .. } => "queue-add-many",
             Self::SavedTracks { .. } => "saved-tracks",
             Self::LibraryContains { .. } => "library-contains",
+            Self::SavedAlbums { .. } => "saved-albums",
             Self::SavedShows { .. } => "saved-shows",
             Self::ShowEpisodes { .. } => "show-episodes",
             Self::PlaylistsList { .. } => "playlists-list",

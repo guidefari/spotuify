@@ -836,7 +836,7 @@ impl DesktopApp {
         self.albums_requested = true;
         self.albums_loading = true;
         self.albums_error = None;
-        self.send_request(Request::LibraryList {
+        self.send_request(Request::SavedAlbums {
             limit: 100,
             provider: None,
         });
@@ -849,7 +849,7 @@ impl DesktopApp {
         self.albums_requested = true;
         self.albums_loading = true;
         self.albums_error = None;
-        self.send_request(Request::LibraryList {
+        self.send_request(Request::SavedAlbums {
             limit: 100,
             provider: None,
         });
@@ -5980,7 +5980,7 @@ mod tests {
 
         assert!(matches!(
             command_rx.try_recv(),
-            Ok(Request::LibraryList {
+            Ok(Request::SavedAlbums {
                 limit: 100,
                 provider: None
             })
@@ -6071,7 +6071,7 @@ mod tests {
         assert!(app.artists_loading);
         assert!(matches!(
             command_rx.try_recv(),
-            Ok(Request::LibraryList {
+            Ok(Request::SavedAlbums {
                 limit: 100,
                 provider: None
             })
