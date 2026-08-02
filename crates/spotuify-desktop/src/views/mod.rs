@@ -805,18 +805,11 @@ impl DesktopApp {
         if self.liked_requested || self.command_tx.is_none() {
             return;
         }
-        self.liked_requested = true;
-        self.liked_loading = true;
-        self.liked_error = None;
-        self.send_request(Request::SavedTracks {
-            limit: 50,
-            offset: 0,
-            provider: None,
-        });
+        self.request_liked_songs_page(0);
     }
 
-    fn refresh_liked_songs(&mut self) {
-        if self.command_tx.is_none() || self.liked_loading {
+    fn request_liked_songs_page(&mut self, offset: u32) {
+        if self.liked_loading || self.command_tx.is_none() {
             return;
         }
         self.liked_requested = true;
@@ -824,9 +817,26 @@ impl DesktopApp {
         self.liked_error = None;
         self.send_request(Request::SavedTracks {
             limit: 50,
-            offset: 0,
+            offset,
             provider: None,
         });
+    }
+
+    fn request_next_liked_songs_page(&mut self) {
+        if self.liked_loading || self.liked_songs.len() >= self.liked_total as usize {
+            return;
+        }
+        self.request_liked_songs_page(self.liked_songs.len() as u32);
+    }
+
+    fn refresh_liked_songs(&mut self) {
+        if self.command_tx.is_none() || self.liked_loading {
+            return;
+        }
+        self.liked_songs.clear();
+        self.liked_offset = 0;
+        self.liked_requested = false;
+        self.request_liked_songs_page(0);
     }
 
     fn request_albums(&mut self) {
@@ -1327,7 +1337,11 @@ impl DesktopApp {
                     .extend(items.iter().map(|item| item.uri.clone()));
                 self.library_membership_known_uris
                     .extend(items.iter().map(|item| item.uri.clone()));
-                self.liked_songs = items;
+                if offset == 0 {
+                    self.liked_songs = items;
+                } else if offset == self.liked_songs.len() as u32 {
+                    self.liked_songs.extend(items);
+                }
                 self.request_artwork_for_liked_songs();
                 self.liked_total = total;
                 self.liked_offset = offset;
@@ -1655,6 +1669,13 @@ impl Render for DesktopApp {
                 }));
         }
         self.ensure_search_input(cx);
+        if self.selected_destination == Destination::LikedSongs
+            && !self.liked_loading
+            && self.liked_songs.len() < self.liked_total as usize
+            && self.liked_songs_scroll.bottom_item().saturating_add(10) >= self.liked_songs.len()
+        {
+            self.request_next_liked_songs_page();
+        }
         if self.update_toast_lifetime(Instant::now()) {
             window.request_animation_frame();
         }
@@ -6201,6 +6222,26 @@ mod tests {
             command_rx.try_recv(),
             Ok(Request::Image { url }) if url == "https://images.test/saved-small.jpg"
         ));
+
+        app.request_next_liked_songs_page();
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::SavedTracks {
+                limit: 50,
+                offset: 1,
+                provider: None,
+            })
+        ));
+        app.apply_daemon_response(ResponseData::SavedTracksPage {
+            items: vec![MediaItem {
+                uri: "spotify:track:next".to_string(),
+                kind: MediaKind::Track,
+                ..MediaItem::default()
+            }],
+            total: 101,
+            offset: 1,
+        });
+        assert_eq!(app.liked_songs.len(), 2);
 
         app.apply_daemon_event(DaemonEvent::LibraryChanged {
             action: "saved".to_string(),
