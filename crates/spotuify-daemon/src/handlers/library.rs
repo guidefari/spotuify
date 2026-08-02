@@ -236,10 +236,23 @@ pub(crate) async fn dispatch(
         Request::FollowedArtists { limit, provider } => {
             let (provider_id, provider) = state.provider_or_default(provider.as_ref()).await?;
             // Cache-first; fall back to a live fetch on a cold cache.
-            let cached = state
+            let mut cached = state
                 .store()
                 .list_followed_artists(limit, Some(provider_id.as_str()))
                 .await?;
+            let album_artists = state
+                .store()
+                .list_saved_album_artists(limit, Some(provider_id.as_str()))
+                .await?;
+            let mut seen: std::collections::HashSet<_> =
+                cached.iter().map(|artist| artist.uri.clone()).collect();
+            cached.extend(
+                album_artists
+                    .into_iter()
+                    .filter(|artist| seen.insert(artist.uri.clone())),
+            );
+            cached.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+            cached.truncate(limit as usize);
             let items = if cached.is_empty() {
                 require_provider_capability(
                     provider.as_ref(),

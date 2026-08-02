@@ -279,8 +279,9 @@ pub enum Request {
     ArtistAlbums {
         artist: String,
     },
-    /// List the artists the user follows (cache-backed; the discography
-    /// browser's entry point).
+    /// List artists in the user's library: explicit follows plus artists
+    /// credited on saved albums (cache-backed; the discography browser's entry
+    /// point).
     FollowedArtists {
         limit: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]

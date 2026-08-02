@@ -712,6 +712,51 @@ impl Store {
         rows.into_iter().map(row_to_media_item).collect()
     }
 
+    /// Artists credited on saved albums. This keeps the library's artist browser
+    /// useful when the provider's explicit-follow endpoint is unavailable.
+    pub async fn list_saved_album_artists(
+        &self,
+        limit: u32,
+        provider: Option<&str>,
+    ) -> Result<Vec<MediaItem>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT media_items.artists_json
+             FROM library_items
+             JOIN media_items ON media_items.uri = library_items.item_uri
+             WHERE library_items.saved = 1 AND media_items.kind = 'album'
+                   AND (? IS NULL OR media_items.provider = ?)",
+        )
+        .bind(provider)
+        .bind(provider)
+        .fetch_all(&self.reader)
+        .await?;
+
+        let mut artists = std::collections::BTreeMap::new();
+        for row in rows {
+            let Some(json) = row.try_get::<Option<String>, _>("artists_json")? else {
+                continue;
+            };
+            for artist in serde_json::from_str::<Vec<ArtistRef>>(&json).unwrap_or_default() {
+                if !artist.uri.is_empty() {
+                    artists.entry(artist.uri.clone()).or_insert(artist);
+                }
+            }
+        }
+        Ok(artists
+            .into_values()
+            .take(limit as usize)
+            .map(|artist| MediaItem {
+                uri: artist.uri,
+                name: artist.name,
+                kind: MediaKind::Artist,
+                ..MediaItem::default()
+            })
+            .collect())
+    }
+
     /// Followed artists (cache-backed `Request::FollowedArtists`). Artists are
     /// `followed=1` in `library_items`; ordered alphabetically.
     pub async fn list_followed_artists(

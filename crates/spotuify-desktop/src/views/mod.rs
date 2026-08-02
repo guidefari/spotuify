@@ -2268,7 +2268,7 @@ impl DesktopApp {
                     .mt_2()
                     .text_lg()
                     .text_color(rgb(cx.desktop_theme().text_secondary))
-                    .child("Followed artists"),
+                    .child("Artists in your library"),
             );
 
         if self.artists_loading && self.artists.is_empty() {
