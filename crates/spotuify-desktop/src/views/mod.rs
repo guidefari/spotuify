@@ -19,7 +19,7 @@ use spotuify_core::{
 use spotuify_launcher::SocketState;
 use spotuify_protocol::{
     DaemonEvent, DaemonStatus, DoctorReport, PlaybackCommand, ReceiptId, Request, ResponseData,
-    SearchScopeData, SearchSourceData, UpgradeHint,
+    SearchScopeData, SearchSourceData, UpgradeHint, LIKED_SONGS_CONTEXT,
 };
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -4086,7 +4086,7 @@ fn liked_song_row(
             cx.listener(move |app, _, _, cx| {
                 app.send_playback_command(PlaybackCommand::PlayUri {
                     uri: play_uri.clone(),
-                    context_uri: None,
+                    context_uri: Some(LIKED_SONGS_CONTEXT.to_string()),
                 });
                 app.toast = Some(format!("Playing {play_title}"));
                 cx.notify();
