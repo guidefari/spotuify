@@ -483,6 +483,26 @@ pub enum LibraryCommand {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Print saved albums from the local cache.
+    Albums {
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Print artists in the library: explicit follows and saved-album credits.
+    Artists {
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Check whether provider track or album URIs are saved in the local library cache.
     Contains {
         /// Provider track URIs to check (maximum 50).

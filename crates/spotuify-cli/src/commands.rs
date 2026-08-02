@@ -2204,6 +2204,42 @@ pub async fn ipc_library(command: crate::LibraryCommand) -> Result<()> {
                 format,
             )
         }
+        crate::LibraryCommand::Albums {
+            limit,
+            offset,
+            provider,
+            format,
+        } => {
+            let router = ProviderRouter::load(provider).await?;
+            router.require("saved-album listing", |caps| {
+                caps.library.can_read(&MediaKind::Album)
+            })?;
+            (
+                Request::SavedAlbums {
+                    limit,
+                    offset,
+                    provider: router.request_provider(),
+                },
+                format,
+            )
+        }
+        crate::LibraryCommand::Artists {
+            limit,
+            provider,
+            format,
+        } => {
+            let router = ProviderRouter::load(provider).await?;
+            router.require("artist library listing", |caps| {
+                caps.library.can_read(&MediaKind::Artist)
+            })?;
+            (
+                Request::FollowedArtists {
+                    limit,
+                    provider: router.request_provider(),
+                },
+                format,
+            )
+        }
         crate::LibraryCommand::Contains { uris, format } => {
             (Request::LibraryContains { uris }, format)
         }
