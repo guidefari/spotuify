@@ -745,8 +745,10 @@ impl Store {
                 }
             }
         }
+        let mut artists: Vec<_> = artists.into_values().collect();
+        artists.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
         Ok(artists
-            .into_values()
+            .into_iter()
             .take(limit as usize)
             .map(|artist| MediaItem {
                 uri: artist.uri,

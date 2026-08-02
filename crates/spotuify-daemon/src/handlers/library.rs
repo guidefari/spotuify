@@ -233,16 +233,20 @@ pub(crate) async fn dispatch(
             }
             Ok(ResponseData::MediaItems { items })
         }
-        Request::FollowedArtists { limit, provider } => {
+        Request::FollowedArtists {
+            limit,
+            offset,
+            provider,
+        } => {
             let (provider_id, provider) = state.provider_or_default(provider.as_ref()).await?;
             // Cache-first; fall back to a live fetch on a cold cache.
             let mut cached = state
                 .store()
-                .list_followed_artists(limit, Some(provider_id.as_str()))
+                .list_followed_artists(limit.saturating_add(offset), Some(provider_id.as_str()))
                 .await?;
             let album_artists = state
                 .store()
-                .list_saved_album_artists(limit, Some(provider_id.as_str()))
+                .list_saved_album_artists(limit.saturating_add(offset), Some(provider_id.as_str()))
                 .await?;
             let mut seen: std::collections::HashSet<_> =
                 cached.iter().map(|artist| artist.uri.clone()).collect();
@@ -252,7 +256,11 @@ pub(crate) async fn dispatch(
                     .filter(|artist| seen.insert(artist.uri.clone())),
             );
             cached.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
-            cached.truncate(limit as usize);
+            cached = cached
+                .into_iter()
+                .skip(offset as usize)
+                .take(limit as usize)
+                .collect();
             let items = if cached.is_empty() {
                 require_provider_capability(
                     provider.as_ref(),
@@ -263,7 +271,7 @@ pub(crate) async fn dispatch(
                     limit
                         .max(1)
                         .min(provider.capabilities().library.max_page_size.unwrap_or(50) as u32),
-                    0,
+                    offset.into(),
                 );
                 let fetched = provider
                     .library_items(

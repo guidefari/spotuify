@@ -75,6 +75,8 @@ pub struct DesktopApp {
     pub(crate) artists_loading: bool,
     pub(crate) artists_error: Option<String>,
     artists_requested: bool,
+    artists_has_more: bool,
+    artists_scroll: ScrollHandle,
     pub(crate) history: Vec<MediaItem>,
     pub(crate) history_loading: bool,
     pub(crate) history_error: Option<String>,
@@ -365,6 +367,8 @@ impl DesktopApp {
             artists_loading: false,
             artists_error: None,
             artists_requested: false,
+            artists_has_more: true,
+            artists_scroll: ScrollHandle::new(),
             history: Vec::new(),
             history_loading: false,
             history_error: None,
@@ -890,26 +894,37 @@ impl DesktopApp {
         if self.artists_requested || self.artists_loading || self.command_tx.is_none() {
             return;
         }
-        self.artists_requested = true;
-        self.artists_loading = true;
-        self.artists_error = None;
-        self.send_request(Request::FollowedArtists {
-            limit: 100,
-            provider: None,
-        });
+        self.request_artists_page(0);
     }
 
-    fn refresh_artists(&mut self) {
-        if self.command_tx.is_none() || self.artists_loading {
+    fn request_artists_page(&mut self, offset: u32) {
+        if self.artists_loading || self.command_tx.is_none() {
             return;
         }
         self.artists_requested = true;
         self.artists_loading = true;
         self.artists_error = None;
         self.send_request(Request::FollowedArtists {
-            limit: 100,
+            limit: 50,
+            offset,
             provider: None,
         });
+    }
+
+    fn request_next_artists_page(&mut self) {
+        if self.artists_has_more {
+            self.request_artists_page(self.artists.len() as u32);
+        }
+    }
+
+    fn refresh_artists(&mut self) {
+        if self.command_tx.is_none() || self.artists_loading {
+            return;
+        }
+        self.artists.clear();
+        self.artists_has_more = true;
+        self.artists_requested = false;
+        self.request_artists_page(0);
     }
 
     pub(crate) fn fail_artists(&mut self, message: String) {
@@ -1266,7 +1281,12 @@ impl DesktopApp {
 
     pub(crate) fn apply_artists_response(&mut self, response: ResponseData) {
         if let ResponseData::MediaItems { items } = response {
-            self.artists = items;
+            self.artists_has_more = items.len() == 50;
+            if self.artists.is_empty() {
+                self.artists = items;
+            } else {
+                self.artists.extend(items);
+            }
             self.artists_loading = false;
             self.artists_error = None;
             self.artists_requested = true;
@@ -1696,6 +1716,13 @@ impl Render for DesktopApp {
             && self.albums_scroll.bottom_item().saturating_add(10) >= self.albums.len()
         {
             self.request_next_albums_page();
+        }
+        if self.selected_destination == Destination::Artists
+            && !self.artists_loading
+            && self.artists_has_more
+            && self.artists_scroll.bottom_item().saturating_add(10) >= self.artists.len()
+        {
+            self.request_next_artists_page();
         }
         if self.selected_destination == Destination::LikedSongs
             && !self.liked_loading
@@ -2286,11 +2313,20 @@ impl DesktopApp {
         }
         if self.artists.is_empty() {
             return pane
-                .child(queue_message(cx, "No followed artists"))
+                .child(queue_message(cx, "No library artists"))
                 .into_any_element();
         }
 
-        let mut rows = div().mt_6().flex().flex_col().gap_2();
+        let mut rows = div()
+            .id("library-artists")
+            .mt_6()
+            .h(px(0.))
+            .flex_1()
+            .overflow_y_scroll()
+            .track_scroll(&self.artists_scroll)
+            .flex()
+            .flex_col()
+            .gap_2();
         for (index, item) in self.artists.iter().enumerate() {
             rows = rows.child(artist_row(index, item, cx));
         }
@@ -6039,7 +6075,8 @@ mod tests {
         assert!(matches!(
             command_rx.try_recv(),
             Ok(Request::FollowedArtists {
-                limit: 100,
+                limit: 50,
+                offset: 0,
                 provider: None
             })
         ));
@@ -6131,7 +6168,8 @@ mod tests {
         assert!(matches!(
             command_rx.try_recv(),
             Ok(Request::FollowedArtists {
-                limit: 100,
+                limit: 50,
+                offset: 0,
                 provider: None
             })
         ));

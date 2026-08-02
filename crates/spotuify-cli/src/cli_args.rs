@@ -498,6 +498,8 @@ pub enum LibraryCommand {
     Artists {
         #[arg(long, default_value_t = 100)]
         limit: u32,
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
         #[arg(long)]
         provider: Option<String>,
         #[arg(long, value_enum, default_value = "table")]

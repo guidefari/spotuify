@@ -2225,6 +2225,7 @@ pub async fn ipc_library(command: crate::LibraryCommand) -> Result<()> {
         }
         crate::LibraryCommand::Artists {
             limit,
+            offset,
             provider,
             format,
         } => {
@@ -2235,6 +2236,7 @@ pub async fn ipc_library(command: crate::LibraryCommand) -> Result<()> {
             (
                 Request::FollowedArtists {
                     limit,
+                    offset,
                     provider: router.request_provider(),
                 },
                 format,
@@ -2431,6 +2433,7 @@ pub async fn ipc_artist(command: crate::ArtistCommand) -> Result<()> {
             })?;
             match daemon_request(Request::FollowedArtists {
                 limit: 500,
+                offset: 0,
                 provider: router.request_provider(),
             })
             .await?
