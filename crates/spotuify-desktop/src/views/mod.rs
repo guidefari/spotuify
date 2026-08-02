@@ -111,6 +111,8 @@ pub struct DesktopApp {
     queue_scroll: ScrollHandle,
     artwork_cache: HashMap<String, Arc<Image>>,
     artwork_requested_urls: HashSet<String>,
+    current_artwork_accent: Option<u32>,
+    applied_artwork_accent: Option<u32>,
     seek_bar_bounds: Option<Bounds<Pixels>>,
     volume_bar_bounds: Option<Bounds<Pixels>>,
     slider_drag: Option<SliderKind>,
@@ -397,6 +399,8 @@ impl DesktopApp {
             queue_scroll: ScrollHandle::new(),
             artwork_cache: HashMap::new(),
             artwork_requested_urls: HashSet::new(),
+            current_artwork_accent: None,
+            applied_artwork_accent: None,
             seek_bar_bounds: None,
             volume_bar_bounds: None,
             slider_drag: None,
@@ -481,6 +485,7 @@ impl DesktopApp {
         if let Err(error) = theme::choose_preference(preference, window.appearance(), cx) {
             self.toast = Some(format!("Couldn't save appearance preference: {error}"));
         }
+        self.applied_artwork_accent = None;
         cx.notify();
     }
 
@@ -1107,6 +1112,9 @@ impl DesktopApp {
 
     pub(crate) fn apply_artwork_response(&mut self, url: String, response: ResponseData) {
         if let ResponseData::Image { bytes } = response {
+            if self.current_artwork_url(true).as_deref() == Some(url.as_str()) {
+                self.current_artwork_accent = theme::artwork_accent(&bytes);
+            }
             if let Some(format) = image_format(&bytes) {
                 self.artwork_cache
                     .insert(url.clone(), Arc::new(Image::from_bytes(format, bytes)));
@@ -1632,6 +1640,12 @@ impl DesktopApp {
 
 impl Render for DesktopApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        if theme::preference(cx) == ThemePreference::Adaptive
+            && self.applied_artwork_accent != self.current_artwork_accent
+        {
+            theme::set_artwork_accent(self.current_artwork_accent, cx);
+            self.applied_artwork_accent = self.current_artwork_accent;
+        }
         if self.appearance_subscription.is_none() {
             theme::sync_system_appearance(window.appearance(), cx);
             self.appearance_subscription =
@@ -1873,6 +1887,7 @@ impl DesktopApp {
                 ThemePreference::System => *cx.desktop_theme(),
                 ThemePreference::Light => family.light,
                 ThemePreference::Dark => family.dark,
+                ThemePreference::Adaptive => *cx.desktop_theme(),
             };
             choices = choices.child(theme_preference_card(
                 preference,
@@ -3313,6 +3328,7 @@ fn theme_preference_card(
         ThemePreference::System => "Follow macOS",
         ThemePreference::Light => "Catppuccin Latte",
         ThemePreference::Dark => "Catppuccin Mocha",
+        ThemePreference::Adaptive => "Current artwork",
     };
     let mut swatches = div().mt_5().flex().gap_2();
     for color in [

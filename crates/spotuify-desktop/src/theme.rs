@@ -5,22 +5,25 @@
 //! [`ThemePreference`] or [`ThemeFamily`] without changing view code.
 
 use gpui::{App, BorrowAppContext, Global, ReadGlobal, WindowAppearance};
+use image::GenericImageView;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ThemePreference {
     System,
     Light,
     Dark,
+    Adaptive,
 }
 
 impl ThemePreference {
-    pub(crate) const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+    pub(crate) const ALL: [Self; 4] = [Self::System, Self::Light, Self::Dark, Self::Adaptive];
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::System => "System",
             Self::Light => "Light",
             Self::Dark => "Dark",
+            Self::Adaptive => "Adaptive",
         }
     }
 
@@ -29,6 +32,7 @@ impl ThemePreference {
             Self::System => "system",
             Self::Light => "light",
             Self::Dark => "dark",
+            Self::Adaptive => "adaptive",
         }
     }
 
@@ -37,6 +41,7 @@ impl ThemePreference {
             "system" => Some(Self::System),
             "light" => Some(Self::Light),
             "dark" => Some(Self::Dark),
+            "adaptive" => Some(Self::Adaptive),
             _ => None,
         }
     }
@@ -69,6 +74,32 @@ pub(crate) struct Palette {
     pub error: u32,
     pub error_surface: u32,
     pub error_border: u32,
+}
+
+impl Palette {
+    fn with_accent(mut self, accent: u32) -> Self {
+        self.accent = accent;
+        self.accent_hover = darken(accent, 0.14);
+        self.accent_subtle = blend(self.bg_root, accent, 0.18);
+        self.nav_active = self.accent_subtle;
+        self.queue_current = self.accent_subtle;
+        self.button_primary = accent;
+        self.slider_fill = accent;
+        self
+    }
+}
+
+fn blend(base: u32, overlay: u32, amount: f32) -> u32 {
+    let component = |shift| {
+        let from = ((base >> shift) & 0xff_u32) as f32;
+        let to = ((overlay >> shift) & 0xff_u32) as f32;
+        (from + (to - from) * amount).round() as u32
+    };
+    (component(16) << 16) | (component(8) << 8) | component(0)
+}
+
+fn darken(color: u32, amount: f32) -> u32 {
+    blend(color, 0, amount)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -159,6 +190,7 @@ pub(crate) struct DesktopTheme {
     preference: ThemePreference,
     family: ThemeFamily,
     active: Palette,
+    artwork_accent: Option<u32>,
 }
 
 impl Global for DesktopTheme {}
@@ -167,16 +199,22 @@ impl DesktopTheme {
     pub(crate) fn new(appearance: WindowAppearance) -> Self {
         let family = ThemeFamily::CATPPUCCIN;
         let preference = load_preference();
-        let active = resolve_palette(preference, family, appearance);
+        let active = resolve_palette(preference, family, appearance, None);
         Self {
             preference,
             family,
             active,
+            artwork_accent: None,
         }
     }
 
     fn sync_appearance(&mut self, appearance: WindowAppearance) {
-        self.active = resolve_palette(self.preference, self.family, appearance);
+        self.active = resolve_palette(
+            self.preference,
+            self.family,
+            appearance,
+            self.artwork_accent,
+        );
     }
 
     pub(crate) fn preference(&self) -> ThemePreference {
@@ -190,6 +228,13 @@ impl DesktopTheme {
     ) {
         self.preference = preference;
         self.sync_appearance(appearance);
+    }
+
+    pub(crate) fn set_artwork_accent(&mut self, accent: Option<u32>) {
+        self.artwork_accent = accent;
+        if let Some(accent) = accent.filter(|_| self.preference == ThemePreference::Adaptive) {
+            self.active = self.active.with_accent(accent);
+        }
     }
 
     #[allow(dead_code)]
@@ -250,23 +295,57 @@ fn persist_preference(preference: ThemePreference) -> std::io::Result<()> {
     std::fs::write(path, format!("{}\n", preference.persisted()))
 }
 
+pub(crate) fn artwork_accent(bytes: &[u8]) -> Option<u32> {
+    const MAX_PIXELS: u64 = 16_000_000;
+    let image = image::load_from_memory(bytes).ok()?;
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return None;
+    }
+    let image = image.thumbnail(48, 48).to_rgb8();
+    let mut best = None;
+    for pixel in image.pixels() {
+        let [red, green, blue] = pixel.0;
+        let max = red.max(green).max(blue);
+        let min = red.min(green).min(blue);
+        let chroma = max.saturating_sub(min);
+        if max < 64 || chroma < 48 {
+            continue;
+        }
+        let score = u16::from(chroma) * u16::from(max);
+        if best.is_none_or(|(best_score, _)| score > best_score) {
+            best = Some((
+                score,
+                (u32::from(red) << 16) | (u32::from(green) << 8) | u32::from(blue),
+            ));
+        }
+    }
+    best.map(|(_, accent)| accent)
+}
+
+pub(crate) fn set_artwork_accent(accent: Option<u32>, cx: &mut impl BorrowAppContext) {
+    cx.update_global::<DesktopTheme, _>(|theme, _| theme.set_artwork_accent(accent));
+}
+
 fn resolve_palette(
     preference: ThemePreference,
     family: ThemeFamily,
     appearance: WindowAppearance,
+    artwork_accent: Option<u32>,
 ) -> Palette {
     let use_dark = match preference {
         ThemePreference::Dark => true,
         ThemePreference::Light => false,
-        ThemePreference::System => matches!(
+        ThemePreference::System | ThemePreference::Adaptive => matches!(
             appearance,
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         ),
     };
-    if use_dark {
-        family.dark
+    let palette = if use_dark { family.dark } else { family.light };
+    if preference == ThemePreference::Adaptive {
+        artwork_accent.map_or(palette, |accent| palette.with_accent(accent))
     } else {
-        family.light
+        palette
     }
 }
 
@@ -281,6 +360,7 @@ mod tests {
                 ThemePreference::System,
                 ThemeFamily::CATPPUCCIN,
                 WindowAppearance::Light,
+                None
             ),
             ThemeFamily::CATPPUCCIN.light
         );
@@ -289,6 +369,7 @@ mod tests {
                 ThemePreference::System,
                 ThemeFamily::CATPPUCCIN,
                 WindowAppearance::Dark,
+                None
             ),
             ThemeFamily::CATPPUCCIN.dark
         );
@@ -301,6 +382,7 @@ mod tests {
                 ThemePreference::Dark,
                 ThemeFamily::CATPPUCCIN,
                 WindowAppearance::Light,
+                None
             ),
             ThemeFamily::CATPPUCCIN.dark
         );
@@ -309,8 +391,33 @@ mod tests {
                 ThemePreference::Light,
                 ThemeFamily::CATPPUCCIN,
                 WindowAppearance::Dark,
+                None
             ),
             ThemeFamily::CATPPUCCIN.light
+        );
+    }
+
+    #[test]
+    fn adaptive_preference_uses_artwork_accent_and_falls_back() {
+        let accent = 0x57c7ff;
+        assert_eq!(
+            resolve_palette(
+                ThemePreference::Adaptive,
+                ThemeFamily::CATPPUCCIN,
+                WindowAppearance::Dark,
+                Some(accent)
+            )
+            .accent,
+            accent
+        );
+        assert_eq!(
+            resolve_palette(
+                ThemePreference::Adaptive,
+                ThemeFamily::CATPPUCCIN,
+                WindowAppearance::Dark,
+                None
+            ),
+            ThemeFamily::CATPPUCCIN.dark
         );
     }
 }

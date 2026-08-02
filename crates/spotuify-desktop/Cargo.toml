@@ -12,6 +12,7 @@ test-support = ["gpui/test-support"]
 [dependencies]
 anyhow = { workspace = true }
 gpui = { workspace = true }
+image = { workspace = true }
 spotuify-core = { workspace = true }
 spotuify-launcher = { workspace = true }
 spotuify-protocol = { workspace = true }

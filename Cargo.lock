@@ -8075,6 +8075,7 @@ version = "0.1.84"
 dependencies = [
  "anyhow",
  "gpui",
+ "image",
  "spotuify-core",
  "spotuify-launcher",
  "spotuify-protocol",
