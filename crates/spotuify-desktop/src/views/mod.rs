@@ -5,7 +5,7 @@ use crate::{
 };
 use gpui::prelude::*;
 use gpui::{
-    div, fill, img, point, px, relative, rgb, App, Bounds, ClickEvent, Context, CursorStyle,
+    div, fill, img, point, px, relative, rgb, rgba, App, Bounds, ClickEvent, Context, CursorStyle,
     DragMoveEvent, Element, ElementId, ElementInputHandler, Entity, EntityInputHandler,
     FocusHandle, Focusable, GlobalElementId, Image, ImageFormat, IntoElement, KeyDownEvent,
     LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render,
@@ -90,6 +90,14 @@ pub struct DesktopApp {
     album_tracks_loading: bool,
     album_tracks_error: Option<String>,
     selected_artist: Option<MediaItem>,
+    podcasts: Vec<MediaItem>,
+    podcasts_loading: bool,
+    podcasts_error: Option<String>,
+    podcasts_requested: bool,
+    selected_podcast: Option<MediaItem>,
+    podcast_episodes: Vec<MediaItem>,
+    podcast_episodes_loading: bool,
+    podcast_episodes_error: Option<String>,
     detail_history: Vec<DetailLocation>,
     artist_albums: Vec<MediaItem>,
     artist_albums_loading: bool,
@@ -368,6 +376,14 @@ impl DesktopApp {
             album_tracks_loading: false,
             album_tracks_error: None,
             selected_artist: None,
+            podcasts: Vec::new(),
+            podcasts_loading: false,
+            podcasts_error: None,
+            podcasts_requested: false,
+            selected_podcast: None,
+            podcast_episodes: Vec::new(),
+            podcast_episodes_loading: false,
+            podcast_episodes_error: None,
             detail_history: Vec::new(),
             artist_albums: Vec::new(),
             artist_albums_loading: false,
@@ -497,6 +513,61 @@ impl DesktopApp {
         if destination == Destination::Playlists {
             self.request_playlists();
         }
+        if destination == Destination::Podcasts {
+            self.request_podcasts();
+        }
+    }
+
+    fn request_podcasts(&mut self) {
+        if self.podcasts_requested || self.podcasts_loading || self.command_tx.is_none() {
+            return;
+        }
+        self.podcasts_requested = true;
+        self.podcasts_loading = true;
+        self.podcasts_error = None;
+        self.send_request(Request::SavedShows {
+            limit: 50,
+            provider: None,
+        });
+    }
+
+    fn open_podcast(&mut self, podcast: MediaItem) {
+        if podcast.uri.is_empty() {
+            return;
+        }
+        self.selected_podcast = Some(podcast.clone());
+        self.podcast_episodes.clear();
+        self.podcast_episodes_error = None;
+        self.podcast_episodes_loading = true;
+        self.send_request(Request::ShowEpisodes {
+            show: podcast.uri,
+            limit: 50,
+            offset: 0,
+        });
+    }
+
+    fn close_podcast(&mut self) {
+        self.selected_podcast = None;
+        self.podcast_episodes.clear();
+        self.podcast_episodes_error = None;
+        self.podcast_episodes_loading = false;
+    }
+
+    pub(crate) fn fail_podcasts(&mut self, message: String) {
+        self.podcasts_loading = false;
+        self.podcasts_requested = false;
+        self.podcasts_error = Some(message);
+    }
+
+    pub(crate) fn fail_podcast_episodes(&mut self, show: &str, message: String) {
+        if self
+            .selected_podcast
+            .as_ref()
+            .is_some_and(|podcast| podcast.uri == show)
+        {
+            self.podcast_episodes_loading = false;
+            self.podcast_episodes_error = Some(message);
+        }
     }
 
     fn request_playlists(&mut self) {
@@ -589,6 +660,7 @@ impl DesktopApp {
         match self.selected_destination {
             Destination::Albums => self.close_album(),
             Destination::Artists => self.close_artist(),
+            Destination::Podcasts => self.close_podcast(),
             _ => {}
         }
         let Some(location) = self.detail_history.pop() else {
@@ -1011,6 +1083,17 @@ impl DesktopApp {
         }
     }
 
+    fn request_artwork_for_podcasts(&mut self) {
+        let urls: Vec<_> = self
+            .podcasts
+            .iter()
+            .filter_map(|item| artwork_url(item, false))
+            .collect();
+        for url in urls {
+            self.request_artwork(url);
+        }
+    }
+
     fn request_artwork(&mut self, url: String) {
         if self.artwork_cache.contains_key(&url)
             || self.artwork_requested_urls.contains(&url)
@@ -1157,6 +1240,30 @@ impl DesktopApp {
             self.history_loading = false;
             self.history_error = None;
             self.history_requested = true;
+        }
+    }
+
+    pub(crate) fn apply_podcasts_response(&mut self, response: ResponseData) {
+        if let ResponseData::MediaItems { items } = response {
+            self.podcasts = items;
+            self.request_artwork_for_podcasts();
+            self.podcasts_loading = false;
+            self.podcasts_error = None;
+            self.podcasts_requested = true;
+        }
+    }
+
+    pub(crate) fn apply_podcast_episodes_response(&mut self, show: &str, response: ResponseData) {
+        if self
+            .selected_podcast
+            .as_ref()
+            .is_some_and(|podcast| podcast.uri == show)
+        {
+            if let ResponseData::MediaItems { items } = response {
+                self.podcast_episodes = items;
+                self.podcast_episodes_loading = false;
+                self.podcast_episodes_error = None;
+            }
         }
     }
 
@@ -1632,6 +1739,8 @@ impl DesktopApp {
             content.child(self.albums_pane(cx))
         } else if self.selected_destination == Destination::Artists {
             content.child(self.artists_pane(cx))
+        } else if self.selected_destination == Destination::Podcasts {
+            content.child(self.podcasts_pane(cx))
         } else if self.selected_destination == Destination::History {
             content.child(self.history_pane(cx))
         } else if self.selected_destination == Destination::Playlists {
@@ -1659,6 +1768,31 @@ impl DesktopApp {
             }))
             .child(self.sidebar(cx))
             .child(content);
+
+        if self.playlist_picker_uri.is_some() {
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x00000099))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .id("playlist-picker-modal")
+                            .w(px(560.))
+                            .h(px(520.))
+                            .flex()
+                            .flex_col()
+                            .overflow_y_scroll()
+                            .rounded_xl()
+                            .bg(rgb(cx.desktop_theme().bg_surface))
+                            .p_6()
+                            .child(playlist_picker_surface(self, cx)),
+                    ),
+            );
+        }
 
         if let Some(toast) = &self.toast {
             root = root.child(toast_surface(cx, toast));
@@ -1943,6 +2077,115 @@ impl DesktopApp {
             rows = rows.child(album_row(index, item, &self.artwork_cache, cx));
         }
         pane.child(rows).into_any_element()
+    }
+
+    fn podcasts_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
+        if let Some(podcast) = &self.selected_podcast {
+            return self.podcast_detail_pane(podcast, cx).into_any_element();
+        }
+        let pane = div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .child(div().text_3xl().child("Podcasts"))
+            .child(
+                div()
+                    .mt_2()
+                    .text_lg()
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
+                    .child("Saved shows"),
+            );
+        if self.podcasts_loading && self.podcasts.is_empty() {
+            return pane
+                .child(queue_message(cx, "Loading saved shows..."))
+                .into_any_element();
+        }
+        if let Some(error) = &self.podcasts_error {
+            return pane
+                .child(queue_message(
+                    cx,
+                    &format!("Couldn't load saved shows: {error}"),
+                ))
+                .into_any_element();
+        }
+        if self.podcasts.is_empty() {
+            return pane
+                .child(queue_message(cx, "No saved shows"))
+                .into_any_element();
+        }
+        let mut rows = div()
+            .id("saved-shows")
+            .mt_5()
+            .h(px(0.))
+            .flex_1()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_2();
+        for (index, podcast) in self.podcasts.iter().enumerate() {
+            rows = rows.child(podcast_row(index, podcast, &self.artwork_cache, cx));
+        }
+        pane.child(rows).into_any_element()
+    }
+
+    fn podcast_detail_pane(
+        &self,
+        podcast: &MediaItem,
+        cx: &mut Context<'_, DesktopApp>,
+    ) -> impl IntoElement {
+        let pane = div()
+            .flex_1()
+            .p_8()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(search_row_action(
+                        cx,
+                        "Back",
+                        cx.listener(|app, _, _, cx| {
+                            app.close_podcast();
+                            cx.notify();
+                        }),
+                    ))
+                    .child(div().text_3xl().child(podcast.name.clone())),
+            )
+            .child(
+                div()
+                    .mt_2()
+                    .text_lg()
+                    .text_color(rgb(cx.desktop_theme().text_secondary))
+                    .child("Episodes"),
+            );
+        if self.podcast_episodes_loading && self.podcast_episodes.is_empty() {
+            return pane.child(queue_message(cx, "Loading episodes..."));
+        }
+        if let Some(error) = &self.podcast_episodes_error {
+            return pane.child(queue_message(
+                cx,
+                &format!("Couldn't load episodes: {error}"),
+            ));
+        }
+        if self.podcast_episodes.is_empty() {
+            return pane.child(queue_message(cx, "No episodes available"));
+        }
+        let mut rows = div()
+            .id("podcast-episodes")
+            .mt_6()
+            .h(px(0.))
+            .flex_1()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_1();
+        for (index, episode) in self.podcast_episodes.iter().enumerate() {
+            rows = rows.child(podcast_episode_row(index, episode, cx));
+        }
+        pane.child(rows)
     }
 
     fn artists_pane(&self, cx: &mut Context<'_, DesktopApp>) -> impl IntoElement {
@@ -2670,7 +2913,7 @@ impl DesktopApp {
             results = results.child(search_result_row(index, item, cx));
         }
 
-        let mut pane = div()
+        let pane = div()
             .flex_1()
             .p_8()
             .flex()
@@ -2706,10 +2949,6 @@ impl DesktopApp {
                     .child(status),
             )
             .child(results);
-
-        if self.playlist_picker_uri.is_some() {
-            pane = pane.child(playlist_picker_surface(self, cx));
-        }
 
         pane
     }
@@ -3499,6 +3738,159 @@ fn album_row(
             ));
     }
     row
+}
+
+fn podcast_row(
+    index: usize,
+    item: &MediaItem,
+    artwork_cache: &HashMap<String, Arc<Image>>,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
+    let podcast = item.clone();
+    let title = if item.name.is_empty() {
+        "Untitled show".to_string()
+    } else {
+        item.name.clone()
+    };
+    let artwork = artwork_url(item, false)
+        .and_then(|url| artwork_cache.get(&url))
+        .or_else(|| artwork_url(item, true).and_then(|url| artwork_cache.get(&url)));
+    div()
+        .id(SharedString::from(format!("podcast-{index}")))
+        .w_full()
+        .h(px(68.))
+        .rounded_md()
+        .px_2()
+        .flex()
+        .items_center()
+        .gap_3()
+        .hover(|style| style.bg(rgb(cx.desktop_theme().bg_elevated)))
+        .child(
+            div()
+                .size(px(52.))
+                .flex_shrink_0()
+                .rounded_md()
+                .overflow_hidden()
+                .bg(rgb(cx.desktop_theme().bg_elevated))
+                .when_some(artwork.cloned(), |element, artwork| {
+                    element.child(
+                        img(artwork)
+                            .w_full()
+                            .h_full()
+                            .object_fit(gpui::ObjectFit::Cover),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .flex_1()
+                .overflow_hidden()
+                .child(div().text_sm().truncate().child(title))
+                .child(
+                    div()
+                        .mt_1()
+                        .text_xs()
+                        .text_color(rgb(cx.desktop_theme().text_muted))
+                        .truncate()
+                        .child(media_context_links(&format!("podcast-{index}"), item, cx)),
+                ),
+        )
+        .child(search_row_action(
+            cx,
+            "Open",
+            cx.listener(move |app, _, _, cx| {
+                app.open_podcast(podcast.clone());
+                cx.notify();
+            }),
+        ))
+}
+
+fn podcast_episode_row(
+    index: usize,
+    item: &MediaItem,
+    cx: &mut Context<'_, DesktopApp>,
+) -> impl IntoElement {
+    let uri = item.uri.clone();
+    let title = if item.name.is_empty() {
+        "Untitled episode".to_string()
+    } else {
+        item.name.clone()
+    };
+    let play_uri = uri.clone();
+    let queue_uri = uri.clone();
+    let playlist_uri = uri;
+    let play_title = title.clone();
+    let queue_title = title.clone();
+    div()
+        .id(SharedString::from(format!("podcast-episode-{index}")))
+        .w_full()
+        .h(px(56.))
+        .rounded_md()
+        .px_2()
+        .flex()
+        .items_center()
+        .gap_2()
+        .hover(|style| style.bg(rgb(cx.desktop_theme().bg_elevated)))
+        .child(
+            div()
+                .w(px(28.))
+                .text_xs()
+                .text_color(rgb(cx.desktop_theme().text_muted))
+                .child(format!("{:02}", index + 1)),
+        )
+        .child(liked_song_action(
+            cx,
+            format!("podcast-episode-{index}-play"),
+            "Play",
+            AppIcon::Play,
+            cx.listener(move |app, _, _, cx| {
+                app.send_playback_command(PlaybackCommand::PlayUri {
+                    uri: play_uri.clone(),
+                    context_uri: None,
+                });
+                app.toast = Some(format!("Playing {play_title}"));
+                cx.notify();
+            }),
+        ))
+        .child(liked_song_action(
+            cx,
+            format!("podcast-episode-{index}-queue"),
+            "Add to queue",
+            AppIcon::Queue,
+            cx.listener(move |app, _, _, cx| {
+                app.send_request(Request::QueueAdd {
+                    uri: queue_uri.clone(),
+                });
+                app.toast = Some(format!("Queued {queue_title}"));
+                cx.notify();
+            }),
+        ))
+        .child(search_row_action(
+            cx,
+            "Playlist",
+            cx.listener(move |app, _, _, cx| {
+                app.open_playlist_picker(playlist_uri.clone());
+                cx.notify();
+            }),
+        ))
+        .child(
+            div()
+                .flex_1()
+                .overflow_hidden()
+                .child(div().text_sm().truncate().child(title))
+                .child(
+                    div()
+                        .mt_1()
+                        .text_xs()
+                        .text_color(rgb(cx.desktop_theme().text_muted))
+                        .truncate()
+                        .child(media_context_links(
+                            &format!("podcast-episode-{index}"),
+                            item,
+                            cx,
+                        )),
+                ),
+        )
 }
 
 fn artist_row(
@@ -5326,6 +5718,51 @@ mod tests {
 
         assert_eq!(app.selected_destination, Destination::Preferences);
         assert!(!Destination::ALL.contains(&Destination::Preferences));
+    }
+
+    #[test]
+    fn entering_podcasts_requests_saved_shows_once() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+
+        app.select_destination(Destination::Podcasts);
+        app.select_destination(Destination::Podcasts);
+
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::SavedShows {
+                limit: 50,
+                provider: None
+            })
+        ));
+        assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn saved_show_response_opens_episode_request() {
+        let mut app = DesktopApp::new();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (slider_tx, _) = watch::channel::<Option<Request>>(None);
+        app.set_command_senders(command_tx, slider_tx);
+        let show = MediaItem {
+            uri: "spotify:show:example".to_string(),
+            name: "Example show".to_string(),
+            kind: MediaKind::Show,
+            ..MediaItem::default()
+        };
+
+        app.apply_podcasts_response(ResponseData::MediaItems {
+            items: vec![show.clone()],
+        });
+        app.open_podcast(show);
+
+        assert_eq!(app.podcasts.len(), 1);
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(Request::ShowEpisodes { show, limit: 50, offset: 0 }) if show == "spotify:show:example"
+        ));
     }
 
     #[test]

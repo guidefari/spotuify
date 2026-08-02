@@ -300,6 +300,11 @@ async fn dispatch_transport_request(
     let is_devices_list = matches!(&command, Request::DevicesList);
     let is_saved_tracks = matches!(&command, Request::SavedTracks { .. });
     let is_library_list = matches!(&command, Request::LibraryList { .. });
+    let is_saved_shows = matches!(&command, Request::SavedShows { .. });
+    let show_episodes_request = match &command {
+        Request::ShowEpisodes { show, .. } => Some(show.clone()),
+        _ => None,
+    };
     let is_followed_artists = matches!(&command, Request::FollowedArtists { .. });
     let is_recently_played = matches!(&command, Request::RecentlyPlayed { .. });
     let mutation_id = command.requires_mutation_id().then(MutationId::new_v7);
@@ -337,6 +342,10 @@ async fn dispatch_transport_request(
                     app.apply_album_tracks_response(album, data);
                 } else if let Some(artist) = artist_albums_request.as_deref() {
                     app.apply_artist_albums_response(artist, data);
+                } else if let Some(show) = show_episodes_request.as_deref() {
+                    app.apply_podcast_episodes_response(show, data);
+                } else if is_saved_shows {
+                    app.apply_podcasts_response(data);
                 } else if is_recently_played {
                     app.apply_history_response(data);
                 } else if is_library_list {
@@ -365,6 +374,12 @@ async fn dispatch_transport_request(
                 }
                 if let Some(artist) = &artist_albums_request {
                     app.fail_artist_albums(artist, message.clone());
+                }
+                if let Some(show) = &show_episodes_request {
+                    app.fail_podcast_episodes(show, message.clone());
+                }
+                if is_saved_shows {
+                    app.fail_podcasts(message.clone());
                 }
                 if is_queue_get {
                     app.queue_loading = false;
@@ -411,6 +426,12 @@ async fn dispatch_transport_request(
                 }
                 if let Some(artist) = &artist_albums_request {
                     app.fail_artist_albums(artist, error.to_string());
+                }
+                if let Some(show) = &show_episodes_request {
+                    app.fail_podcast_episodes(show, error.to_string());
+                }
+                if is_saved_shows {
+                    app.fail_podcasts(error.to_string());
                 }
                 if is_queue_get {
                     app.queue_loading = false;
