@@ -659,6 +659,7 @@ impl Store {
     pub async fn list_saved_albums(
         &self,
         limit: u32,
+        offset: u32,
         provider: Option<&str>,
     ) -> Result<Vec<MediaItem>> {
         if limit == 0 {
@@ -672,11 +673,12 @@ impl Store {
              WHERE library_items.saved = 1 AND media_items.kind = 'album'
                    AND (? IS NULL OR media_items.provider = ?)
              ORDER BY library_items.added_at_ms DESC, name COLLATE NOCASE ASC
-             LIMIT ?",
+             LIMIT ? OFFSET ?",
         )
         .bind(provider)
         .bind(provider)
         .bind(limit as i64)
+        .bind(offset as i64)
         .fetch_all(&self.reader)
         .await?;
         rows.into_iter().map(row_to_media_item).collect()

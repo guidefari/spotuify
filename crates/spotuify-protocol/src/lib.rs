@@ -215,6 +215,8 @@ pub enum Request {
     /// Saved albums, served from the synced library cache.
     SavedAlbums {
         limit: u32,
+        #[serde(default)]
+        offset: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider: Option<ProviderId>,
     },

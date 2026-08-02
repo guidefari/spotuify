@@ -69,6 +69,8 @@ pub struct DesktopApp {
     pub(crate) albums_loading: bool,
     pub(crate) albums_error: Option<String>,
     albums_requested: bool,
+    albums_has_more: bool,
+    albums_scroll: ScrollHandle,
     pub(crate) artists: Vec<MediaItem>,
     pub(crate) artists_loading: bool,
     pub(crate) artists_error: Option<String>,
@@ -357,6 +359,8 @@ impl DesktopApp {
             albums_loading: false,
             albums_error: None,
             albums_requested: false,
+            albums_has_more: true,
+            albums_scroll: ScrollHandle::new(),
             artists: Vec::new(),
             artists_loading: false,
             artists_error: None,
@@ -843,26 +847,37 @@ impl DesktopApp {
         if self.albums_requested || self.albums_loading || self.command_tx.is_none() {
             return;
         }
-        self.albums_requested = true;
-        self.albums_loading = true;
-        self.albums_error = None;
-        self.send_request(Request::SavedAlbums {
-            limit: 100,
-            provider: None,
-        });
+        self.request_albums_page(0);
     }
 
-    fn refresh_albums(&mut self) {
-        if self.command_tx.is_none() || self.albums_loading {
+    fn request_albums_page(&mut self, offset: u32) {
+        if self.albums_loading || self.command_tx.is_none() {
             return;
         }
         self.albums_requested = true;
         self.albums_loading = true;
         self.albums_error = None;
         self.send_request(Request::SavedAlbums {
-            limit: 100,
+            limit: 50,
+            offset,
             provider: None,
         });
+    }
+
+    fn request_next_albums_page(&mut self) {
+        if self.albums_has_more {
+            self.request_albums_page(self.albums.len() as u32);
+        }
+    }
+
+    fn refresh_albums(&mut self) {
+        if self.command_tx.is_none() || self.albums_loading {
+            return;
+        }
+        self.albums.clear();
+        self.albums_has_more = true;
+        self.albums_requested = false;
+        self.request_albums_page(0);
     }
 
     pub(crate) fn fail_albums(&mut self, message: String) {
@@ -1232,10 +1247,16 @@ impl DesktopApp {
 
     pub(crate) fn apply_albums_response(&mut self, response: ResponseData) {
         if let ResponseData::MediaItems { items } = response {
-            self.albums = items
+            let page: Vec<_> = items
                 .into_iter()
                 .filter(|item| item.kind == MediaKind::Album)
                 .collect();
+            self.albums_has_more = page.len() == 50;
+            if self.albums.is_empty() {
+                self.albums = page;
+            } else {
+                self.albums.extend(page);
+            }
             self.request_artwork_for_albums();
             self.albums_loading = false;
             self.albums_error = None;
@@ -1669,6 +1690,13 @@ impl Render for DesktopApp {
                 }));
         }
         self.ensure_search_input(cx);
+        if self.selected_destination == Destination::Albums
+            && !self.albums_loading
+            && self.albums_has_more
+            && self.albums_scroll.bottom_item().saturating_add(10) >= self.albums.len()
+        {
+            self.request_next_albums_page();
+        }
         if self.selected_destination == Destination::LikedSongs
             && !self.liked_loading
             && self.liked_songs.len() < self.liked_total as usize
@@ -2106,6 +2134,7 @@ impl DesktopApp {
             .h(px(0.))
             .flex_1()
             .overflow_y_scroll()
+            .track_scroll(&self.albums_scroll)
             .flex()
             .flex_col()
             .gap_1();
@@ -6002,7 +6031,8 @@ mod tests {
         assert!(matches!(
             command_rx.try_recv(),
             Ok(Request::SavedAlbums {
-                limit: 100,
+                limit: 50,
+                offset: 0,
                 provider: None
             })
         ));
@@ -6093,7 +6123,8 @@ mod tests {
         assert!(matches!(
             command_rx.try_recv(),
             Ok(Request::SavedAlbums {
-                limit: 100,
+                limit: 50,
+                offset: 0,
                 provider: None
             })
         ));
